@@ -72,3 +72,5 @@ def is_q_drive_accessible() -> bool:
 def get_supported_file_extensions() -> List[str]:
     """獲取所有支持的文件擴展名"""
     return SUPPORTED_FILE_TYPES
+
+DISPLAY_DRIVE_NAME = os.getenv("DISPLAY_DRIVE_NAME", "Q槽")

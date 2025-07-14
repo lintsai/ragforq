@@ -17,7 +17,7 @@ frontend_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(frontend_dir)
 sys.path.append(project_root)
 
-from config.config import APP_HOST, APP_PORT, STREAMLIT_PORT, API_BASE_URL, is_q_drive_accessible
+from config.config import APP_HOST, APP_PORT, STREAMLIT_PORT, API_BASE_URL, is_q_drive_accessible, Q_DRIVE_PATH, DISPLAY_DRIVE_NAME
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -306,7 +306,9 @@ def main():
                         st.markdown("### 文件詳細路徑")
                         for idx, (_, file) in enumerate(unique_files.items(), 1):
                             file_name = os.path.basename(file["file_path"])
-                            st.write(f"{idx}. **{file_name}** - {file['file_path']}")
+                            # 將 Q_DRIVE_PATH 換成 DISPLAY_DRIVE_NAME
+                            display_path = file["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
+                            st.write(f"{idx}. **{file_name}** - {display_path}")
                         
                         # 保存到歷史記錄
                         file_list_text = f"已找到 {len(indexed_files)} 個文件"
@@ -378,7 +380,8 @@ def main():
                             st.markdown("### 文件詳細信息")
                             for idx, (_, source) in enumerate(unique_files.items(), 1):
                                 with st.expander(f"**文件 {idx}: {source['file_name']}**", expanded=False):
-                                    st.write(f"文件路徑: {source['file_path']}")
+                                    display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
+                                    st.write(f"文件路徑: {display_path}")
                                     
                                     if source.get("location_info"):
                                         st.write(f"位置信息: {source['location_info']}")
@@ -419,7 +422,8 @@ def main():
                 if "sources" in chat and chat["sources"]:
                     st.markdown("**相關文件:**")
                     for idx, source in enumerate(chat["sources"], 1):
-                        st.write(f"{idx}. {source['file_name']} - {source['file_path']}")
+                        display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
+                        st.write(f"{idx}. {source['file_name']} - {display_path}")
     
     # 頁腳
     st.markdown(
