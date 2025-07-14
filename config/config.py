@@ -15,10 +15,6 @@ logger = logging.getLogger(__name__)
 Q_DRIVE_PATH = os.getenv("Q_DRIVE_PATH", "Q:")
 Q_DRIVE_NETWORK_PATH = os.getenv("Q_DRIVE_NETWORK_PATH", "\\\\server\\Q")
 
-# OpenAI API設置
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
-
 # 向量數據庫設置
 VECTOR_DB_PATH = os.path.abspath(os.getenv("VECTOR_DB_PATH", "./vector_db").split("#")[0].strip().strip('"'))
 
@@ -36,7 +32,6 @@ MAX_TOKENS_CHUNK = int(os.getenv("MAX_TOKENS_CHUNK", "500").split("#")[0].strip(
 SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", "3").split("#")[0].strip())
 
 # Ollama設置
-USE_OLLAMA = os.getenv("USE_OLLAMA", "false").lower() == "true"
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "llama3.2")

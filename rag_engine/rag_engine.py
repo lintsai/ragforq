@@ -7,15 +7,13 @@ from pathlib import Path
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import SIMILARITY_TOP_K, OPENAI_MODEL, USE_OLLAMA, OLLAMA_HOST, OLLAMA_MODEL
+from config.config import SIMILARITY_TOP_K, OLLAMA_HOST, OLLAMA_MODEL
 from indexer.document_indexer import DocumentIndexer
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableSequence
 from langchain_community.vectorstores.faiss import FAISS
-from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_ollama import OllamaLLM
 
 # 設置日誌
@@ -55,20 +53,13 @@ class RAGEngine:
         self.document_indexer = document_indexer
         self.vector_store = document_indexer.get_vector_store()
         
-        # 根據配置選擇使用 Ollama 或 OpenAI
-        if USE_OLLAMA:
-            self.llm = OllamaLLM(
-                model=OLLAMA_MODEL,
-                base_url=OLLAMA_HOST,
-                temperature=0.7
-            )
-            logger.info(f"使用本地 Ollama 模型: {OLLAMA_MODEL}")
-        else:
-            self.llm = ChatOpenAI(
-                model=OPENAI_MODEL,
-                temperature=0.7
-            )
-            logger.info(f"使用 OpenAI 模型: {OPENAI_MODEL}")
+        # 僅保留 Ollama
+        self.llm = OllamaLLM(
+            model=OLLAMA_MODEL,
+            base_url=OLLAMA_HOST,
+            temperature=0.7
+        )
+        logger.info(f"使用本地 Ollama 模型: {OLLAMA_MODEL}")
         
         # 定義問答提示模板
         self.qa_prompt = PromptTemplate(

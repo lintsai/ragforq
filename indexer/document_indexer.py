@@ -19,12 +19,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.file_parsers import FileParser
 from config.config import (
-    VECTOR_DB_PATH, MAX_TOKENS_CHUNK, USE_OLLAMA, OLLAMA_HOST, 
+    VECTOR_DB_PATH, MAX_TOKENS_CHUNK, OLLAMA_HOST, 
     OLLAMA_EMBEDDING_MODEL, EMBEDDING_BATCH_SIZE, CHUNK_OVERLAP, 
     FILE_BATCH_SIZE
 )
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.vectorstores.faiss import FAISS
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
@@ -77,14 +76,11 @@ class DocumentIndexer:
             length_function=len,
         )
         
-        # 初始化嵌入模型
-        if USE_OLLAMA:
-            self.embeddings = OllamaEmbeddings(
-                base_url=OLLAMA_HOST,
-                model=OLLAMA_EMBEDDING_MODEL
-            )
-        else:
-            self.embeddings = OpenAIEmbeddings()
+        # 僅保留 Ollama 嵌入模型
+        self.embeddings = OllamaEmbeddings(
+            base_url=OLLAMA_HOST,
+            model=OLLAMA_EMBEDDING_MODEL
+        )
             
         # 確保向量數據庫目錄存在
         os.makedirs(self.vector_db_path, exist_ok=True)
