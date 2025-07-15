@@ -1,0 +1,62 @@
+name: Build on Ops, Deploy to App Server
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Docker Image on Ops Server (.122)
+        id: build_image
+        run: |
+          IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${GITHUB_SHA::7}
+          IMAGE_NAME=ragforq-app:${IMAGE_TAG}
+          docker build -t $IMAGE_NAME .
+          echo "Image built: $IMAGE_NAME"
+          docker save $IMAGE_NAME -o ragforq-app.tar
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Application Server (.121)
+        uses: appleboy/ssh-action@master
+        with:
+          host: 192.168.100.121
+          username: qsiadmin
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # 載入從 .122 傳輸過來的 Docker 映像
+            docker load < ragforq-app.tar
+
+            # 停止並刪除舊的容器
+            CONTAINER_NAME=ragforq-production
+            if [ $(docker ps -q -f name=$CONTAINER_NAME) ]; then
+              docker stop $CONTAINER_NAME
+              docker rm $CONTAINER_NAME
+            fi
+            
+            # 準備數據目錄
+            mkdir -p ~/rag_data/db
+            mkdir -p ~/rag_data/documents
+            mkdir -p ~/.cache/huggingface
+
+            # 運行新的容器，同時映射前端和後端端口
+            docker run -d \
+              --gpus all \
+              --name $CONTAINER_NAME \
+              -p 8501:8501 \
+              -p 8000:8000 \
+              -v ~/rag_data/db:/app/db \
+              -v ~/rag_data/documents:/app/documents \
+              -v ~/.cache/huggingface:/root/.cache/huggingface \
+              ${{ steps.build_image.outputs.IMAGE_NAME }}
+
+            # 清理舊的、未使用的 Docker 映像
+            docker image prune -f
