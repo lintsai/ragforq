@@ -40,6 +40,6 @@ RUN apt-get update && apt-get install -y supervisor
 # 將我們的 supervisor 設定檔複製到容器的正確位置
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# 容器啟動時執行的命令
+# 容器啟動時執行的命令 
 # 啟動 supervisord，-n 參數表示在前台運行，這是 Docker 容器所需要的
 CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
