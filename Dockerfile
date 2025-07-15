@@ -6,8 +6,7 @@ FROM python:3.10-slim as builder
 RUN pip install pipx
 RUN pipx install poetry
 
-# 【新增】將 pipx 安裝的工具路徑添加到 PATH 環境變數
-# 這樣後續的 RUN 指令才能直接找到 'poetry' 命令
+# 將 pipx 安裝的工具路徑添加到 PATH 環境變數
 ENV PATH="/root/.local/bin:${PATH}"
 
 # 將 poetry 的配置設為不在專案目錄內創建虛擬環境
@@ -19,8 +18,8 @@ WORKDIR /app
 # 複製專案依賴定義檔
 COPY poetry.lock pyproject.toml ./
 
-# 安裝專案依賴
-RUN poetry install --no-root --no-dev --no-interaction --no-ansi
+# 【修改】安裝專案依賴，使用新的 --without dev 參數
+RUN poetry install --no-root --without dev --no-interaction --no-ansi
 
 # 替換掉 faiss-cpu 為 GPU 版本
 RUN pip uninstall -y faiss-cpu
