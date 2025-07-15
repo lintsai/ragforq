@@ -3,28 +3,35 @@ name: Build on Ops, Deploy to App Server
 on:
   push:
     branches:
-      - master
+      - main
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest # 這個標籤會讓 Gitea Runner 找一個帶有常用工具的環境來執行
+    # 這裡的 runs-on 標籤依然重要，它決定了基礎工作環境
+    runs-on: ubuntu-latest 
+    
+    # 這是最關鍵的新增部分！
+    container:
+      # 我們可以繼續使用預設的 node 鏡像，或者換成一個更純淨的
+      image: node:18-bullseye 
+      # 關鍵中的關鍵：為這個 job 的臨時容器也掛載 Docker Socket
+      options: -v /var/run/docker.sock:/var/run/docker.sock
+
     steps:
-      # 步驟 1: 檢出程式碼，沒有問題
+      # 步驟 1: 在這個臨時容器內，安裝 Docker CLI
+      # 這樣，後續步驟就能找到 docker 命令了
+      - name: Install Docker CLI
+        run: |
+          apt-get update
+          apt-get install -y docker.io
+
+      # 步驟 2: 檢出程式碼
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 步驟 2: 設置 Docker Buildx，這是使用 Docker 的前提
-      # 這個 Action 會確保 Docker 環境被正確初始化
+      # 步驟 3: 設置 Docker Buildx (現在它可以在容器內正常工作了)
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3 # 更新到 v3 版本
-
-      # 步驟 3: 登錄到 Docker (如果未來需要推送到私有倉庫，這一步很有用，現在可以先留著)
-      # 即使是本地建置，這一步有助於確保認證環境乾淨
-      # - name: Log in to Docker Hub
-      #   uses: docker/login-action@v3
-      #   with:
-      #     username: ${{ secrets.DOCKER_USERNAME }}
-      #     password: ${{ secrets.DOCKER_PASSWORD }}
+        uses: docker/setup-buildx-action@v3
 
       # 步驟 4: 建置 Docker 映像並保存
       - name: Build and save Docker Image
@@ -33,45 +40,34 @@ jobs:
           IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${GITEA_SHA::7}
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
           
-          # 確保 docker 命令可以被 Runner 找到並執行
           docker build -t $IMAGE_NAME .
           echo "Image built: $IMAGE_NAME"
           
           docker save $IMAGE_NAME -o ragforq-app.tar
           echo "Image saved to ragforq-app.tar"
           
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITEA_ENV # Gitea 使用 GITEA_ENV 來跨步驟傳遞變數
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITEA_ENV
 
-      # 步驟 5: 部署到應用伺服器
+      # 步驟 5: 部署到應用伺服器 (這部分不變)
       - name: Deploy to Application Server (.121)
         uses: appleboy/ssh-action@master
         with:
           host: 192.168.100.121
           username: qsiadmin
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          # 我們需要將打包好的映像傳輸過去
           source: "ragforq-app.tar"
-          target: "/home/qsiadmin/" # 傳輸到遠程主機的 home 目錄
+          target: "/home/qsiadmin/"
           script: |
-            # 進入遠程主機的 home 目錄
             cd /home/qsiadmin/
-
-            # 載入從 .122 傳輸過來的 Docker 映像
             docker load < ragforq-app.tar
-
-            # 停止並刪除舊的容器
             CONTAINER_NAME=ragforq-production
             if [ $(docker ps -q -f name=$CONTAINER_NAME) ]; then
               docker stop $CONTAINER_NAME
               docker rm $CONTAINER_NAME
             fi
-            
-            # 準備數據目錄
             mkdir -p ~/rag_data/db
             mkdir -p ~/rag_data/documents
             mkdir -p ~/.cache/huggingface
-
-            # 運行新的容器
             docker run -d \
               --gpus all \
               --name $CONTAINER_NAME \
@@ -80,8 +76,6 @@ jobs:
               -v ~/rag_data/db:/app/db \
               -v ~/rag_data/documents:/app/documents \
               -v ~/.cache/huggingface:/root/.cache/huggingface \
-              ${{ env.IMAGE_NAME }} # 從環境變數中獲取 IMAGE_NAME
-
-            # 清理舊的、未使用的 Docker 映像和傳輸的 tar 包
+              ${{ env.IMAGE_NAME }}
             docker image prune -f
             rm ragforq-app.tar
