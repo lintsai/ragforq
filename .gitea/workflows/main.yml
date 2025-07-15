@@ -7,48 +7,39 @@ on:
 
 jobs:
   build-and-deploy:
-    # 這裡的 runs-on 標籤依然重要，它決定了基礎工作環境
-    runs-on: ubuntu-latest 
+    runs-on: ubuntu-latest
     
-    # 這是最關鍵的新增部分！
+    # 我們仍然需要 container 塊，來定義鏡像和安裝 CLI
+    # 但是我們要刪除 options 這一行
     container:
-      # 我們可以繼續使用預設的 node 鏡像，或者換成一個更純淨的
-      image: node:18-bullseye 
-      # 關鍵中的關鍵：為這個 job 的臨時容器也掛載 Docker Socket
-      options: -v /var/run/docker.sock:/var/run/docker.sock
+      image: node:18-bullseye
+      # options: -v /var/run/docker.sock:/var/run/docker.sock  <-- 刪除這一行
 
     steps:
-      # 步驟 1: 在這個臨時容器內，安裝 Docker CLI
-      # 這樣，後續步驟就能找到 docker 命令了
+      # 在臨時容器中安裝 Docker CLI 的步驟仍然是必需的
       - name: Install Docker CLI
         run: |
           apt-get update
           apt-get install -y docker.io
 
-      # 步驟 2: 檢出程式碼
+      # 後續的所有步驟保持不變
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 步驟 3: 設置 Docker Buildx (現在它可以在容器內正常工作了)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 步驟 4: 建置 Docker 映像並保存
       - name: Build and save Docker Image
         id: build_image
         run: |
           IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${GITEA_SHA::7}
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
-          
           docker build -t $IMAGE_NAME .
           echo "Image built: $IMAGE_NAME"
-          
           docker save $IMAGE_NAME -o ragforq-app.tar
           echo "Image saved to ragforq-app.tar"
-          
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITEA_ENV
 
-      # 步驟 5: 部署到應用伺服器 (這部分不變)
       - name: Deploy to Application Server (.121)
         uses: appleboy/ssh-action@master
         with:
