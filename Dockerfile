@@ -6,6 +6,10 @@ FROM python:3.10-slim as builder
 RUN pip install pipx
 RUN pipx install poetry
 
+# 【新增】將 pipx 安裝的工具路徑添加到 PATH 環境變數
+# 這樣後續的 RUN 指令才能直接找到 'poetry' 命令
+ENV PATH="/root/.local/bin:${PATH}"
+
 # 將 poetry 的配置設為不在專案目錄內創建虛擬環境
 RUN poetry config virtualenvs.create false
 
@@ -15,10 +19,10 @@ WORKDIR /app
 # 複製專案依賴定義檔
 COPY poetry.lock pyproject.toml ./
 
-# 先按照 lock 文件安裝所有依賴，包括 faiss-cpu
+# 安裝專案依賴
 RUN poetry install --no-root --no-dev --no-interaction --no-ansi
 
-# 替換掉 faiss-cpu
+# 替換掉 faiss-cpu 為 GPU 版本
 RUN pip uninstall -y faiss-cpu
 RUN pip install faiss-gpu
 
@@ -40,6 +44,5 @@ RUN apt-get update && apt-get install -y supervisor
 # 將我們的 supervisor 設定檔複製到容器的正確位置
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# 容器啟動時執行的命令 
-# 啟動 supervisord，-n 參數表示在前台運行，這是 Docker 容器所需要的
+# 容器啟動時執行的命令
 CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
