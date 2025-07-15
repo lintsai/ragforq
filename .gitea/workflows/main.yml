@@ -9,37 +9,39 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     
-    # 我們仍然需要 container 塊，來定義鏡像和安裝 CLI
-    # 但是我們要刪除 options 這一行
     container:
       image: node:18-bullseye
-      # options: -v /var/run/docker.sock:/var/run/docker.sock  <-- 刪除這一行
 
     steps:
-      # 在臨時容器中安裝 Docker CLI 的步驟仍然是必需的
       - name: Install Docker CLI
         run: |
           apt-get update
           apt-get install -y docker.io
 
-      # 後續的所有步驟保持不變
       - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 這是我們修改的地方
       - name: Build and save Docker Image
         id: build_image
         run: |
-          IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${GITEA_SHA::7}
+          # 使用 'cut' 命令來截取 SHA，兼容所有 Shell
+          SHORT_SHA=$(echo $GITEA_SHA | cut -c1-7)
+          IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${SHORT_SHA}
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
+          
           docker build -t $IMAGE_NAME .
           echo "Image built: $IMAGE_NAME"
+          
           docker save $IMAGE_NAME -o ragforq-app.tar
           echo "Image saved to ragforq-app.tar"
+          
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITEA_ENV
 
+      # 後續的 Deploy to Application Server 步驟保持不變...
       - name: Deploy to Application Server (.121)
         uses: appleboy/ssh-action@master
         with:
