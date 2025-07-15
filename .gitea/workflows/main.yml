@@ -7,31 +7,55 @@ on:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # 這個標籤會讓 Gitea Runner 找一個帶有常用工具的環境來執行
     steps:
+      # 步驟 1: 檢出程式碼，沒有問題
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # 步驟 2: 設置 Docker Buildx，這是使用 Docker 的前提
+      # 這個 Action 會確保 Docker 環境被正確初始化
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3 # 更新到 v3 版本
 
-      - name: Build Docker Image on Ops Server (.122)
+      # 步驟 3: 登錄到 Docker (如果未來需要推送到私有倉庫，這一步很有用，現在可以先留著)
+      # 即使是本地建置，這一步有助於確保認證環境乾淨
+      # - name: Log in to Docker Hub
+      #   uses: docker/login-action@v3
+      #   with:
+      #     username: ${{ secrets.DOCKER_USERNAME }}
+      #     password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 步驟 4: 建置 Docker 映像並保存
+      - name: Build and save Docker Image
         id: build_image
         run: |
-          IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${GITHUB_SHA::7}
+          IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${GITEA_SHA::7}
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
+          
+          # 確保 docker 命令可以被 Runner 找到並執行
           docker build -t $IMAGE_NAME .
           echo "Image built: $IMAGE_NAME"
+          
           docker save $IMAGE_NAME -o ragforq-app.tar
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "Image saved to ragforq-app.tar"
+          
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITEA_ENV # Gitea 使用 GITEA_ENV 來跨步驟傳遞變數
 
+      # 步驟 5: 部署到應用伺服器
       - name: Deploy to Application Server (.121)
         uses: appleboy/ssh-action@master
         with:
           host: 192.168.100.121
           username: qsiadmin
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # 我們需要將打包好的映像傳輸過去
+          source: "ragforq-app.tar"
+          target: "/home/qsiadmin/" # 傳輸到遠程主機的 home 目錄
           script: |
+            # 進入遠程主機的 home 目錄
+            cd /home/qsiadmin/
+
             # 載入從 .122 傳輸過來的 Docker 映像
             docker load < ragforq-app.tar
 
@@ -47,7 +71,7 @@ jobs:
             mkdir -p ~/rag_data/documents
             mkdir -p ~/.cache/huggingface
 
-            # 運行新的容器，同時映射前端和後端端口
+            # 運行新的容器
             docker run -d \
               --gpus all \
               --name $CONTAINER_NAME \
@@ -56,7 +80,8 @@ jobs:
               -v ~/rag_data/db:/app/db \
               -v ~/rag_data/documents:/app/documents \
               -v ~/.cache/huggingface:/root/.cache/huggingface \
-              ${{ steps.build_image.outputs.IMAGE_NAME }}
+              ${{ env.IMAGE_NAME }} # 從環境變數中獲取 IMAGE_NAME
 
-            # 清理舊的、未使用的 Docker 映像
+            # 清理舊的、未使用的 Docker 映像和傳輸的 tar 包
             docker image prune -f
+            rm ragforq-app.tar
