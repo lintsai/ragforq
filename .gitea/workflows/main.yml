@@ -13,58 +13,62 @@ jobs:
       image: node:18-bullseye
 
     steps:
-      - name: Install Docker CLI
+      # 步驟 1: 安裝必要的客戶端工具
+      - name: Install SSH, SCP and Docker CLI
         run: |
           apt-get update
-          apt-get install -y docker.io
+          # 安裝 openssh-client (提供 ssh 和 scp), 和 docker.io
+          apt-get install -y openssh-client docker.io
 
+      # 步驟 2: 檢出程式碼
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # 步驟 3: 設置 Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 步驟 4: 建置 Docker 映像並保存
+      # 步驟 4: 建置 Docker 映像並保存 (這部分不變)
       - name: Build and save Docker Image
         id: build_image
         run: |
-          # 使用 'cut' 命令來截取 SHA
           SHORT_SHA=$(echo $GITEA_SHA | cut -c1-7)
           IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${SHORT_SHA}
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
-          
           docker build -t $IMAGE_NAME .
-          echo "Image built: $IMAGE_NAME"
-          
-          # 將映像保存到當前工作目錄的絕對路徑下
           docker save $IMAGE_NAME -o ${GITEA_WORKSPACE}/ragforq-app.tar
-          echo "Image saved to ${GITEA_WORKSPACE}/ragforq-app.tar"
-          
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITEA_ENV
           echo "IMAGE_PATH=${GITEA_WORKSPACE}/ragforq-app.tar" >> $GITEA_ENV
 
-      # 步驟 5: 部署到應用伺服器
+      # 步驟 5: 部署到應用伺服器 (全新方式)
       - name: Deploy to Application Server (.121)
-        uses: appleboy/ssh-action@master
-        with:
-          host: 192.168.100.121
-          username: qsiadmin
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          # 明確指定要傳輸的檔案的絕對路徑
-          source: ${{ env.IMAGE_PATH }}
-          target: "/home/qsiadmin/"
-          script: |
-            # 遠程執行的腳本
-            cd /home/qsiadmin/
-            
-            # 確保 tar 包存在
-            if [ ! -f "ragforq-app.tar" ]; then
-                echo "ERROR: ragforq-app.tar not found on remote server!"
-                exit 1
-            fi
+        env:
+          # 將 SSH 私鑰注入到環境變數中
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          # 1. 準備 SSH 環境
+          # 創建 .ssh 目錄
+          mkdir -p ~/.ssh
+          # 將私鑰內容寫入檔案
+          echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
+          # 設置正確的私鑰權限
+          chmod 600 ~/.ssh/id_rsa
+          # 禁用嚴格的主機密鑰檢查，避免 CI 流程中斷
+          echo "Host 192.168.100.121" > ~/.ssh/config
+          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
 
+          # 2. 使用 scp 傳輸 .tar 檔案
+          echo "Transferring Docker image to remote server..."
+          scp ~/.ssh/config qsiadmin@192.168.100.121:~/.ssh/config
+          scp ${IMAGE_PATH} qsiadmin@192.168.100.121:/home/qsiadmin/ragforq-app.tar
+          
+          # 3. 使用 ssh 執行遠程部署腳本
+          echo "Executing remote deployment script..."
+          ssh qsiadmin@192.168.100.121 << 'EOF'
+            # 現在我們已經在 .121 主機上了
+            
             echo "Loading Docker image from tarball..."
-            docker load < ragforq-app.tar
+            docker load < /home/qsiadmin/ragforq-app.tar
 
             CONTAINER_NAME=ragforq-production
             echo "Stopping and removing old container if it exists..."
@@ -78,7 +82,11 @@ jobs:
             mkdir -p ~/rag_data/documents
             mkdir -p ~/.cache/huggingface
 
-            echo "Running new container with image: ${{ env.IMAGE_NAME }}"
+            # 注意：這裡不能再用 ${{ env.IMAGE_NAME }}，因為它不在這個 shell 的環境中
+            # 我們需要從 docker images 命令中動態獲取剛剛載入的鏡像名
+            IMAGE_TO_RUN=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep 'ragforq-app')
+
+            echo "Running new container with image: ${IMAGE_TO_RUN}"
             docker run -d \
               --gpus all \
               --restart always \
@@ -88,9 +96,10 @@ jobs:
               -v ~/rag_data/db:/app/db \
               -v ~/rag_data/documents:/app/documents \
               -v ~/.cache/huggingface:/root/.cache/huggingface \
-              ${{ env.IMAGE_NAME }}
+              "${IMAGE_TO_RUN}"
 
             echo "Cleaning up..."
             docker image prune -f
-            rm ragforq-app.tar
+            rm /home/qsiadmin/ragforq-app.tar
             echo "Deployment successful!"
+          EOF
