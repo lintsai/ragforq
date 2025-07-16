@@ -1,92 +1,126 @@
+# 工作流名稱
 name: Build on Ops, Deploy to App Server
 
+# 觸發條件：當 main 分支有 push 操作時
 on:
   push:
     branches:
       - master
 
+# 工作定義
 jobs:
   build-and-deploy:
+    # 指定 Runner 標籤，Gitea 會尋找帶有此標籤的 Runner 來執行任務
     runs-on: ubuntu-latest
     
+    # 定義這個 job 在什麼樣的臨時容器中運行
     container:
+      # 使用基於 Debian Bullseye 的 Node.js 鏡像，它包含了一個乾淨的 Linux 環境
       image: node:18-bullseye
 
+    # Job 中的步驟
     steps:
-      # 步驟 1: 安裝必要的客戶端工具
+      # 步驟 1: 在臨時容器中安裝必要的客戶端工具
       - name: Install SSH, SCP and Docker CLI
         run: |
+          # 更新包列表
           apt-get update
-          # 安裝 openssh-client (提供 ssh 和 scp), 和 docker.io
+          # 安裝 OpenSSH 客戶端 (提供 ssh 和 scp) 和 Docker 客戶端
           apt-get install -y openssh-client docker.io
 
-      # 步驟 2: 檢出程式碼
+      # 步驟 2: 檢出（下載）您的倉庫程式碼到工作區
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 步驟 3: 設置 Docker Buildx
+      # 步驟 3: 設置 Docker Buildx，這是一個現代化的 Docker 建置工具
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 步驟 4: 建置 Docker 映像並保存 (這部分不變)
+      # 步驟 4: 建置 Docker 映像並打包成 .tar 文件
       - name: Build and save Docker Image
         id: build_image
         run: |
+          # 使用 'cut' 命令從 GITEA_SHA 獲取前7位作為短哈希，以兼容所有 shell
           SHORT_SHA=$(echo $GITEA_SHA | cut -c1-7)
+          # 組合出一個唯一的映像標籤，包含日期時間和短哈希
           IMAGE_TAG=$(date +%Y%m%d%H%M%S)-${SHORT_SHA}
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
+          
+          echo "Building Docker image: ${IMAGE_NAME}"
           docker build -t $IMAGE_NAME .
+          
+          # 將建置好的映像保存到工作區的根目錄下，使用絕對路徑以避免混淆
+          echo "Saving image to tarball..."
           docker save $IMAGE_NAME -o ${GITEA_WORKSPACE}/ragforq-app.tar
+          
+          # 將映像名和 tar 包的路徑存入環境變數，供後續步驟使用
           echo "IMAGE_NAME=$IMAGE_NAME" >> $GITEA_ENV
           echo "IMAGE_PATH=${GITEA_WORKSPACE}/ragforq-app.tar" >> $GITEA_ENV
 
-      # 步驟 5: 部署到應用伺服器 (全新方式)
+      # 步驟 5: 部署到應用伺服器 (.121)
       - name: Deploy to Application Server (.121)
+        # 將 Gitea Secret 中的私鑰注入到這個步驟的環境變數中
         env:
-          # 將 SSH 私鑰注入到環境變數中
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        # 執行 Shell 腳本
         run: |
-          # 1. 準備 SSH 環境
-          # 創建 .ssh 目錄
+          # --- SSH 環境準備 ---
+          echo "Setting up SSH environment..."
           mkdir -p ~/.ssh
-          # 將私鑰內容寫入檔案
           echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
-          # 設置正確的私鑰權限
           chmod 600 ~/.ssh/id_rsa
-          # 禁用嚴格的主機密鑰檢查，避免 CI 流程中斷
-          echo "Host 192.168.100.121" > ~/.ssh/config
-          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
-
-          # 2. 使用 scp 傳輸 .tar 檔案
-          echo "Transferring Docker image to remote server..."
-          scp ~/.ssh/config qsiadmin@192.168.100.121:~/.ssh/config
-          scp ${IMAGE_PATH} qsiadmin@192.168.100.121:/home/qsiadmin/ragforq-app.tar
+          # 創建 ssh config 來禁用嚴格主機檢查，避免 CI 流程因交互而中斷
+          cat <<EOT > ~/.ssh/config
+          Host 192.168.100.121
+            StrictHostKeyChecking no
+            User qsiadmin
+          EOT
           
-          # 3. 使用 ssh 執行遠程部署腳本
-          echo "Executing remote deployment script..."
-          ssh qsiadmin@192.168.100.121 << 'EOF'
-            # 現在我們已經在 .121 主機上了
+          # --- 檔案傳輸 ---
+          echo "Transferring Docker image to 192.168.100.121..."
+          scp ${IMAGE_PATH} 192.168.100.121:/home/qsiadmin/ragforq-app.tar
+          
+          # --- 遠程執行部署 ---
+          echo "Executing remote deployment script on 192.168.100.121..."
+          ssh 192.168.100.121 << 'EOF'
+            # --- 以下是在遠程主機 .121 上執行的命令 ---
             
-            echo "Loading Docker image from tarball..."
-            docker load < /home/qsiadmin/ragforq-app.tar
+            echo "-> Checking for tarball..."
+            if [ ! -f "/home/qsiadmin/ragforq-app.tar" ]; then
+                echo "-> ERROR: ragforq-app.tar not found on remote server!"
+                exit 1
+            fi
+
+            echo "-> Loading Docker image from tarball..."
+            if ! docker load < /home/qsiadmin/ragforq-app.tar; then
+                echo "-> ERROR: Failed to load Docker image. Check disk space on .121"
+                # 清理失敗的傳輸文件
+                rm /home/qsiadmin/ragforq-app.tar
+                exit 1
+            fi
 
             CONTAINER_NAME=ragforq-production
-            echo "Stopping and removing old container if it exists..."
+            echo "-> Stopping and removing old container if it exists..."
             if [ $(docker ps -q -f name=$CONTAINER_NAME) ]; then
               docker stop $CONTAINER_NAME
               docker rm $CONTAINER_NAME
             fi
 
-            echo "Preparing data directories..."
+            echo "-> Preparing data directories..."
             mkdir -p ~/rag_data/db
             mkdir -p ~/rag_data/documents
             mkdir -p ~/.cache/huggingface
 
-            # 注意：這裡不能再用 ${{ env.IMAGE_NAME }}，因為它不在這個 shell 的環境中
-            # 我們需要從 docker images 命令中動態獲取剛剛載入的鏡像名
-            IMAGE_TO_RUN=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep 'ragforq-app')
+            echo "-> Finding the name of the loaded image..."
+            IMAGE_TO_RUN=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep 'ragforq-app' | head -n 1)
 
-            echo "Running new container with image: ${IMAGE_TO_RUN}"
+            if [ -z "${IMAGE_TO_RUN}" ]; then
+                echo "-> ERROR: Could not find the loaded image 'ragforq-app' in Docker."
+                rm /home/qsiadmin/ragforq-app.tar
+                exit 1
+            fi
+
+            echo "-> Running new container with image: ${IMAGE_TO_RUN}"
             docker run -d \
               --gpus all \
               --restart always \
@@ -98,8 +132,9 @@ jobs:
               -v ~/.cache/huggingface:/root/.cache/huggingface \
               "${IMAGE_TO_RUN}"
 
-            echo "Cleaning up..."
+            echo "-> Cleaning up..."
             docker image prune -f
             rm /home/qsiadmin/ragforq-app.tar
-            echo "Deployment successful!"
+            
+            echo "-> ✅ Deployment successful!"
           EOF

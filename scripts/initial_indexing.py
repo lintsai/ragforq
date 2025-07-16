@@ -8,6 +8,8 @@ import sys
 import logging
 import time
 from pathlib import Path
+import gc
+import json
 
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +29,18 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+PROGRESS_FILE = "logs/indexing_progress.json"
+
+def save_progress(processed_files):
+    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(processed_files), f, ensure_ascii=False, indent=2)
+
+def load_progress():
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
 
 def main():
     try:
@@ -56,18 +70,27 @@ def main():
         logger.info("創建文件索引器...")
         indexer = DocumentIndexer()
         
-        # 開始索引文件 (使用並行處理)
-        total_files = len(files)
-        logger.info(f"開始並行索引 {total_files} 個文件...")
-        
-        # 使用索引器的並行處理功能
-        start_index_time = time.time()
-        success_count, fail_count = indexer.index_files(files, show_progress=True)
-        index_time = time.time() - start_index_time
-        
-        # 計算處理速度
-        files_per_second = total_files / index_time if index_time > 0 else 0
-        logger.info(f"索引完成，總耗時 {index_time:.2f} 秒，處理速度 {files_per_second:.2f} 文件/秒")
+        # --- 加入進度續跑 ---
+        processed_files = load_progress()
+        files_to_process = [f for f in files if f not in processed_files]
+        logger.info(f"剩餘待處理檔案數: {len(files_to_process)}")
+        # --- 分批處理 ---
+        batch_size = 1000
+        total_files = len(files_to_process)
+        for i in range(0, total_files, batch_size):
+            batch = files_to_process[i:i+batch_size]
+            logger.info(f"處理第 {i//batch_size+1} 批，共 {len(batch)} 個檔案")
+            try:
+                success_count, fail_count = indexer.index_files(batch, show_progress=True)
+                logger.info(f"本批完成: {success_count} 成功, {fail_count} 失敗")
+                processed_files.update(batch)
+                save_progress(processed_files)
+                gc.collect()
+            except Exception as batch_e:
+                logger.error(f"本批處理失敗: {str(batch_e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+        logger.info("全部批次處理完成")
         
         # 列出已索引的文件
         logger.info("正在獲取已索引文件列表...")
@@ -85,13 +108,13 @@ def main():
         else:
             logger.warning("沒有找到任何已索引的文件")
         
-        logger.info(f"初始化索引過程完成: {success_count} 個成功, {fail_count} 個失敗")
+        logger.info(f"初始化索引過程完成")
         
     except Exception as e:
         logger.error(f"初始化索引過程失敗: {str(e)}")
         import traceback
         logger.error(f"詳細錯誤信息: {traceback.format_exc()}")
-        sys.exit(1)
+        # sys.exit(1)  # 建議移除，讓外部監控自動重啟
 
 if __name__ == "__main__":
     main()
