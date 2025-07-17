@@ -48,11 +48,11 @@ MAX_TOKENS_CHUNK = int(os.getenv("MAX_TOKENS_CHUNK", "2000").split("#")[0].strip
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200").split("#")[0].strip())  # 提高重疊性確保上下文連貫
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "0").split("#")[0].strip())  # 0表示自動決定
 
-# 嵌入批處理大小 - 顯著增加以提高處理速度
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "24").split("#")[0].strip())
+# 嵌入批處理大小 - 降低以減少內存使用
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "8").split("#")[0].strip())
 
-# 文件索引批處理大小 - 增加以提高吞吐量
-FILE_BATCH_SIZE = int(os.getenv("FILE_BATCH_SIZE", "50").split("#")[0].strip())
+# 文件索引批處理大小 - 降低以提高穩定性
+FILE_BATCH_SIZE = int(os.getenv("FILE_BATCH_SIZE", "20").split("#")[0].strip())
 
 # 檢查Q槽是否可訪問
 def is_q_drive_accessible() -> bool:

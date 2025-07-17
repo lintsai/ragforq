@@ -785,25 +785,56 @@ class DocumentIndexer:
 
     def parallel_index_files(self, file_paths):
         """
-        並行索引多個文件
+        並行索引多個文件 - 優化版本，減少內存使用
         
         Args:
             file_paths: 文件路徑列表
         """
-        # 確定線程數量
-        max_workers = min(32, len(file_paths))
+        # 根據系統資源動態調整線程數
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            # 如果內存使用率超過70%，減少線程數
+            if memory.percent > 70:
+                max_workers = min(4, len(file_paths))
+            else:
+                max_workers = min(8, len(file_paths))  # 減少最大線程數
+        except ImportError:
+            max_workers = min(8, len(file_paths))
+        
         if max_workers <= 0:
             max_workers = 1
         
         logger.info(f"使用 {max_workers} 個工作線程進行並行索引處理")
         
-        # 使用線程池處理
+        # 使用線程池處理，但限制並發數
+        success_count = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 使用包裝方法確保每個線程COM初始化
-            results = list(executor.map(lambda file_path: self._process_file_with_com_init(file_path), file_paths))
+            # 分批提交任務，避免一次性提交太多任務
+            batch_size = max_workers * 2
+            for i in range(0, len(file_paths), batch_size):
+                batch = file_paths[i:i + batch_size]
+                
+                # 提交批次任務
+                future_to_file = {
+                    executor.submit(self._process_file_with_com_init, file_path): file_path 
+                    for file_path in batch
+                }
+                
+                # 處理完成的任務
+                for future in concurrent.futures.as_completed(future_to_file):
+                    file_path = future_to_file[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            success_count += 1
+                    except Exception as e:
+                        logger.error(f"處理文件 {file_path} 時出錯: {str(e)}")
+                
+                # 每批次後進行垃圾回收
+                import gc
+                gc.collect()
         
-        # 處理結果
-        success_count = sum(1 for result in results if result)
         logger.info(f"已完成 {len(file_paths)} 個文件的索引，其中 {success_count} 個成功")
 
     def index_batch(self, file_paths: List[str], force_reindex: bool = False) -> None:
