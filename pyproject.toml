@@ -8,7 +8,6 @@ packages = [{include = "ragforq"}]
 
 [tool.poetry.dependencies]
 python = ">=3.10, <3.11"  # 明確指定 Python 3.10.x 版本
-langchain = "^0.1.20"
 streamlit = "^1.35.0"
 fastapi = "^0.111.0"
 uvicorn = {extras = ["standard"], version = "^0.29.0"}
@@ -16,15 +15,13 @@ sentence-transformers = "^2.7.0"
 faiss-cpu = "^1.8.0"
 unstructured = {extras = ["pdf", "docx"], version = "^0.14.4"} # 增加了對 docx 的支持
 python-dotenv = "^1.0.1"
-langchain-community = "^0.0.38" # 您的倉庫中用到了，需要加上
 pypdf = "^4.2.0" # 您的倉庫中用到了，需要加上
 pymupdf = "^1.26.3"
 openpyxl = "^3.1.5"
 python-docx = "^1.2.0"
-
-[tool.poetry.group.dev.dependencies]
-# 這裡可以留空，或者未來添加開發工具
-# ipykernel = "^6.29.4"
+langchain = "^0.3.26"
+langchain-ollama = "^0.3.5"
+langchain-community = "^0.3.27"
 
 [build-system]
 requires = ["poetry-core"]
