@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import subprocess
+from fastapi.responses import FileResponse, PlainTextResponse
+from scripts.monitor_indexing import get_status_text, get_progress_text, get_monitor_text
 
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -204,10 +206,32 @@ async def get_indexing_log(request: Request, log_type: str = "indexing"):  # log
     await check_admin(request)
     log_file = f"logs/{log_type}.log" if log_type != "indexing" else "logs/indexing.log"
     if not os.path.exists(log_file):
-        return {"log": "(尚無日誌)"}
-    with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
-        lines = f.readlines()[-100:]
-    return {"log": "".join(lines)}
+        return PlainTextResponse("(尚無日誌)", status_code=404)
+    return FileResponse(log_file, filename=os.path.basename(log_file), media_type='text/plain')
+
+@app.get("/admin/monitor_status")
+async def monitor_status(request: Request):
+    await check_admin(request)
+    return PlainTextResponse(get_status_text())
+
+@app.get("/admin/monitor_progress")
+async def monitor_progress(request: Request):
+    await check_admin(request)
+    return PlainTextResponse(get_progress_text())
+
+@app.get("/admin/monitor_realtime")
+async def monitor_realtime(request: Request):
+    await check_admin(request)
+    return PlainTextResponse(get_monitor_text(once=True))
+
+@app.get("/admin/monitor_all")
+async def monitor_all(request: Request):
+    await check_admin(request)
+    return {
+        "status": get_status_text(),
+        "progress": get_progress_text(),
+        "realtime": get_monitor_text(once=True)
+    }
 
 @app.get("/health")
 async def health_check():

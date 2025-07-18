@@ -2,7 +2,6 @@
 """
 Streamlit前端界面 - 提供用戶友好的界面來查詢Q槽文件
 """
-
 import os
 import sys
 import logging
@@ -11,6 +10,7 @@ import time
 import requests
 from typing import List, Dict, Any, Optional
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 # 添加項目根目錄到路徑
 frontend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -194,282 +194,325 @@ def main():
         st.info("提示: 您可以通過運行 `python app.py` 啟動API服務")
         return
     
-    # 創建側邊欄
-    with st.sidebar:
-        st.markdown("### 關於")
-        st.write("Q槽文件智能助手可以幫助您快速查找和了解公司內部文檔中的信息。")
-        st.write("只需輸入您的問題，系統將自動搜索最相關的文檔並提供回答。")
-        
-        st.markdown("### 使用說明")
-        st.write("1. 在輸入框中輸入您的問題")
-        st.write("2. 點擊'提問'按鈕或按回車鍵")
-        st.write("3. 系統將搜索相關文檔並回答您的問題")
-        st.write("4. 相關文件會顯示在回答下方")
-        
-        st.markdown("### 示例問題")
-        example_questions = [
-            "公司的年假政策是什麼？",
-            "如何申請報銷差旅費？",
-            "產品退貨流程是怎樣的？",
-            "公司安全規定有哪些要點？"
-        ]
-        
-        for q in example_questions:
-            if st.button(q, key=f"example_{q}"):
-                handle_example_click(q)
-        
-        # 顯示系統狀態
-        status = st.session_state.api_status
-        if status:
-            st.success(f"API 服務狀態: {status.get('status', '未知')}")
-            st.info(f"Q槽訪問狀態: {'可訪問' if status.get('q_drive_accessible') else '不可訪問'}")
-            st.info(f"API 版本: {status.get('version', '未知')}")
-        
-        # 添加設置選項
-        st.header("設置")
-        include_sources = st.checkbox("包含相關文件", value=True)
-        max_sources = st.number_input("最大相關文件數", min_value=1, max_value=20, value=10)
-        show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關")
-        use_query_rewrite = st.checkbox("使用查詢優化", value=True, help="自動改寫查詢以獲得更準確的結果")
+    # --- 分頁設計 ---
+    tab_names = ["💬 智能問答", "🛠️ 管理員後台"]
+    tabs = st.tabs(tab_names)
 
-        # 添加清除歷史按鈕
-        if st.button("清除歷史記錄", key="clear_history"):
-            st.session_state.chat_history = []
-            st.session_state.current_answer = None
-            st.experimental_rerun()
+    # --- sidebar 保留管理入口 ---
+    if 'admin_tab' not in st.session_state:
+        st.session_state.admin_tab = 0
 
-    # --- 管理員後台區塊 ---
+    def goto_admin():
+        st.session_state.admin_tab = 1
+        st._rerun()
+
     with st.sidebar:
         st.markdown("---")
-        st.header("管理員後台")
-        admin_token = st.text_input("管理員Token", type="password", key="admin_token")
-        if admin_token:
-            st.success("已輸入Token，可操作管理功能")
-            colA, colB, colC = st.columns(3)
-            with colA:
-                if st.button("初始訓練", key="admin_init"):
-                    st.session_state.admin_action = "init"
-            with colB:
-                if st.button("增量訓練", key="admin_incr"):
-                    st.session_state.admin_action = "incr"
-            with colC:
-                if st.button("重建索引", key="admin_reindex"):
-                    st.session_state.admin_action = "reindex"
-            # log 顯示區
-            if "admin_action" in st.session_state:
-                import requests
-                import time
-                action_map = {"init": ("/admin/start_initial_indexing", "indexing"), "incr": ("/admin/start_incremental_indexing", "indexing"), "reindex": ("/admin/start_reindex", "reindex")}
-                api, log_type = action_map[st.session_state.admin_action]
-                try:
-                    resp = requests.post(f"{API_URL}{api}", headers={"admin_token": admin_token})
-                    st.info(f"已觸發: {api} (PID: {resp.json().get('pid')})")
-                except Exception as e:
-                    st.error(f"API觸發失敗: {e}")
-                # log 輪詢顯示
-                log_placeholder = st.empty()
-                for _ in range(60):
-                    try:
-                        log_resp = requests.get(f"{API_URL}/admin/get_indexing_log", params={"log_type": log_type}, headers={"admin_token": admin_token}, timeout=5)
-                        log_text = log_resp.json().get("log", "(無日誌)")
-                        log_placeholder.code(log_text, language="bash")
-                    except Exception as e:
-                        log_placeholder.error(f"讀取日誌失敗: {e}")
-                    time.sleep(2)
-                del st.session_state.admin_action
+        if st.button("前往管理員後台", key="goto_admin"):
+            goto_admin()
 
-    # 主要問答界面
-    st.header("💬 智能問答")
-    
-    # 問題輸入
-    question = st.text_input(
-        "請輸入您的問題：", 
-        value=st.session_state.current_question,
-        help="您可以輸入問題或特殊命令，如 '列出文件' 來查看已索引的文件",
-        key="question_input",
-        on_change=handle_text_input_change
-    )
-    
-    # 提問按鈕
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        search_clicked = st.button("提問", key="search_button")
-        if search_clicked and question:
-            # 如果點擊提問按鈕，直接設置搜索標誌
-            st.session_state.current_question = question
-            st.session_state.run_search = True
-    
-    # 檢查是否需要執行搜索
-    run_search = 'run_search' in st.session_state and st.session_state.run_search
-    
-    # 處理特殊命令或問題
-    if question and run_search:
-        # 重置搜索標誌
-        st.session_state.run_search = False
+    # --- 問答主頁 ---
+    with tabs[0]:
+        if st.session_state.get('admin_tab', 0) == 1:
+            st.session_state.admin_tab = 0  # 自動切回主頁時重置
+        # 創建側邊欄
+        with st.sidebar:
+            st.markdown("### 關於")
+            st.write("Q槽文件智能助手可以幫助您快速查找和了解公司內部文檔中的信息。")
+            st.write("只需輸入您的問題，系統將自動搜索最相關的文檔並提供回答。")
+            
+            st.markdown("### 使用說明")
+            st.write("1. 在輸入框中輸入您的問題")
+            st.write("2. 點擊'提問'按鈕或按回車鍵")
+            st.write("3. 系統將搜索相關文檔並回答您的問題")
+            st.write("4. 相關文件會顯示在回答下方")
+            
+            st.markdown("### 示例問題")
+            example_questions = [
+                "公司的年假政策是什麼？",
+                "如何申請報銷差旅費？",
+                "產品退貨流程是怎樣的？",
+                "公司安全規定有哪些要點？"
+            ]
+            
+            for q in example_questions:
+                if st.button(q, key=f"example_{q}"):
+                    handle_example_click(q)
+            
+            # 顯示系統狀態
+            status = st.session_state.api_status
+            if status:
+                st.success(f"API 服務狀態: {status.get('status', '未知')}")
+                st.info(f"Q槽訪問狀態: {'可訪問' if status.get('q_drive_accessible') else '不可訪問'}")
+                st.info(f"API 版本: {status.get('version', '未知')}")
+            
+            # 添加設置選項
+            st.header("設置")
+            include_sources = st.checkbox("包含相關文件", value=True)
+            max_sources = st.number_input("最大相關文件數", min_value=1, max_value=20, value=10)
+            show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關")
+            use_query_rewrite = st.checkbox("使用查詢優化", value=True, help="自動改寫查詢以獲得更準確的結果")
+
+            # 添加清除歷史按鈕
+            if st.button("清除歷史記錄", key="clear_history"):
+                st.session_state.chat_history = []
+                st.session_state.current_answer = None
+                st._rerun()
+
+        # 主要問答界面
+        st.header("💬 智能問答")
         
-        # 清除之前的回答，創建新的容器顯示結果
-        st.session_state.current_answer = None
-        answer_container = st.container()
+        # 問題輸入
+        question = st.text_input(
+            "請輸入您的問題：", 
+            value=st.session_state.current_question,
+            help="您可以輸入問題或特殊命令，如 '列出文件' 來查看已索引的文件",
+            key="question_input",
+            on_change=handle_text_input_change
+        )
         
-        with answer_container:
-            # 處理特殊命令
-            if any(keyword in question.strip().lower() for keyword in ["列出文件", "列出已索引文件", "文件列表", "show files", "list files", "索引文件", "已索引", "列出", "所有文件"]):
-                with st.spinner("正在獲取文件列表..."):
-                    indexed_files = get_indexed_files()
-                    if indexed_files:
-                        # 直接顯示結果，不使用標準回答格式
-                        st.markdown(f"## 已索引文件清單（共 {len(indexed_files)} 個文件）")
-                        
-                        # 按文件名對文件進行分組和去重
-                        unique_files = {}
-                        for file in indexed_files:
-                            file_name = os.path.basename(file["file_path"])
-                            if file_name not in unique_files:
-                                unique_files[file_name] = file
-                        
-                        # 創建表格顯示文件基本信息
-                        file_data = []
-                        for idx, (_, file) in enumerate(unique_files.items(), 1):
-                            file_name = os.path.basename(file["file_path"])
-                            file_data.append({
-                                "序號": idx,
-                                "文件名": file_name,
-                                "文件類型": file["file_type"],
-                                "大小 (KB)": f"{file['file_size']/1024:.2f}",
-                                "最後修改時間": file["last_modified"]
-                            })
-                        
-                        # 顯示表格
-                        st.table(file_data)
-                        
-                        # 下方顯示完整路徑信息，按文件名排序
-                        st.markdown("### 文件詳細路徑")
-                        for idx, (_, file) in enumerate(unique_files.items(), 1):
-                            file_name = os.path.basename(file["file_path"])
-                            # 將 Q_DRIVE_PATH 換成 DISPLAY_DRIVE_NAME
-                            display_path = file["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
-                            st.write(f"{idx}. **{file_name}** - {display_path}")
-                        
-                        # 保存到歷史記錄
-                        file_list_text = f"已找到 {len(indexed_files)} 個文件"
-                        update_chat_history(question, file_list_text)
-                    else:
-                        st.warning("未找到已索引文件。請確保已運行索引程序或檢查日誌以獲取詳細信息。")
-                        update_chat_history(question, "未找到已索引文件")
-            # 處理正常問題
-            else:
-                try:
-                    with st.spinner("正在思考..."):
-                        # 使用重試機制獲取答案
-                        result = retry_with_backoff(
-                            lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance)
-                        )
-                        
-                        # 如果啟用了查詢優化，顯示優化後的查詢
-                        if use_query_rewrite and "rewritten_query" in result:
-                            rewritten_query = result["rewritten_query"]
-                            if rewritten_query != question:
-                                with st.expander("查看優化後的查詢"):
-                                    st.markdown("**原始查詢:**")
-                                    st.info(question)
-                                    st.markdown("**優化後查詢:**")
-                                    st.success(rewritten_query)
-                        
-                        # 直接顯示答案，不添加標題
-                        answer_text = result.get("answer", "無法獲取答案")
-                        st.write(answer_text)
-                        
-                        # 保存當前回答
-                        st.session_state.current_answer = {
-                            "answer": answer_text,
-                            "sources": result.get("sources", [])
-                        }
-                        
-                        # 顯示來源文檔
-                        if include_sources and result.get("sources"):
-                            # 使用集合去重
+        # 提問按鈕
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            search_clicked = st.button("提問", key="search_button")
+            if search_clicked and question:
+                # 如果點擊提問按鈕，直接設置搜索標誌
+                st.session_state.current_question = question
+                st.session_state.run_search = True
+        
+        # 檢查是否需要執行搜索
+        run_search = 'run_search' in st.session_state and st.session_state.run_search
+        
+        # 處理特殊命令或問題
+        if question and run_search:
+            # 重置搜索標誌
+            st.session_state.run_search = False
+            
+            # 清除之前的回答，創建新的容器顯示結果
+            st.session_state.current_answer = None
+            answer_container = st.container()
+            
+            with answer_container:
+                # 處理特殊命令
+                if any(keyword in question.strip().lower() for keyword in ["列出文件", "列出已索引文件", "文件列表", "show files", "list files", "索引文件", "已索引", "列出", "所有文件"]):
+                    with st.spinner("正在獲取文件列表..."):
+                        indexed_files = get_indexed_files()
+                        if indexed_files:
+                            # 直接顯示結果，不使用標準回答格式
+                            st.markdown(f"## 已索引文件清單（共 {len(indexed_files)} 個文件）")
+                            
+                            # 按文件名對文件進行分組和去重
                             unique_files = {}
-                            for source in result["sources"]:
-                                file_path = source["file_path"]
-                                if file_path not in unique_files:
-                                    unique_files[file_path] = source
+                            for file in indexed_files:
+                                file_name = os.path.basename(file["file_path"])
+                                if file_name not in unique_files:
+                                    unique_files[file_name] = file
                             
-                            # 顯示相關文件標題
-                            st.markdown("## 相關文件")
-                            
-                            # 創建相關文件表格（去重後）
-                            source_data = []
-                            for idx, (_, source) in enumerate(unique_files.items(), 1):
-                                # 安全地處理分數格式化
-                                if 'score' in source and source['score'] is not None:
-                                    score_display = f"{source['score']:.2f}"
-                                else:
-                                    score_display = "未知"
-                                    
-                                source_data.append({
+                            # 創建表格顯示文件基本信息
+                            file_data = []
+                            for idx, (_, file) in enumerate(unique_files.items(), 1):
+                                file_name = os.path.basename(file["file_path"])
+                                file_data.append({
                                     "序號": idx,
-                                    "文件名": source['file_name'],
-                                    "位置": source.get('location_info', '無位置信息'),
-                                    "相關度": score_display
+                                    "文件名": file_name,
+                                    "文件類型": file["file_type"],
+                                    "大小 (KB)": f"{file['file_size']/1024:.2f}",
+                                    "最後修改時間": file["last_modified"]
                                 })
                             
-                            # 顯示相關文件表格
-                            st.table(source_data)
+                            # 顯示表格
+                            st.table(file_data)
                             
-                            # 顯示詳細相關文件信息
-                            st.markdown("### 文件詳細信息")
-                            for idx, (_, source) in enumerate(unique_files.items(), 1):
-                                with st.expander(f"**文件 {idx}: {source['file_name']}**", expanded=False):
-                                    display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
-                                    st.write(f"文件路徑: {display_path}")
-                                    
-                                    if source.get("location_info"):
-                                        st.write(f"位置信息: {source['location_info']}")
-                                    
-                                    # 安全地處理分數顯示
-                                    if source.get("score") is not None:
-                                        st.write(f"相關度分數: {source['score']:.4f}")
+                            # 下方顯示完整路徑信息，按文件名排序
+                            st.markdown("### 文件詳細路徑")
+                            for idx, (_, file) in enumerate(unique_files.items(), 1):
+                                file_name = os.path.basename(file["file_path"])
+                                # 將 Q_DRIVE_PATH 換成 DISPLAY_DRIVE_NAME
+                                display_path = file["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
+                                st.write(f"{idx}. **{file_name}** - {display_path}")
+                            
+                            # 保存到歷史記錄
+                            file_list_text = f"已找到 {len(indexed_files)} 個文件"
+                            update_chat_history(question, file_list_text)
+                        else:
+                            st.warning("未找到已索引文件。請確保已運行索引程序或檢查日誌以獲取詳細信息。")
+                            update_chat_history(question, "未找到已索引文件")
+                # 處理正常問題
+                else:
+                    try:
+                        with st.spinner("正在思考..."):
+                            # 使用重試機制獲取答案
+                            result = retry_with_backoff(
+                                lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance)
+                            )
+                            
+                            # 如果啟用了查詢優化，顯示優化後的查詢
+                            if use_query_rewrite and "rewritten_query" in result:
+                                rewritten_query = result["rewritten_query"]
+                                if rewritten_query != question:
+                                    with st.expander("查看優化後的查詢"):
+                                        st.markdown("**原始查詢:**")
+                                        st.info(question)
+                                        st.markdown("**優化後查詢:**")
+                                        st.success(rewritten_query)
+                            
+                            # 直接顯示答案，不添加標題
+                            answer_text = result.get("answer", "無法獲取答案")
+                            st.write(answer_text)
+                            
+                            # 保存當前回答
+                            st.session_state.current_answer = {
+                                "answer": answer_text,
+                                "sources": result.get("sources", [])
+                            }
+                            
+                            # 顯示來源文檔
+                            if include_sources and result.get("sources"):
+                                # 使用集合去重
+                                unique_files = {}
+                                for source in result["sources"]:
+                                    file_path = source["file_path"]
+                                    if file_path not in unique_files:
+                                        unique_files[file_path] = source
+                                
+                                # 顯示相關文件標題
+                                st.markdown("## 相關文件")
+                                
+                                # 創建相關文件表格（去重後）
+                                source_data = []
+                                for idx, (_, source) in enumerate(unique_files.items(), 1):
+                                    # 安全地處理分數格式化
+                                    if 'score' in source and source['score'] is not None:
+                                        score_display = f"{source['score']:.2f}"
                                     else:
-                                        st.write("相關度分數: 未知")
-                                    
-                                    # 顯示相關性理由（如果有）
-                                    if show_relevance and source.get("relevance_reason"):
-                                        st.markdown("**相關性理由:**")
-                                        st.success(source["relevance_reason"])
-                                    
-                                    if source.get("content"):
-                                        st.markdown("**相關內容:**")
-                                        st.info(source["content"])
-                        
-                        # 更新聊天歷史
-                        update_chat_history(question, answer_text, result.get("sources", []))
-                except Exception as e:
-                    st.error(f"處理問題時發生錯誤: {str(e)}")
-                    if st.button("重試"):
-                        st.experimental_rerun()
-    
-    # 顯示聊天歷史
-    if st.session_state.chat_history:
-        st.markdown("---")
-        st.markdown("## 歷史問答")
+                                        score_display = "未知"
+                                        
+                                    source_data.append({
+                                        "序號": idx,
+                                        "文件名": source['file_name'],
+                                        "位置": source.get('location_info', '無位置信息'),
+                                        "相關度": score_display
+                                    })
+                                
+                                # 顯示相關文件表格
+                                st.table(source_data)
+                                
+                                # 顯示詳細相關文件信息
+                                st.markdown("### 文件詳細信息")
+                                for idx, (_, source) in enumerate(unique_files.items(), 1):
+                                    with st.expander(f"**文件 {idx}: {source['file_name']}**", expanded=False):
+                                        display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
+                                        st.write(f"文件路徑: {display_path}")
+                                        
+                                        if source.get("location_info"):
+                                            st.write(f"位置信息: {source['location_info']}")
+                                        
+                                        # 安全地處理分數顯示
+                                        if source.get("score") is not None:
+                                            st.write(f"相關度分數: {source['score']:.4f}")
+                                        else:
+                                            st.write("相關度分數: 未知")
+                                        
+                                        # 顯示相關性理由（如果有）
+                                        if show_relevance and source.get("relevance_reason"):
+                                            st.markdown("**相關性理由:**")
+                                            st.success(source["relevance_reason"])
+                                        
+                                        if source.get("content"):
+                                            st.markdown("**相關內容:**")
+                                            st.info(source["content"])
+                            
+                            # 更新聊天歷史
+                            update_chat_history(question, answer_text, result.get("sources", []))
+                    except Exception as e:
+                        st.error(f"處理問題時發生錯誤: {str(e)}")
+                        if st.button("重試"):
+                            st._rerun()
         
-        for i, chat in enumerate(reversed(st.session_state.chat_history)):
-            with st.expander(f"問題: {chat['question']} ({chat['timestamp']})", expanded=False):
-                st.markdown("**回答:**")
-                st.write(chat["answer"])
-                
-                # 顯示來源（如果有）
-                if "sources" in chat and chat["sources"]:
-                    st.markdown("**相關文件:**")
-                    for idx, source in enumerate(chat["sources"], 1):
-                        display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
-                        st.write(f"{idx}. {source['file_name']} - {display_path}")
-    
-    # 頁腳
-    st.markdown(
-        '<div class="footer">© 2025 公司名稱 - Q槽文件智能助手 v1.0.0</div>',
-        unsafe_allow_html=True
-    )
+        # 顯示聊天歷史
+        if st.session_state.chat_history:
+            st.markdown("---")
+            st.markdown("## 歷史問答")
+            
+            for i, chat in enumerate(reversed(st.session_state.chat_history)):
+                with st.expander(f"問題: {chat['question']} ({chat['timestamp']})", expanded=False):
+                    st.markdown("**回答:**")
+                    st.write(chat["answer"])
+                    
+                    # 顯示來源（如果有）
+                    if "sources" in chat and chat["sources"]:
+                        st.markdown("**相關文件:**")
+                        for idx, source in enumerate(chat["sources"], 1):
+                            display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
+                            st.write(f"{idx}. {source['file_name']} - {display_path}")
+        
+        # 頁腳
+        st.markdown(
+            '<div class="footer">© 2025 公司名稱 - Q槽文件智能助手 v1.0.0</div>',
+            unsafe_allow_html=True
+        )
+
+    # --- 管理員後台分頁 ---
+    with tabs[1]:
+        st.session_state.admin_tab = 1
+        st.header("管理員後台")
+        admin_token = st.text_input("管理員Token", type="password", key="admin_token_tab")
+        if admin_token:
+            st.success("已輸入Token，可操作管理功能")
+            # 美化按鈕排版
+            btn_cols = st.columns([2,1,1,1,2])
+            with btn_cols[1]:
+                if st.button("初始訓練", key="admin_init"):
+                    try:
+                        resp = requests.post(f"{API_URL}/admin/start_initial_indexing", headers={"admin_token": admin_token})
+                        st.info(f"已觸發: /admin/start_initial_indexing (PID: {resp.json().get('pid')})")
+                    except Exception as e:
+                        st.error(f"API觸發失敗: {e}")
+            with btn_cols[2]:
+                if st.button("增量訓練", key="admin_incr"):
+                    try:
+                        resp = requests.post(f"{API_URL}/admin/start_incremental_indexing", headers={"admin_token": admin_token})
+                        st.info(f"已觸發: /admin/start_incremental_indexing (PID: {resp.json().get('pid')})")
+                    except Exception as e:
+                        st.error(f"API觸發失敗: {e}")
+            with btn_cols[3]:
+                if st.button("重建索引", key="admin_reindex"):
+                    try:
+                        resp = requests.post(f"{API_URL}/admin/start_reindex", headers={"admin_token": admin_token})
+                        st.info(f"已觸發: /admin/start_reindex (PID: {resp.json().get('pid')})")
+                    except Exception as e:
+                        st.error(f"API觸發失敗: {e}")
+            # log下載鈕
+            with st.expander("Log 下載"):
+                try:
+                    log_resp = requests.get(f"{API_URL}/admin/get_indexing_log", params={"log_type": "indexing"}, headers={"admin_token": admin_token}, timeout=10)
+                    if log_resp.status_code == 200:
+                        st.download_button("下載索引Log", data=log_resp.content, file_name="indexing.log", mime="text/plain")
+                    else:
+                        st.warning("尚無日誌可下載")
+                except Exception as e:
+                    st.error(f"下載Log失敗: {e}")
+            # --- 監控當前狀態 ---
+            st.markdown("---")
+            st.subheader("監控當前狀態")
+            st_autorefresh(interval=60000, key="monitor_all_autorefresh")
+            try:
+                resp = requests.get(f"{API_URL}/admin/monitor_all", headers={"admin_token": admin_token}, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    status_text = data.get('status', '')
+                    progress_text = data.get('progress', '')
+                    realtime_text = data.get('realtime', '')
+                else:
+                    status_text = progress_text = realtime_text = "(監控API回應異常)"
+            except Exception as e:
+                status_text = progress_text = realtime_text = f"監控API錯誤: {e}"
+            st.markdown("#### 狀態 Console")
+            st.code(status_text, language="bash")
+            st.markdown("#### 進度 Console")
+            st.code(progress_text, language="bash")
+            st.markdown("#### 實時監控 Console")
+            st.code(realtime_text, language="bash")
 
 
 if __name__ == "__main__":

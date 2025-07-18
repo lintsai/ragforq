@@ -265,6 +265,51 @@ def reset_progress():
     except Exception as e:
         print(f"❌ 重置進度失敗: {str(e)}")
 
+def get_status_text():
+    from io import StringIO
+    import sys as _sys
+    buf = StringIO()
+    _stdout = _sys.stdout
+    _sys.stdout = buf
+    try:
+        display_status()
+    finally:
+        _sys.stdout = _stdout
+    return buf.getvalue()
+
+def get_progress_text():
+    from io import StringIO
+    import sys as _sys
+    buf = StringIO()
+    _stdout = _sys.stdout
+    _sys.stdout = buf
+    try:
+        show_detailed_progress()
+    finally:
+        _sys.stdout = _stdout
+    return buf.getvalue()
+
+def get_monitor_text(interval=5, once=False):
+    from io import StringIO
+    import sys as _sys
+    import time as _time
+    buf = StringIO()
+    _stdout = _sys.stdout
+    _sys.stdout = buf
+    try:
+        if once:
+            display_status()
+        else:
+            try:
+                while True:
+                    display_status()
+                    _time.sleep(interval)
+            except KeyboardInterrupt:
+                print("\n\n監控已停止")
+    finally:
+        _sys.stdout = _stdout
+    return buf.getvalue()
+
 def main():
     parser = argparse.ArgumentParser(description="索引監控工具")
     parser.add_argument('--monitor', '-m', action='store_true', help='啟動實時監控')
