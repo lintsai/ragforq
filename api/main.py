@@ -2,15 +2,16 @@ import os
 import sys
 import logging
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, Body, Query
+from fastapi import FastAPI, HTTPException, Body, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+import subprocess
 
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import APP_HOST, APP_PORT, is_q_drive_accessible
+from config.config import APP_HOST, APP_PORT, is_q_drive_accessible, ADMIN_TOKEN
 from rag_engine.rag_engine import RAGEngine
 from indexer.document_indexer import DocumentIndexer
 from langchain_core.documents import Document
@@ -77,6 +78,13 @@ def get_rag_engine():
         document_indexer = DocumentIndexer()
         rag_engine = RAGEngine(document_indexer)
     return rag_engine
+
+# 管理API - 權限驗證
+
+async def check_admin(request: Request):
+    token = request.headers.get("admin_token")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="未授權: token錯誤")
 
 # 定義API路由
 @app.get("/", response_model=StatusResponse)
@@ -172,6 +180,34 @@ async def ask_question(request: QuestionRequest):
     except Exception as e:
         logger.error(f"處理問題時出錯: {str(e)}")
         raise HTTPException(status_code=500, detail=f"處理問題時出錯: {str(e)}")
+
+@app.post("/admin/start_initial_indexing")
+async def start_initial_indexing(request: Request):
+    await check_admin(request)
+    proc = subprocess.Popen([sys.executable, "scripts/initial_indexing.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return {"status": "started", "pid": proc.pid}
+
+@app.post("/admin/start_incremental_indexing")
+async def start_incremental_indexing(request: Request):
+    await check_admin(request)
+    proc = subprocess.Popen([sys.executable, "scripts/monitor_changes.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return {"status": "started", "pid": proc.pid}
+
+@app.post("/admin/start_reindex")
+async def start_reindex(request: Request):
+    await check_admin(request)
+    proc = subprocess.Popen([sys.executable, "scripts/reindex.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return {"status": "started", "pid": proc.pid}
+
+@app.get("/admin/get_indexing_log")
+async def get_indexing_log(request: Request, log_type: str = "indexing"):  # log_type: indexing/reindex
+    await check_admin(request)
+    log_file = f"logs/{log_type}.log" if log_type != "indexing" else "logs/indexing.log"
+    if not os.path.exists(log_file):
+        return {"log": "(尚無日誌)"}
+    with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+        lines = f.readlines()[-100:]
+    return {"log": "".join(lines)}
 
 @app.get("/health")
 async def health_check():

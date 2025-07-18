@@ -69,3 +69,4 @@ def get_supported_file_extensions() -> List[str]:
     return SUPPORTED_FILE_TYPES
 
 DISPLAY_DRIVE_NAME = os.getenv("DISPLAY_DRIVE_NAME", "Q槽")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "ragadmin123")

@@ -238,6 +238,46 @@ def main():
             st.session_state.current_answer = None
             st.experimental_rerun()
 
+    # --- 管理員後台區塊 ---
+    with st.sidebar:
+        st.markdown("---")
+        st.header("管理員後台")
+        admin_token = st.text_input("管理員Token", type="password", key="admin_token")
+        if admin_token:
+            st.success("已輸入Token，可操作管理功能")
+            colA, colB, colC = st.columns(3)
+            with colA:
+                if st.button("初始訓練", key="admin_init"):
+                    st.session_state.admin_action = "init"
+            with colB:
+                if st.button("增量訓練", key="admin_incr"):
+                    st.session_state.admin_action = "incr"
+            with colC:
+                if st.button("重建索引", key="admin_reindex"):
+                    st.session_state.admin_action = "reindex"
+            # log 顯示區
+            if "admin_action" in st.session_state:
+                import requests
+                import time
+                action_map = {"init": ("/admin/start_initial_indexing", "indexing"), "incr": ("/admin/start_incremental_indexing", "indexing"), "reindex": ("/admin/start_reindex", "reindex")}
+                api, log_type = action_map[st.session_state.admin_action]
+                try:
+                    resp = requests.post(f"{API_URL}{api}", headers={"admin_token": admin_token})
+                    st.info(f"已觸發: {api} (PID: {resp.json().get('pid')})")
+                except Exception as e:
+                    st.error(f"API觸發失敗: {e}")
+                # log 輪詢顯示
+                log_placeholder = st.empty()
+                for _ in range(60):
+                    try:
+                        log_resp = requests.get(f"{API_URL}/admin/get_indexing_log", params={"log_type": log_type}, headers={"admin_token": admin_token}, timeout=5)
+                        log_text = log_resp.json().get("log", "(無日誌)")
+                        log_placeholder.code(log_text, language="bash")
+                    except Exception as e:
+                        log_placeholder.error(f"讀取日誌失敗: {e}")
+                    time.sleep(2)
+                del st.session_state.admin_action
+
     # 主要問答界面
     st.header("💬 智能問答")
     
