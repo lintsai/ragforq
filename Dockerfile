@@ -1,16 +1,11 @@
 # --- Stage 1: Build Stage ---
-# 使用 Python 3.10-slim 作為建置環境
 FROM python:3.10-slim as builder
 
 # 安裝 poetry
-RUN pip install pipx
-RUN pipx install poetry
+RUN pip install poetry
 
-# 將 pipx 安裝的工具路徑添加到 PATH 環境變數
-ENV PATH="/root/.local/bin:${PATH}"
-
-# 將 poetry 的配置設為不在專案目錄內創建虛擬環境
-RUN poetry config virtualenvs.create false
+# 將 poetry 的配置設為在專案目錄內創建虛擬環境，方便我們複製
+RUN poetry config virtualenvs.in-project true
 
 # 設置工作目錄
 WORKDIR /app
@@ -18,29 +13,30 @@ WORKDIR /app
 # 複製專案依賴定義檔
 COPY poetry.lock pyproject.toml ./
 
-# 【修改】安裝專案依賴，使用新的 --without dev 參數
-RUN poetry install --no-root --without dev --no-interaction --no-ansi
+# 安裝專案依賴，這會在 /app/.venv 目錄下創建一個完整的虛擬環境
+RUN poetry install --without dev --no-interaction --no-ansi
 
 # 替換掉 faiss-cpu 為 GPU 版本
-RUN pip uninstall -y faiss-cpu
-RUN pip install faiss-gpu
+# 我們在 poetry 創建的虛擬環境中執行 pip
+RUN . .venv/bin/activate && pip uninstall -y faiss-cpu
+RUN . .venv/bin/activate && pip install faiss-gpu
+
 
 # --- Stage 2: Final Stage ---
 FROM python:3.10-slim
 
+# 將 poetry 也安裝到最終鏡像中，以便使用 poetry run
+RUN pip install poetry
+
+# 設置工作目錄
 WORKDIR /app
 
-# 從 builder 階段複製已安裝好的依賴
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+# 從 builder 階段複製整個專案，包括完整的虛擬環境 .venv
+COPY --from=builder /app /app
 
-# 【新增】同時也複製 builder 階段安裝的 CLI 工具
-COPY --from=builder /root/.local/bin /usr/local/bin
-
-# 複製應用程式碼
+# 複製應用程式碼 (如果 builder 中沒有的話)
+# 實際上，上面一步已經包含了所有代碼，但為了保險再複製一次
 COPY . .
-
-# 【新增優化】為最終的運行環境也設置好 PATH
-ENV PATH="/usr/local/bin:${PATH}"
 
 # 安裝 supervisor
 RUN apt-get update && apt-get install -y supervisor
