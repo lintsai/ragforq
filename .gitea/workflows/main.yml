@@ -124,12 +124,12 @@ jobs:
             docker run -d \
               --gpus all \
               --restart always \
+              --network=host \
               --name $CONTAINER_NAME \
-              -p 8501:8501 \
-              -p 8000:8000 \
               -v ~/rag_data/db:/app/db \
               -v ~/rag_data/documents:/app/documents \
               -v ~/.cache/huggingface:/root/.cache/huggingface \
+              -v /mnt/winshare/MIC:/mnt/winshare/MIC \
               "${IMAGE_TO_RUN}"
 
             echo "-> Cleaning up..."
