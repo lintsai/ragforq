@@ -18,6 +18,7 @@ unstructured = {extras = ["pdf", "docx"], version = "^0.14.4"} # 增加了對 do
 python-dotenv = "^1.0.1"
 langchain-community = "^0.0.38" # 您的倉庫中用到了，需要加上
 pypdf = "^4.2.0" # 您的倉庫中用到了，需要加上
+pymupdf = "^1.26.3"
 
 [tool.poetry.group.dev.dependencies]
 # 這裡可以留空，或者未來添加開發工具
