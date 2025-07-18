@@ -36,6 +36,9 @@ COPY --from=builder /app /app
 # 複製應用程式碼
 COPY . .
 
+# 複製 production 環境變數為預設 .env
+COPY .env.production .env
+
 # 安裝 supervisor
 RUN apt-get update && apt-get install -y supervisor
 
