@@ -26,7 +26,6 @@ RUN pip uninstall -y faiss-cpu
 RUN pip install faiss-gpu
 
 # --- Stage 2: Final Stage ---
-# 同樣使用 Python 3.10-slim 作為最終的運行環境
 FROM python:3.10-slim
 
 WORKDIR /app
@@ -34,8 +33,14 @@ WORKDIR /app
 # 從 builder 階段複製已安裝好的依賴
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
+# 【新增】同時也複製 builder 階段安裝的 CLI 工具
+COPY --from=builder /root/.local/bin /usr/local/bin
+
 # 複製應用程式碼
 COPY . .
+
+# 【新增優化】為最終的運行環境也設置好 PATH
+ENV PATH="/usr/local/bin:${PATH}"
 
 # 安裝 supervisor
 RUN apt-get update && apt-get install -y supervisor
