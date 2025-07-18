@@ -13,8 +13,8 @@ WORKDIR /app
 # 複製專案依賴定義檔
 COPY poetry.lock pyproject.toml ./
 
-# 【修改】安裝專案依賴，增加 --no-root 參數
-RUN poetry install --no-root --without dev --no-interaction --no-ansi
+# 安裝專案依賴
+RUN poetry install --no-root --no-interaction --no-ansi
 
 # 替換掉 faiss-cpu 為 GPU 版本
 RUN . .venv/bin/activate && pip uninstall -y faiss-cpu
