@@ -63,8 +63,10 @@ class RAGEngine:
         
         # 定義問答提示模板
         self.qa_prompt = PromptTemplate(
-            template="""你是一個專業的文檔問答助手。請根據以下上下文信息回答用戶的問題。
-如果上下文中沒有足夠的信息，請直接回答「我無法從提供的文檔中回答這個問題」。
+            template="""你是一個專業的文檔問答助手。你的首要任務是識別用戶問題的語言，並嚴格使用同一種語言進行回答。例如，如果問題是泰文，你的回答也必須是泰文。
+
+請根據以下上下文信息回答用戶的問題。
+如果上下文中沒有足夠的信息，請不要自行回答，而是直接輸出且僅輸出特殊標記：[NO_DOCUMENT_ANSWER]。
 請不要編造任何信息，不要添加上下文中沒有的內容。
 
 上下文信息:
@@ -78,12 +80,23 @@ class RAGEngine:
 回答應該直接切入重點，簡潔清晰。如果是列出要點，直接列出即可。
 如果需要列出文件，請使用數字編號，但不要添加模板化的介紹文字。
 
-你的回答 (請直接回答，不要添加任何額外格式):""",
+你的回答 (請直接回答，不要添加任何額外格式，並確保使用用戶問題的語言):""",
             input_variables=["context", "question"]
         )
         
         # 創建問答鏈
         self.qa_chain = self.qa_prompt | self.llm | StrOutputParser()
+
+        # --- 新增：通用知識問答模板與鏈 ---
+        self.general_knowledge_prompt = PromptTemplate(
+            template="""你是一個聰明且樂於助人的 AI 助手。請根據你的通用知識和邏輯推理能力，盡力回答以下問題。
+
+用戶問題: {question}
+
+你的回答 (請確保使用用戶問題的語言):""",
+            input_variables=["question"]
+        )
+        self.general_knowledge_chain = self.general_knowledge_prompt | self.llm | StrOutputParser()
     
     def retrieve_documents(self, query: str, top_k: int = 5) -> List[Document]:
         """
@@ -172,20 +185,19 @@ class RAGEngine:
         try:
             # 定義查詢改寫提示
             rewrite_prompt = PromptTemplate(
-                template="""你是一個專業的查詢優化專家，請將以下用戶問題改寫為更適合從文檔檢索系統中獲取準確答案的格式。
+                template="""你是一個專業的查詢優化專家。請識別以下用戶問題的語言，並使用同一種語言將其改寫為更適合從文檔檢索系統中獲取準確答案的格式。
 
 原始問題: {question}
 
 改寫時請遵循以下原則:
-1. 提取核心關鍵詞和實體
-2. 移除不必要的修飾詞和語氣詞
-3. 使用更精確的術語和同義詞擴展
-4. 保持問題的本質不變
-5. 確保改寫後的問題更有針對性、更明確
-6. 不要添加原問題中不存在的信息
-7. 如果原問題已經很清晰，可以保持不變
+1. 提取核心關鍵詞和實體。
+2. 移除不必要的修飾詞和語氣詞。
+3. 保持問題的本質不變。
+4. 確保改寫後的問題更有針對性、更明確。
+5. 不要添加原問題中不存在的信息。
+6. 如果原問題已經很清晰，可以保持不變。
 
-改寫後的問題 (直接輸出改寫結果，不要添加任何前綴或說明):""",
+改寫後的問題 (直接輸出改寫結果，不要添加任何前綴或說明，並確保使用原始語言):""",
                 input_variables=["question"]
             )
             
@@ -230,21 +242,33 @@ class RAGEngine:
         return answer, sources, docs, rewritten_query
     
     def answer_question(self, question: str) -> str:
-        """回答問題"""
+        """回答問題，如果文檔中沒有答案，則使用通用知識並附帶免責聲明"""
         try:
-            # 檢索相關文檔
+            # 第一步：嘗試從文檔中獲取答案
             docs = self.retrieve_documents(question)
-            
-            # 格式化上下文
             context = self.format_context(docs)
             
-            # 生成答案
-            response = self.qa_chain.invoke({
+            rag_response = self.qa_chain.invoke({
                 "context": context,
                 "question": question
             })
             
-            return response
+            # 第二步：檢查是否觸發了Fallback
+            if "[NO_DOCUMENT_ANSWER]" in rag_response:
+                logger.info(f"在文檔中未找到答案，問題 '{question}' 將切換到通用知識模式...")
+                
+                # 觸發通用知識鏈
+                general_response = self.general_knowledge_chain.invoke({
+                    "question": question
+                })
+                
+                # 構建帶有免責聲明的最終回答
+                disclaimer = "（在您提供的文檔中未找到直接答案，以下是基於通用知識的回答。請注意，此內容僅為模型基於公開資訊的推論，並非肯定答案。）"
+                final_answer = f"{disclaimer}\n\n---\n\n{general_response}"
+                return final_answer
+            else:
+                # 如果RAG成功，直接返回結果
+                return rag_response
             
         except Exception as e:
             logger.error(f"回答問題時出錯: {str(e)}")
@@ -293,7 +317,7 @@ class RAGEngine:
             
             # 建立相關性理由提示模板
             relevance_prompt = PromptTemplate(
-                template="""你是一個文檔相關性評估專家。請簡明扼要地解釋為什麼下面的文檔內容與用戶查詢相關。
+                template="""你是一個文檔相關性評估專家。請識別用戶查詢的語言，並使用同一種語言簡明扼要地解釋為什麼下面的文檔內容與用戶查詢相關。
                 
 用戶查詢: {question}
 
@@ -302,8 +326,8 @@ class RAGEngine:
 {doc_content}
 -----------------
 
-請提供1-2句簡短的解釋，說明這個文檔為什麼與查詢相關。不要重複查詢內容，直接解釋關聯性：
-(直接輸出解釋，不要添加任何前綴如"這個文檔相關因為"等)""",
+請提供1-2句簡短的解釋，說明這個文檔為什麼與查詢相關。不要重複查詢內容，直接解釋關聯性。
+(直接輸出解釋，不要添加任何前綴如"這個文檔相關因為"等，並確保使用用戶查詢的語言):""",
                 input_variables=["question", "doc_content"]
             )
             
