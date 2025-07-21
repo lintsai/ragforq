@@ -208,8 +208,6 @@ def main():
 
     with st.sidebar:
         st.markdown("---")
-        if st.button("前往管理員後台", key="goto_admin"):
-            goto_admin()
 
     # --- 問答主頁 ---
     with tabs[0]:
@@ -459,23 +457,33 @@ def main():
         admin_token = st.text_input("管理員Token", type="password", key="admin_token_tab")
         if admin_token:
             st.success("已輸入Token，可操作管理功能")
-            # 美化按鈕排版
-            btn_cols = st.columns([2,1,1,1,2])
-            with btn_cols[1]:
+            # 美化按鈕排版 - 三個等寬按鈕
+            st.markdown("""
+            <style>
+            .stButton > button {
+                width: 100%;
+                height: 3rem;
+                font-size: 1.1rem;
+                font-weight: bold;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+            btn_cols = st.columns(3)
+            with btn_cols[0]:
                 if st.button("初始訓練", key="admin_init"):
                     try:
                         resp = requests.post(f"{API_URL}/admin/start_initial_indexing", headers={"admin_token": admin_token})
                         st.info(f"已觸發: /admin/start_initial_indexing (PID: {resp.json().get('pid')})")
                     except Exception as e:
                         st.error(f"API觸發失敗: {e}")
-            with btn_cols[2]:
+            with btn_cols[1]:
                 if st.button("增量訓練", key="admin_incr"):
                     try:
                         resp = requests.post(f"{API_URL}/admin/start_incremental_indexing", headers={"admin_token": admin_token})
                         st.info(f"已觸發: /admin/start_incremental_indexing (PID: {resp.json().get('pid')})")
                     except Exception as e:
                         st.error(f"API觸發失敗: {e}")
-            with btn_cols[3]:
+            with btn_cols[2]:
                 if st.button("重建索引", key="admin_reindex"):
                     try:
                         resp = requests.post(f"{API_URL}/admin/start_reindex", headers={"admin_token": admin_token})

@@ -47,6 +47,40 @@
                        └─────────────────┘    └─────────────────┘
 ```
 
+## ⚙️ 環境配置 (Environment Configuration)
+
+本專案針對不同的運行環境（本地開發、生產部署）使用不同的配置。請根據您的使用場景，將 `.env.example` 複製為對應的 `.env` 檔案，並根據以下指引進行設定。
+
+### 1. 本地開發 (Local Development)
+
+此配置適用於在個人電腦（尤其是沒有 GPU、記憶體有限的機器）上進行開發和功能測試。目標是低資源消耗和快速響應。
+
+- **對應檔案:** `.env` (本地直接啟動) 和 `.env.local` (本地 Docker 測試)
+- **核心配置:**
+    - **LLM 模型:** `phi3:mini` (輕量級、高效的語言模型)
+    - **Embedding 模型:** `nomic-embed-text` (輕量級、高效能的向量模型)
+- **首次設定指令:**
+    在開始開發前，請務必在您的 Ollama 中下載所需模型：
+    ```bash
+    ollama pull phi3:mini
+    ollama pull nomic-embed-text
+    ```
+
+### 2. 生產環境 (Production)
+
+此配置專為部署在擁有強大硬體（如多張 NVIDIA 4090 顯示卡）的伺服器上而設計。目標是最大化問答的準確度和效能。
+
+- **對應檔案:** `.env.production`
+- **核心配置:**
+    - **LLM 模型:** `qwen2:72b` (頂級效能的 720 億參數語言模型)
+    - **Embedding 模型:** `mxbai-embed-large` (頂級效能的向量模型)
+- **首次設定指令:**
+    在部署伺服器上，請確保已下載所需模型：
+    ```bash
+    ollama pull qwen2:72b
+    ollama pull mxbai-embed-large
+    ```
+
 ## 🚀 安裝部署
 
 ### 系統需求
