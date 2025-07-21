@@ -186,20 +186,23 @@ async def ask_question(request: QuestionRequest):
 @app.post("/admin/start_initial_indexing")
 async def start_initial_indexing(request: Request):
     await check_admin(request)
-    proc = subprocess.Popen([sys.executable, "scripts/initial_indexing.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return {"status": "started", "pid": proc.pid}
+    # 使用 supervisorctl 來啟動任務，使其獨立於API進程
+    subprocess.run(["supervisorctl", "start", "initial_indexing"])
+    return {"status": "Supervisor has been instructed to start the initial indexing."}
 
 @app.post("/admin/start_incremental_indexing")
 async def start_incremental_indexing(request: Request):
     await check_admin(request)
-    proc = subprocess.Popen([sys.executable, "scripts/monitor_changes.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return {"status": "started", "pid": proc.pid}
+    # 使用 supervisorctl 來啟動任務，使其獨立於API進程
+    subprocess.run(["supervisorctl", "start", "monitor_changes"])
+    return {"status": "Supervisor has been instructed to start the incremental indexing (monitor_changes)."}
 
 @app.post("/admin/start_reindex")
 async def start_reindex(request: Request):
     await check_admin(request)
-    proc = subprocess.Popen([sys.executable, "scripts/reindex.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return {"status": "started", "pid": proc.pid}
+    # 使用 supervisorctl 來啟動任務，使其獨立於API進程
+    subprocess.run(["supervisorctl", "start", "reindex"])
+    return {"status": "Supervisor has been instructed to start the reindex."}
 
 @app.get("/admin/get_indexing_log")
 async def get_indexing_log(request: Request, log_type: str = "indexing"):  # log_type: indexing/reindex
