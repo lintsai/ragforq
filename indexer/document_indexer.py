@@ -20,7 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.file_parsers import FileParser
 from config.config import (
     VECTOR_DB_PATH, MAX_TOKENS_CHUNK, OLLAMA_HOST, 
-    OLLAMA_EMBEDDING_MODEL, EMBEDDING_BATCH_SIZE, CHUNK_OVERLAP, 
+    EMBEDDING_BATCH_SIZE, CHUNK_OVERLAP, 
     FILE_BATCH_SIZE
 )
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -61,12 +61,13 @@ QA_TEMPLATE = """你是一個專業的文檔問答助手，你的任務是根據
 class DocumentIndexer:
     """文件索引器，負責解析文件內容並建立向量索引"""
     
-    def __init__(self, vector_db_path: str = VECTOR_DB_PATH):
+    def __init__(self, vector_db_path: str = VECTOR_DB_PATH, ollama_embedding_model: str = "llama3.2"):
         """
         初始化文件索引器
         
         Args:
             vector_db_path: 向量數據庫保存路徑
+            ollama_embedding_model: Ollama 嵌入模型名稱，必須指定
         """
         self.vector_db_path = vector_db_path
         self.documents = []
@@ -76,11 +77,12 @@ class DocumentIndexer:
             length_function=len,
         )
         
-        # 僅保留 Ollama 嵌入模型
+        # 使用傳入的嵌入模型
         self.embeddings = OllamaEmbeddings(
             base_url=OLLAMA_HOST,
-            model=OLLAMA_EMBEDDING_MODEL
+            model=ollama_embedding_model
         )
+        self.ollama_embedding_model = ollama_embedding_model
             
         # 確保向量數據庫目錄存在
         os.makedirs(self.vector_db_path, exist_ok=True)

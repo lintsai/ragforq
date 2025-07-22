@@ -7,7 +7,7 @@ from pathlib import Path
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import SIMILARITY_TOP_K, OLLAMA_HOST, OLLAMA_MODEL
+from config.config import SIMILARITY_TOP_K, OLLAMA_HOST
 from indexer.document_indexer import DocumentIndexer
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
@@ -43,23 +43,25 @@ SOURCE_TEMPLATE = """以下是與問題相關的文檔來源列表：
 class RAGEngine:
     """RAG查詢引擎，負責檢索文件並回答問題"""
     
-    def __init__(self, document_indexer: DocumentIndexer):
+    def __init__(self, document_indexer: DocumentIndexer, ollama_model: str = "llama3.2"):
         """
         初始化RAG引擎
         
         Args:
             document_indexer: 文檔索引器實例
+            ollama_model: Ollama 語言模型名稱，必須指定
         """
         self.document_indexer = document_indexer
         self.vector_store = document_indexer.get_vector_store()
         
-        # 僅保留 Ollama
+        # 使用傳入的語言模型
         self.llm = OllamaLLM(
-            model=OLLAMA_MODEL,
+            model=ollama_model,
             base_url=OLLAMA_HOST,
             temperature=0.7
         )
-        logger.info(f"使用本地 Ollama 模型: {OLLAMA_MODEL}")
+        self.ollama_model = ollama_model
+        logger.info(f"使用本地 Ollama 模型: {ollama_model}")
         
         # 定義問答提示模板
         self.qa_prompt = PromptTemplate(

@@ -25,6 +25,8 @@
 - 📊 **實時監控**：自動監控文件變更並更新索引
 - 🔧 **故障恢復**：完善的索引恢復和診斷機制
 - ⚡ **高性能**：並行處理和批量索引優化
+- 🎛️ **模型管理**：支持多模型管理，可動態選擇不同的語言模型和嵌入模型組合
+- 📚 **向量數據庫管理**：每個模型組合獨立的向量數據庫，支持並行訓練和使用
 
 ## 🏗️ 系統架構
 
@@ -266,9 +268,183 @@
 | 文本       | .txt, .md | 純文本文件        |
 | CSV        | .csv      | 結構化數據        |
 
+## 🎛️ 向量模型管理系統
+
+### 系統概述
+
+本系統實現了完整的向量模型管理功能，支援動態選擇 Ollama 模型進行訓練和問答。每個模型組合（語言模型 + 嵌入模型）都有獨立的向量數據庫，支持並行訓練和使用。
+
+### 主要功能
+
+#### 1. 管理介面功能
+
+- **動態模型選擇**：OLLAMA_MODEL 和 OLLAMA_EMBEDDING_MODEL 下拉選單，自動從 Ollama API 獲取可用模型
+- **向量資料結構**：新的資料夾命名格式 `ollama@{OLLAMA_MODEL}@{OLLAMA_EMBEDDING_MODEL}`
+  - 例如：`ollama@phi3_mini@nomic-embed-text_latest`
+  - 每個模型組合都有獨立的向量資料夾，支援未來擴充不同種訓練方式
+- **版本管理**：支援同一模型組合的多個版本
+  - 版本格式：`ollama@{model}@{embedding}#{version}`
+  - 例如：`ollama@phi3_mini@nomic-embed-text_latest#20250722`
+  - 系統自動選擇最新可用版本進行問答
+- **模型狀態檢查**：自動檢查向量資料是否已存在，顯示訓練狀態（訓練中/可用）
+- **訓練鎖定機制**：使用 `.lock` 檔案防止同時進行多個訓練任務，訓練完成後自動移除鎖定檔案
+- **模型信息記錄**：每個模型資料夾包含 `.model` 檔案記錄模型信息，包含版本和創建時間等元數據
+
+#### 2. 問答介面功能
+
+- **動態模型選擇**：問答介面新增模型下拉選單，支援「使用默認配置」選項
+- **模型可用性檢查**：自動過濾掉訓練中的模型（有 `.lock` 檔案），只顯示有數據且可用的模型
+
+#### 3. API 端點
+
+```
+GET /api/ollama/models          # 獲取 Ollama 可用模型列表
+GET /api/vector-models          # 獲取向量數據庫模型列表
+GET /api/usable-models          # 獲取可用於問答的模型列表
+POST /admin/training/initial    # 開始初始訓練
+POST /admin/training/incremental # 開始增量訓練
+POST /admin/training/reindex    # 開始重新索引
+POST /ask                       # 支援 selected_model 參數
+```
+
+### 向量數據結構
+
+```
+vector_db/
+├── ollama@phi3_mini@nomic-embed-text_latest/
+│   ├── .model                 # 模型信息檔案
+│   ├── .lock                  # 訓練鎖定檔案（訓練時存在）
+│   ├── index.faiss           # FAISS 索引檔案
+│   ├── index.pkl             # 索引元數據
+│   ├── indexed_files.pkl     # 已索引文件記錄
+│   └── indexing_progress.json # 索引進度
+├── ollama@phi3_mini@nomic-embed-text_latest#20250722/
+│   ├── .model                 # 帶版本信息的模型檔案
+│   ├── index.faiss           # 版本化的向量索引
+│   ├── index.pkl             # 版本化的索引元數據
+│   ├── indexed_files.pkl     # 版本化的已索引文件記錄
+│   └── indexing_progress.json # 版本化的索引進度
+└── ollama@qwen2_72b@mxbai-embed-large/
+    ├── .model
+    ├── index.faiss
+    ├── index.pkl
+    ├── indexed_files.pkl
+    └── indexing_progress.json
+```
+
+#### .model 檔案格式
+
+```json
+{
+  "OLLAMA_MODEL": "phi3:mini",
+  "OLLAMA_EMBEDDING_MODEL": "nomic-embed-text:latest",
+  "version": "20250722",
+  "created_at": "2025-01-22T10:30:00"
+}
+```
+
+**版本管理說明**：
+- 基礎格式：`ollama@{model}@{embedding}`
+- 版本格式：`ollama@{model}@{embedding}#{version}`
+- 版本標識通常使用日期格式（如 `20250722`）
+- 同一模型組合可以有多個版本，系統會自動選擇最新可用版本
+
+### 使用流程
+
+#### 1. 模型訓練流程
+
+1. **進入管理員後台**：輸入管理員 Token，進入「模型訓練管理」區域
+2. **選擇模型**：從 OLLAMA_MODEL 和 OLLAMA_EMBEDDING_MODEL 下拉選單選擇模型
+3. **檢查狀態**：系統自動顯示當前模型組合的狀態
+   - 新模型組合：顯示「將創建新的向量資料夾」
+   - 已有數據：顯示「可進行增量訓練或重新索引」
+   - 訓練中：顯示「正在訓練中」並禁用操作按鈕
+4. **開始訓練**：點擊相應的訓練按鈕（初始訓練/增量訓練/重新索引）
+
+#### 2. 問答使用流程
+
+1. **選擇模型**：在問答介面選擇要使用的模型（選單會自動過濾掉訓練中的模型）
+2. **進行問答**：輸入問題並提交，系統使用選定模型的向量數據和對應的語言模型進行問答
+
+### 命令行工具
+
+#### 使用模型訓練管理器
+
+```bash
+# 初始訓練
+python scripts/model_training_manager.py initial \
+  --ollama-model phi3:mini \
+  --ollama-embedding-model nomic-embed-text
+
+# 增量訓練
+python scripts/model_training_manager.py incremental \
+  --ollama-model phi3:mini \
+  --ollama-embedding-model nomic-embed-text
+
+# 重新索引
+python scripts/model_training_manager.py reindex \
+  --ollama-model phi3:mini \
+  --ollama-embedding-model nomic-embed-text
+```
+
+#### 添加模型信息到現有資料夾
+
+```bash
+python scripts/add_model_files.py
+```
+
+### 技術實現
+
+#### 核心組件
+
+- **VectorDBManager**：管理向量數據庫文件夾、處理模型信息和狀態、提供鎖定機制
+- **ModelTrainingManager**：管理模型訓練流程，支援初始訓練、增量訓練、重新索引，集成向量數據庫管理器
+- **OllamaUtils**：與 Ollama API 交互，獲取可用模型列表，檢查模型可用性
+
+### 配置變更
+
+#### 移除的配置項
+- `OLLAMA_MODEL`：不再使用固定配置，改為動態選擇
+- `OLLAMA_EMBEDDING_MODEL`：不再使用固定配置，改為動態選擇
+
+#### 保留的配置項
+- `OLLAMA_HOST`：Ollama 服務地址
+- `VECTOR_DB_PATH`：向量數據庫基礎路徑
+- 其他文件處理和系統配置
+
+### 注意事項
+
+1. **模型可用性**：確保選擇的 Ollama 模型已經下載並可用
+2. **資源管理**：不同模型組合會佔用不同的磁盤空間
+3. **訓練時間**：初始訓練可能需要較長時間，請耐心等待
+4. **並發限制**：同一模型組合不能同時進行多個訓練任務
+5. **備份建議**：重要的向量數據建議定期備份
+
+### 故障排除
+
+#### 常見問題
+
+1. **模型列表為空**：檢查 Ollama 服務是否正在運行，確認 OLLAMA_HOST 配置正確
+2. **訓練失敗**：檢查磁盤空間是否充足，確認 Q 槽是否可訪問，查看日誌文件獲取詳細錯誤信息
+3. **問答無響應**：確認選擇的模型有向量數據，檢查模型是否正在訓練中，驗證 Ollama 模型是否可用
+
+#### 日誌查看
+- 索引日誌：`logs/indexing.log`
+- 應用日誌：`logs/app.log`
+- 管理員後台提供日誌下載功能
+
+### 未來擴展
+
+系統設計支援未來的擴展需求：
+
+1. **多種訓練方式**：資料夾結構支援不同的訓練方式前綴
+2. **模型版本管理**：可以擴展支援模型版本控制
+3. **分散式訓練**：可以擴展支援多機器訓練
+4. **自動化調度**：可以添加定時訓練和自動更新功能
+
 ## 🔧 索引管理
 
-### 初始化索引
+### 初始化索引（舊版）
 
 ```bash
 # 全新建立索引

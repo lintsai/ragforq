@@ -117,18 +117,23 @@ def retry_with_backoff(func, max_retries=3, initial_delay=1):
             time.sleep(delay)
             delay *= 2
 
-def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True) -> Dict[str, Any]:
+def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None) -> Dict[str, Any]:
     """獲取問題答案"""
     try:
+        payload = {
+            "question": question,
+            "include_sources": include_sources,
+            "max_sources": max_sources,
+            "use_query_rewrite": use_query_rewrite,
+            "show_relevance": show_relevance
+        }
+        
+        if selected_model:
+            payload["selected_model"] = selected_model
+        
         response = requests.post(
             f"{API_BASE_URL}/ask",
-            json={
-                "question": question,
-                "include_sources": include_sources,
-                "max_sources": max_sources,
-                "use_query_rewrite": use_query_rewrite,
-                "show_relevance": show_relevance
-            }
+            json=payload
         )
         response.raise_for_status()
         return response.json()
@@ -260,6 +265,36 @@ def main():
         # 主要問答界面
         st.header("💬 智能問答")
         
+        # 模型選擇 - 每次都重新獲取最新的模型列表
+        try:
+            usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
+            if usable_models_response.status_code == 200:
+                usable_models = usable_models_response.json()
+                if usable_models:
+                    model_options = ["使用默認配置"] + [model['display_name'] for model in usable_models]
+                    model_folder_map = {model['display_name']: model['folder_name'] for model in usable_models}
+                    
+                    selected_display_name = st.selectbox(
+                        "選擇問答模型：",
+                        options=model_options,
+                        help="選擇用於問答的向量模型，每次都會重新讀取最新的模型列表。資料夾內有.lock檔為訓練中不可使用。"
+                    )
+                    
+                    # 獲取實際的文件夾名稱
+                    if selected_display_name == "使用默認配置":
+                        selected_model_folder = None
+                    else:
+                        selected_model_folder = model_folder_map.get(selected_display_name)
+                else:
+                    st.warning("沒有可用的向量模型，請先進行模型訓練")
+                    selected_model_folder = None
+            else:
+                st.error("無法獲取可用模型列表")
+                selected_model_folder = None
+        except Exception as e:
+            st.error(f"獲取模型列表時出錯: {str(e)}")
+            selected_model_folder = None
+        
         # 問題輸入
         question = st.text_input(
             "請輸入您的問題：", 
@@ -341,7 +376,7 @@ def main():
                         with st.spinner("正在思考..."):
                             # 使用重試機制獲取答案
                             result = retry_with_backoff(
-                                lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance)
+                                lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance, selected_model_folder)
                             )
                             
                             # 如果啟用了查詢優化，顯示優化後的查詢
@@ -453,45 +488,183 @@ def main():
     # --- 管理員後台分頁 ---
     with tabs[1]:
         st.session_state.admin_tab = 1
-        st.header("管理員後台")
+        st.header("🛠️ 管理員後台")
         admin_token = st.text_input("管理員Token", type="password", key="admin_token_tab")
         if admin_token:
             st.success("已輸入Token，可操作管理功能")
-            # 美化按鈕排版 - 三個等寬按鈕
-            st.markdown("""
-            <style>
-            .stButton > button {
-                width: 100%;
-                height: 3rem;
-                font-size: 1.1rem;
-                font-weight: bold;
-            }
-            </style>
-            """, unsafe_allow_html=True)
-            btn_cols = st.columns(3)
-            with btn_cols[0]:
-                if st.button("初始訓練", key="admin_init"):
+            
+            # 模型訓練管理
+            st.subheader("📚 模型訓練管理")
+            
+            # 獲取 Ollama 模型列表
+            try:
+                ollama_models_resp = requests.get(f"{API_URL}/api/ollama/models", timeout=10)
+                if ollama_models_resp.status_code == 200:
+                    ollama_models = ollama_models_resp.json()
+                    model_names = [model['name'] for model in ollama_models]
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        selected_ollama_model = st.selectbox(
+                            "選擇 Ollama 語言模型：",
+                            options=model_names,
+                            help="用於問答的語言模型"
+                        )
+                    with col2:
+                        selected_embedding_model = st.selectbox(
+                            "選擇 Ollama 嵌入模型：",
+                            options=model_names,
+                            help="用於文本嵌入的模型"
+                        )
+                    
+                    # 檢查向量數據是否存在
                     try:
-                        resp = requests.post(f"{API_URL}/admin/start_initial_indexing", headers={"admin_token": admin_token})
-                        st.info(f"已觸發: /admin/start_initial_indexing (PID: {resp.json().get('pid')})")
-                    except Exception as e:
-                        st.error(f"API觸發失敗: {e}")
-            with btn_cols[1]:
-                if st.button("增量訓練", key="admin_incr"):
-                    try:
-                        resp = requests.post(f"{API_URL}/admin/start_incremental_indexing", headers={"admin_token": admin_token})
-                        st.info(f"已觸發: /admin/start_incremental_indexing (PID: {resp.json().get('pid')})")
-                    except Exception as e:
-                        st.error(f"API觸發失敗: {e}")
-            with btn_cols[2]:
-                if st.button("重建索引", key="admin_reindex"):
-                    try:
-                        resp = requests.post(f"{API_URL}/admin/start_reindex", headers={"admin_token": admin_token})
-                        st.info(f"已觸發: /admin/start_reindex (PID: {resp.json().get('pid')})")
-                    except Exception as e:
-                        st.error(f"API觸發失敗: {e}")
+                        vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=5)
+                        if vector_models_resp.status_code == 200:
+                            vector_models = vector_models_resp.json()
+                            
+                            # 查找匹配的模型
+                            current_model_exists = False
+                            current_model_has_data = False
+                            current_model_training = False
+                            
+                            for model in vector_models:
+                                if (model['model_info'] and 
+                                    model['model_info'].get('OLLAMA_MODEL') == selected_ollama_model and
+                                    model['model_info'].get('OLLAMA_EMBEDDING_MODEL') == selected_embedding_model):
+                                    current_model_exists = True
+                                    current_model_has_data = model['has_data']
+                                    current_model_training = model['is_training']
+                                    break
+                            
+                            # 顯示狀態
+                            st.markdown("### 當前選擇模型狀態")
+                            if current_model_exists:
+                                if current_model_training:
+                                    st.warning("⏳ 該模型組合正在訓練中（資料夾內有.lock檔）...")
+                                elif current_model_has_data:
+                                    st.success("✅ 該模型組合已有向量數據，可進行增量訓練或重新索引")
+                                else:
+                                    st.info("📝 該模型組合已創建但無數據，可進行初始訓練")
+                            else:
+                                st.info("🆕 該模型組合尚未創建，將創建新的向量資料夾進行初始訓練")
+                    except:
+                        pass
+                    
+                    # 訓練按鈕
+                    st.markdown("### 訓練操作")
+                    btn_cols = st.columns(3)
+                    
+                    with btn_cols[0]:
+                        if st.button("🚀 初始訓練", key="new_initial_training", 
+                                   disabled=current_model_training if 'current_model_training' in locals() else False):
+                            try:
+                                resp = requests.post(
+                                    f"{API_URL}/admin/training/initial",
+                                    headers={"admin_token": admin_token},
+                                    json={
+                                        "ollama_model": selected_ollama_model,
+                                        "ollama_embedding_model": selected_embedding_model
+                                    }
+                                )
+                                if resp.status_code == 200:
+                                    st.success(f"✅ 初始訓練已開始 (PID: {resp.json().get('pid')})")
+                                else:
+                                    st.error(f"❌ 訓練失敗: {resp.text}")
+                            except Exception as e:
+                                st.error(f"❌ API調用失敗: {e}")
+                    
+                    with btn_cols[1]:
+                        if st.button("📈 增量訓練", key="new_incremental_training",
+                                   disabled=current_model_training if 'current_model_training' in locals() else False):
+                            try:
+                                resp = requests.post(
+                                    f"{API_URL}/admin/training/incremental",
+                                    headers={"admin_token": admin_token},
+                                    json={
+                                        "ollama_model": selected_ollama_model,
+                                        "ollama_embedding_model": selected_embedding_model
+                                    }
+                                )
+                                if resp.status_code == 200:
+                                    st.success(f"✅ 增量訓練已開始 (PID: {resp.json().get('pid')})")
+                                else:
+                                    st.error(f"❌ 訓練失敗: {resp.text}")
+                            except Exception as e:
+                                st.error(f"❌ API調用失敗: {e}")
+                    
+                    with btn_cols[2]:
+                        if st.button("🔄 重新索引", key="new_reindex_training",
+                                   disabled=current_model_training if 'current_model_training' in locals() else False):
+                            try:
+                                resp = requests.post(
+                                    f"{API_URL}/admin/training/reindex",
+                                    headers={"admin_token": admin_token},
+                                    json={
+                                        "ollama_model": selected_ollama_model,
+                                        "ollama_embedding_model": selected_embedding_model
+                                    }
+                                )
+                                if resp.status_code == 200:
+                                    st.success(f"✅ 重新索引已開始 (PID: {resp.json().get('pid')})")
+                                else:
+                                    st.error(f"❌ 重新索引失敗: {resp.text}")
+                            except Exception as e:
+                                st.error(f"❌ API調用失敗: {e}")
+                    
+                else:
+                    st.error("無法獲取 Ollama 模型列表")
+            except Exception as e:
+                st.error(f"獲取模型列表失敗: {e}")
+            
+            # 向量模型狀態
+            st.markdown("---")
+            st.subheader("📊 向量模型狀態")
+            
+            try:
+                vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=10)
+                if vector_models_resp.status_code == 200:
+                    vector_models = vector_models_resp.json()
+                    
+                    if vector_models:
+                        for model in vector_models:
+                            with st.expander(f"📁 {model['display_name']}", expanded=False):
+                                col1, col2, col3 = st.columns(3)
+                                
+                                with col1:
+                                    if model['has_data']:
+                                        st.success("✅ 有數據")
+                                    else:
+                                        st.warning("⚠️ 無數據")
+                                
+                                with col2:
+                                    if model['is_training']:
+                                        st.warning("⏳ 訓練中")
+                                    else:
+                                        st.success("✅ 可用")
+                                
+                                with col3:
+                                    if model['has_data'] and not model['is_training']:
+                                        st.success("🟢 可問答")
+                                    else:
+                                        st.error("🔴 不可問答")
+                                
+                                if model['model_info']:
+                                    st.write(f"**語言模型:** {model['model_info'].get('OLLAMA_MODEL', '未知')}")
+                                    st.write(f"**嵌入模型:** {model['model_info'].get('OLLAMA_EMBEDDING_MODEL', '未知')}")
+                                
+                                st.write(f"**文件夾:** {model['folder_name']}")
+                    else:
+                        st.info("尚無向量模型")
+                else:
+                    st.error("無法獲取向量模型狀態")
+            except Exception as e:
+                st.error(f"獲取向量模型狀態失敗: {e}")
+            
+
+            
             # log下載鈕
-            with st.expander("Log 下載"):
+            with st.expander("📥 Log 下載"):
                 try:
                     log_resp = requests.get(f"{API_URL}/admin/get_indexing_log", params={"log_type": "indexing"}, headers={"admin_token": admin_token}, timeout=10)
                     if log_resp.status_code == 200:
@@ -500,9 +673,10 @@ def main():
                         st.warning("尚無日誌可下載")
                 except Exception as e:
                     st.error(f"下載Log失敗: {e}")
+            
             # --- 監控當前狀態 ---
             st.markdown("---")
-            st.subheader("監控當前狀態")
+            st.subheader("📈 監控當前狀態")
             st_autorefresh(interval=60000, key="monitor_all_autorefresh")
             try:
                 resp = requests.get(f"{API_URL}/admin/monitor_all", headers={"admin_token": admin_token}, timeout=10)

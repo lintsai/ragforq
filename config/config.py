@@ -33,8 +33,8 @@ SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", "3").split("#")[0].strip())
 
 # Ollama設置
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "llama3.2")
+# 注意：OLLAMA_MODEL 和 OLLAMA_EMBEDDING_MODEL 已移除，現在通過管理介面動態選擇
+# 如果需要默認值，可以在相應的類中設定
 
 # 建立向量數據庫目錄（如果不存在）
 vector_db_path = Path(VECTOR_DB_PATH)
