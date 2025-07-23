@@ -238,7 +238,11 @@ def main():
     """主函數"""
     logger.info("模型訓練管理器調試版本啟動")
     
-    # 從暫存檔案中讀取模型資訊
+    # 優先從暫存檔案讀取（API 調用），如果沒有則從現有模型中選擇
+    ollama_model = None
+    ollama_embedding_model = None
+    version = None
+    
     try:
         logger.info("正在讀取訓練資訊檔案...")
         with open("temp_training_info.json", "r") as f:
@@ -246,10 +250,34 @@ def main():
         ollama_model = training_info["ollama_model"]
         ollama_embedding_model = training_info["ollama_embedding_model"]
         version = training_info.get("version")
-        logger.info(f"讀取到模型資訊: {ollama_model} + {ollama_embedding_model}, 版本: {version}")
+        logger.info(f"從臨時文件讀取到模型資訊: {ollama_model} + {ollama_embedding_model}, 版本: {version}")
     except FileNotFoundError:
-        logger.error("找不到訓練資訊檔案 temp_training_info.json")
-        sys.exit(1)
+        logger.info("未找到臨時訓練資訊檔案，嘗試從現有模型中選擇...")
+        # 從可用的模型中選擇一個進行增量訓練
+        try:
+            usable_models = vector_db_manager.get_usable_models()
+            if not usable_models:
+                logger.error("沒有可用的模型進行增量訓練，請先進行初始訓練")
+                logger.info("可用的解決方案:")
+                logger.info("1. 通過 API 進行初始訓練")
+                logger.info("2. 檢查是否有現有的向量數據庫文件夾")
+                sys.exit(1)
+            
+            # 選擇第一個可用模型
+            selected_model = usable_models[0]
+            model_info = selected_model['model_info']
+            ollama_model = model_info['OLLAMA_MODEL']
+            ollama_embedding_model = model_info['OLLAMA_EMBEDDING_MODEL']
+            version = model_info.get('version')
+            
+            logger.info(f"自動選擇模型: {ollama_model} + {ollama_embedding_model}, 版本: {version}")
+            logger.info(f"模型路徑: {selected_model['folder_path']}")
+            logger.info(f"可用模型總數: {len(usable_models)}")
+            
+        except Exception as e:
+            logger.error(f"獲取可用模型失敗: {str(e)}")
+            logger.error(f"詳細錯誤: {traceback.format_exc()}")
+            sys.exit(1)
     except json.JSONDecodeError as e:
         logger.error(f"解析訓練資訊檔案失敗: {str(e)}")
         sys.exit(1)
