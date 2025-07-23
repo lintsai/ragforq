@@ -415,7 +415,7 @@ def main():
         st.markdown("---")
         
         # 使用 st.chat_input 以獲得更好的聊天體驗
-        if question := st.chat_input("請輸入您的問題，例如：公司的年假政策是什麼？"):
+        if question := st.chat_input("請輸入您的問題，例如：ITPortal是什麼？"):
             with st.spinner("🤖 AI助手正在思考..."):
                 try:
                     # 直接調用問答API
@@ -431,7 +431,7 @@ def main():
 
                     answer_text = result.get("answer", "無法獲取答案")
                     sources = result.get("sources", [])
-                    rewritten_question = result.get("rewritten_question")
+                    rewritten_question = result.get("rewritten_query")
 
                     # 更新聊天歷史
                     update_chat_history(question, answer_text, sources, rewritten_question)

@@ -688,14 +688,14 @@ grep "索引文件" logs/indexing.log | tail -20
 ```bash
 curl -X POST "http://localhost:8000/ask" \
      -H "Content-Type: application/json" \
-     -d '{"question": "公司的年假政策是什麼？"}'
+     -d '{"question": "ITPortal是什麼？"}'
 ```
 
 響應格式:
 
 ```json
 {
-  "answer": "根據公司政策...",
+  "answer": "根據ITPortal文件...",
   "sources": [
     {
       "file_path": "/path/to/document.pdf",

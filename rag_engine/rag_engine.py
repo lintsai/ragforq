@@ -404,7 +404,7 @@ if __name__ == "__main__":
     rag_engine = RAGEngine(indexer)
     
     # 示例問題
-    question = "ITP是甚麼？"
+    question = "ITPortal是甚麼？"
     
     # 獲取回答和來源
     answer, sources, _ = rag_engine.get_answer_with_sources(question)
