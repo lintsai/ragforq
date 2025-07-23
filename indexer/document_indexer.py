@@ -25,6 +25,9 @@ from config.config import (
 )
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores.faiss import FAISS
+from utils.faiss_loader import get_faiss
+# 確保 FAISS 正確初始化
+faiss = get_faiss()
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
 
