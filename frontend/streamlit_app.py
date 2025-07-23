@@ -218,6 +218,10 @@ def main():
     with tabs[0]:
         if st.session_state.get('admin_tab', 0) == 1:
             st.session_state.admin_tab = 0  # 自動切回主頁時重置
+        
+        # 模型選擇變數初始化
+        selected_model_folder = None
+        
         # 創建側邊欄
         with st.sidebar:
             st.markdown("### 關於")
@@ -232,41 +236,17 @@ def main():
             
             st.markdown("### 示例問題")
             example_questions = [
-                "公司的年假政策是什麼？",
-                "如何申請報銷差旅費？",
-                "產品退貨流程是怎樣的？",
-                "公司安全規定有哪些要點？"
+                "什麼是ITP？",
+                "ITP的症狀有哪些？",
+                "如何診斷ITP？",
+                "ITP的治療選項有什麼？"
             ]
             
             for q in example_questions:
                 if st.button(q, key=f"example_{q}"):
                     handle_example_click(q)
             
-            # 顯示系統狀態
-            status = st.session_state.api_status
-            if status:
-                st.success(f"API 服務狀態: {status.get('status', '未知')}")
-                st.info(f"Q槽訪問狀態: {'可訪問' if status.get('q_drive_accessible') else '不可訪問'}")
-                st.info(f"API 版本: {status.get('version', '未知')}")
-            
-            # 添加設置選項
-            st.header("設置")
-            include_sources = st.checkbox("包含相關文件", value=True)
-            max_sources = st.number_input("最大相關文件數", min_value=1, max_value=20, value=10)
-            show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關")
-            use_query_rewrite = st.checkbox("使用查詢優化", value=True, help="自動改寫查詢以獲得更準確的結果")
-
-            # 添加清除歷史按鈕
-            if st.button("清除歷史記錄", key="clear_history"):
-                st.session_state.chat_history = []
-                st.session_state.current_answer = None
-                st._rerun()
-
-        # 主要聊天界面
-        st.header("💬 智能問答聊天")
-        
-        # 模型選擇 - 放在側邊欄
-        with st.sidebar:
+            # 模型選擇
             st.markdown("### 模型設置")
             try:
                 usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
@@ -296,6 +276,30 @@ def main():
             except Exception as e:
                 st.error(f"獲取模型列表時出錯: {str(e)}")
                 selected_model_folder = None
+            
+            # 顯示系統狀態
+            st.markdown("### 系統狀態")
+            status = st.session_state.api_status
+            if status:
+                st.success(f"API 服務狀態: {status.get('status', '未知')}")
+                st.info(f"Q槽訪問狀態: {'可訪問' if status.get('q_drive_accessible') else '不可訪問'}")
+                st.info(f"API 版本: {status.get('version', '未知')}")
+            
+            # 添加設置選項
+            st.markdown("### 設置")
+            include_sources = st.checkbox("包含相關文件", value=True)
+            max_sources = st.number_input("最大相關文件數", min_value=1, max_value=20, value=10)
+            show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關")
+            use_query_rewrite = st.checkbox("使用查詢優化", value=True, help="自動改寫查詢以獲得更準確的結果")
+
+            # 添加清除歷史按鈕
+            if st.button("清除歷史記錄", key="clear_history"):
+                st.session_state.chat_history = []
+                st.session_state.current_answer = None
+                st._rerun()
+
+        # 主要聊天界面
+        st.header("💬 智能問答聊天")
         
         # 聊天容器 - 顯示對話歷史
         chat_container = st.container()
@@ -413,14 +417,12 @@ def main():
                     # 更新聊天歷史
                     update_chat_history(question, answer_text, sources)
                     
-                    # 清空輸入框並重新運行
-                    st.session_state.chat_input = ""
+                    # 重新運行以更新界面，不修改session_state
                     st._rerun()
                     
                 except Exception as e:
                     error_msg = f"處理問題時發生錯誤: {str(e)}"
                     update_chat_history(question, error_msg, [])
-                    st.session_state.chat_input = ""
                     st._rerun()
         
         # 頁腳
