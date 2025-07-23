@@ -87,6 +87,8 @@ if 'current_question' not in st.session_state:
     st.session_state.current_question = ""
 if 'current_answer' not in st.session_state:
     st.session_state.current_answer = None
+if 'selected_language' not in st.session_state:
+    st.session_state.selected_language = "繁體中文"
 
 # 檢查API是否正常運行
 def check_api_status() -> bool:
@@ -117,11 +119,23 @@ def retry_with_backoff(func, max_retries=3, initial_delay=1):
             time.sleep(delay)
             delay *= 2
 
-def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None) -> Dict[str, Any]:
+def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None, language: str = "繁體中文") -> Dict[str, Any]:
     """獲取問題答案"""
     try:
+        # 根據選擇的語言添加語言提示
+        language_prompts = {
+            "English": "Please respond in English.",
+            "ไทย": "กรุณาตอบเป็นภาษาไทย",
+            "繁體中文": "請用繁體中文回答。",
+            "简体中文": "请用简体中文回答。"
+        }
+        
+        # 在問題前添加語言提示
+        language_prompt = language_prompts.get(language, "請用繁體中文回答。")
+        enhanced_question = f"{language_prompt} {question}"
+        
         payload = {
-            "question": question,
+            "question": enhanced_question,
             "include_sources": include_sources,
             "max_sources": max_sources,
             "use_query_rewrite": use_query_rewrite,
@@ -224,6 +238,12 @@ def main():
         
         # 創建側邊欄
         with st.sidebar:
+            st.markdown("### 關於")
+            st.write("Q槽文件智能助手可以幫助您快速查找和了解公司內部文檔中的信息。")
+            st.write("只需輸入您的問題，系統將自動搜索最相關的文檔並提供回答。")
+            
+            st.markdown("---")
+
             # 模型選擇 - 移到最上面
             st.markdown("### 🤖 模型設置")
             try:
@@ -292,28 +312,6 @@ def main():
             
             st.markdown("---")
             
-            st.markdown("### 關於")
-            st.write("Q槽文件智能助手可以幫助您快速查找和了解公司內部文檔中的信息。")
-            st.write("只需輸入您的問題，系統將自動搜索最相關的文檔並提供回答。")
-            
-            st.markdown("### 使用說明")
-            st.write("1. 在輸入框中輸入您的問題")
-            st.write("2. 點擊'提問'按鈕或按回車鍵")
-            st.write("3. 系統將搜索相關文檔並回答您的問題")
-            st.write("4. 相關文件會顯示在回答下方")
-            
-            st.markdown("### 示例問題")
-            example_questions = [
-                "什麼是ITP？",
-                "ITP的症狀有哪些？",
-                "如何診斷ITP？",
-                "ITP的治療選項有什麼？"
-            ]
-            
-            for q in example_questions:
-                if st.button(q, key=f"example_{q}"):
-                    handle_example_click(q)
-            
             # 顯示系統狀態
             st.markdown("### 系統狀態")
             status = st.session_state.api_status
@@ -321,9 +319,22 @@ def main():
                 st.success(f"API 服務狀態: {status.get('status', '未知')}")
                 st.info(f"Q槽訪問狀態: {'可訪問' if status.get('q_drive_accessible') else '不可訪問'}")
                 st.info(f"API 版本: {status.get('version', '未知')}")
+
+            st.markdown("---")
             
             # 添加設置選項
             st.markdown("### 設置")
+            
+            # 語言選擇
+            language_options = ["繁體中文", "简体中文", "English", "ไทย"]
+            selected_language = st.selectbox(
+                "🌐 回答語言：",
+                options=language_options,
+                index=language_options.index(st.session_state.selected_language),
+                help="選擇AI回答時使用的語言"
+            )
+            st.session_state.selected_language = selected_language
+            
             include_sources = st.checkbox("包含相關文件", value=True)
             max_sources = st.number_input("最大相關文件數", min_value=1, max_value=20, value=10)
             show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關")
@@ -372,8 +383,8 @@ def main():
                             if file_path not in unique_files:
                                 unique_files[file_path] = source
                         
-                        # 文件附件樣式
-                        files_html = "<div style='margin: 5px 0 15px 0;'>"
+                        # 文件附件樣式 - 修正版面問題
+                        files_html = "<div style='margin: 5px 0 15px 0; max-width: 100%; overflow-x: auto;'>"
                         files_html += "<div style='font-size: 0.9em; color: #666; margin-bottom: 5px;'>📎 相關文件:</div>"
                         
                         for idx, (_, source) in enumerate(unique_files.items(), 1):
@@ -381,10 +392,10 @@ def main():
                             score_display = f"{source['score']:.2f}" if source.get('score') is not None else "未知"
                             
                             files_html += f"""
-                            <div style='background-color: #e3f2fd; border-left: 3px solid #2196f3; padding: 8px 12px; margin: 3px 0; border-radius: 4px; font-size: 0.85em;'>
-                                <div style='font-weight: bold; color: #1976d2;'>{source['file_name']}</div>
-                                <div style='color: #666; font-size: 0.8em;'>{display_path}</div>
-                                <div style='color: #666; font-size: 0.8em;'>相關度: {score_display} | {source.get('location_info', '無位置信息')}</div>
+                            <div style='background-color: #e3f2fd; border-left: 3px solid #2196f3; padding: 8px 12px; margin: 3px 0; border-radius: 4px; font-size: 0.85em; word-wrap: break-word; overflow-wrap: break-word; max-width: 100%;'>
+                                <div style='font-weight: bold; color: #1976d2; word-wrap: break-word;'>{source['file_name']}</div>
+                                <div style='color: #666; font-size: 0.8em; word-wrap: break-word;'>{display_path}</div>
+                                <div style='color: #666; font-size: 0.8em; word-wrap: break-word;'>相關度: {score_display} | {source.get('location_info', '無位置信息')}</div>
                             </div>
                             """
                         
@@ -443,9 +454,15 @@ def main():
             # 添加用戶問題到歷史
             with st.spinner("🤖 AI助手正在思考..."):
                 try:
-                    # 所有問題都通過正常的RAG流程處理
-                    result = retry_with_backoff(
-                        lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance, selected_model_folder)
+                    # 直接調用問答API，不使用重試機制，移除關聯文件數量限制
+                    result = get_answer(
+                        question, 
+                        include_sources, 
+                        max_sources,
+                        use_query_rewrite, 
+                        show_relevance, 
+                        selected_model_folder,
+                        selected_language  # 傳遞選擇的語言
                     )
                     
                     answer_text = result.get("answer", "無法獲取答案")
