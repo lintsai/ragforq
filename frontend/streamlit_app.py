@@ -383,25 +383,6 @@ def main():
                             if file_path not in unique_files:
                                 unique_files[file_path] = source
                         
-                        # 文件附件樣式 - 修正版面問題
-                        files_html = "<div style='margin: 5px 0 15px 0; max-width: 100%; overflow-x: auto;'>"
-                        files_html += "<div style='font-size: 0.9em; color: #666; margin-bottom: 5px;'>📎 相關文件:</div>"
-                        
-                        for idx, (_, source) in enumerate(unique_files.items(), 1):
-                            display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
-                            score_display = f"{source['score']:.2f}" if source.get('score') is not None else "未知"
-                            
-                            files_html += f"""
-                            <div style='background-color: #e3f2fd; border-left: 3px solid #2196f3; padding: 8px 12px; margin: 3px 0; border-radius: 4px; font-size: 0.85em; word-wrap: break-word; overflow-wrap: break-word; max-width: 100%;'>
-                                <div style='font-weight: bold; color: #1976d2; word-wrap: break-word;'>{source['file_name']}</div>
-                                <div style='color: #666; font-size: 0.8em; word-wrap: break-word;'>{display_path}</div>
-                                <div style='color: #666; font-size: 0.8em; word-wrap: break-word;'>相關度: {score_display} | {source.get('location_info', '無位置信息')}</div>
-                            </div>
-                            """
-                        
-                        files_html += "</div>"
-                        st.markdown(files_html, unsafe_allow_html=True)
-                        
                         # 詳細信息展開器
                         with st.expander(f"查看第 {i+1} 次對話的詳細文件信息", expanded=False):
                             for idx, (_, source) in enumerate(unique_files.items(), 1):
@@ -439,8 +420,7 @@ def main():
         
         with col1:
             question = st.text_input(
-                "輸入您的問題...", 
-                value="",
+                "輸入您的問題...",
                 placeholder="請輸入您的問題，例如：公司的年假政策是什麼？",
                 key="chat_input",
                 label_visibility="collapsed"
@@ -451,32 +431,35 @@ def main():
         
         # 處理發送
         if (send_clicked or question) and question.strip():
-            # 添加用戶問題到歷史
+            # 為防止重複提交，處理後清空輸入框
+            question_to_process = question
+            st.session_state.chat_input = ""
+
             with st.spinner("🤖 AI助手正在思考..."):
                 try:
-                    # 直接調用問答API，不使用重試機制，移除關聯文件數量限制
+                    # 直接調用問答API
                     result = get_answer(
-                        question, 
-                        include_sources, 
+                        question_to_process,
+                        include_sources,
                         max_sources,
-                        use_query_rewrite, 
-                        show_relevance, 
+                        use_query_rewrite,
+                        show_relevance,
                         selected_model_folder,
-                        selected_language  # 傳遞選擇的語言
+                        selected_language
                     )
-                    
+
                     answer_text = result.get("answer", "無法獲取答案")
                     sources = result.get("sources", [])
-                    
+
                     # 更新聊天歷史
-                    update_chat_history(question, answer_text, sources)
-                    
-                    # 重新運行以更新界面，不修改session_state
+                    update_chat_history(question_to_process, answer_text, sources)
+
+                    # 重新運行以更新界面
                     st.rerun()
-                    
+
                 except Exception as e:
                     error_msg = f"處理問題時發生錯誤: {str(e)}"
-                    update_chat_history(question, error_msg, [])
+                    update_chat_history(question_to_process, error_msg, [])
                     st.rerun()
         
         # 頁腳
