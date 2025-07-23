@@ -150,7 +150,7 @@
 
    ```bash
    # -v {本機路徑}:{容器內路徑}
-   docker run --memory=2g --memory-reservation=1g --rm -d -p 8501:8501 -p 8000:8000 --name ragforq-test-container -v D:\source\ragforq\.env.local:/app/.env -v D:\data:/q_drive_data/MIC共用文件庫/05_MIC專案 -v D:\so/app/vector_db ragforq-local-test;326a1a79-4850-40ed-b92b-1d4f0decf257
+   docker run --rm -d -p 8501:8501 -p 8000:8000 --name ragforq-test-container -v D:\source\ragforq\.env.local:/app/.env -v D:\data:/q_drive_data/MIC共用文件庫/05_MIC專案 -v D:\source\ragforq\vector_db:/app/vector_db ragforq-local-test
    ```
 
    * **-v D:\source\ragforq\.env.local:/app/.env**: 掛載本地設定檔，覆蓋映像檔中的版本。
