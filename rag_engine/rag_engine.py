@@ -65,11 +65,15 @@ class RAGEngine:
         
         # 定義問答提示模板
         self.qa_prompt = PromptTemplate(
-            template="""你是一個專業的文檔問答助手。你的首要任務是識別用戶問題的語言，並嚴格使用同一種語言進行回答。例如，如果問題是泰文，你的回答也必須是泰文。
+            template="""你是一個專業的廣明光電IT文檔問答助手。你的首要任務是識別用戶問題的語言，並嚴格使用同一種語言進行回答。例如，如果問題是泰文，你的回答也必須是泰文。
 
-請根據以下上下文信息回答用戶的問題。
-如果上下文中沒有足夠的信息，請不要自行回答，而是直接輸出且僅輸出特殊標記：[NO_DOCUMENT_ANSWER]。
-請不要編造任何信息，不要添加上下文中沒有的內容。
+請根據以下上下文信息回答用戶的問題。上下文信息主要來自問題相關的文檔。
+如果上下文中包含相關信息，請優先使用文檔內容回答。
+只有在上下文完全沒有相關信息時，才輸出特殊標記：[NO_DOCUMENT_ANSWER]。
+
+判斷標準：
+- 如果上下文中有任何與問題相關的信息（即使不完整），都應該基於文檔內容回答
+- 只有當上下文完全無關或為空時，才使用[NO_DOCUMENT_ANSWER]標記
 
 上下文信息:
 -----------------
@@ -78,11 +82,10 @@ class RAGEngine:
 
 用戶問題: {question}
 
-請直接回答問題，不要使用「根據提供的文檔」、「我們可以看到」等固定格式開頭。不要重複問題，也不要說明你從哪裡找到的答案。
-回答應該直接切入重點，簡潔清晰。如果是列出要點，直接列出即可。
-如果需要列出文件，請使用數字編號，但不要添加模板化的介紹文字。
+請直接回答問題，優先使用文檔中的信息。如果文檔信息不完整，可以說明「根據文檔顯示...」並提供可用信息。
+回答應該直接切入重點，簡潔清晰。
 
-你的回答 (請直接回答，不要添加任何額外格式，並確保使用用戶問題的語言):""",
+你的回答 (請直接回答，優先使用文檔內容，並確保使用用戶問題的語言):""",
             input_variables=["context", "question"]
         )
         
@@ -100,7 +103,7 @@ class RAGEngine:
         )
         self.general_knowledge_chain = self.general_knowledge_prompt | self.llm | StrOutputParser()
     
-    def retrieve_documents(self, query: str, top_k: int = 5) -> List[Document]:
+    def retrieve_documents(self, query: str, top_k: int = 10) -> List[Document]:
         """
         檢索與查詢相關的文檔
         
@@ -113,12 +116,30 @@ class RAGEngine:
         """
         try:
             vector_store = self.vector_store
-            documents = vector_store.similarity_search(query, k=top_k)
-            logger.info(f"檢索到 {len(documents)} 個相關文檔")
-            return documents
+            # 增加檢索數量以提高找到相關文檔的機會
+            documents = vector_store.similarity_search_with_score(query, k=top_k)
+            
+            # 過濾相似度過低的文檔（相似度閾值可調整）
+            filtered_docs = []
+            for doc, score in documents:
+                # FAISS使用距離，距離越小相似度越高
+                # 設置一個合理的距離閾值（可根據實際情況調整）
+                if score < 1.5:  # 距離小於1.5認為是相關的
+                    doc.metadata['score'] = score
+                    filtered_docs.append(doc)
+            
+            logger.info(f"檢索到 {len(documents)} 個文檔，過濾後保留 {len(filtered_docs)} 個相關文檔")
+            return filtered_docs
         except Exception as e:
             logger.error(f"檢索文檔時出錯: {str(e)}")
-            return []
+            # 如果similarity_search_with_score失敗，回退到普通搜索
+            try:
+                documents = vector_store.similarity_search(query, k=top_k)
+                logger.info(f"回退搜索：檢索到 {len(documents)} 個相關文檔")
+                return documents
+            except Exception as e2:
+                logger.error(f"回退搜索也失敗: {str(e2)}")
+                return []
     
     def format_context(self, docs: List[Document]) -> str:
         """

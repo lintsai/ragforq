@@ -402,38 +402,16 @@ def main():
             # 添加用戶問題到歷史
             with st.spinner("🤖 AI助手正在思考..."):
                 try:
-                    # 處理特殊命令
-                    if any(keyword in question.strip().lower() for keyword in ["列出文件", "列出已索引文件", "文件列表", "show files", "list files", "索引文件", "已索引", "列出", "所有文件"]):
-                        indexed_files = get_indexed_files()
-                        if indexed_files:
-                            answer_text = f"已找到 {len(indexed_files)} 個已索引文件"
-                            # 創建文件列表作為 sources
-                            file_sources = []
-                            unique_files = {}
-                            for file in indexed_files:
-                                file_name = os.path.basename(file["file_path"])
-                                if file_name not in unique_files:
-                                    unique_files[file_name] = file
-                                    file_sources.append({
-                                        "file_name": file_name,
-                                        "file_path": file["file_path"],
-                                        "location_info": f"{file['file_type']} | {file['file_size']/1024:.2f}KB",
-                                        "score": 1.0
-                                    })
-                            update_chat_history(question, answer_text, file_sources)
-                        else:
-                            update_chat_history(question, "未找到已索引文件", [])
-                    else:
-                        # 處理正常問題
-                        result = retry_with_backoff(
-                            lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance, selected_model_folder)
-                        )
-                        
-                        answer_text = result.get("answer", "無法獲取答案")
-                        sources = result.get("sources", [])
-                        
-                        # 更新聊天歷史
-                        update_chat_history(question, answer_text, sources)
+                    # 所有問題都通過正常的RAG流程處理
+                    result = retry_with_backoff(
+                        lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance, selected_model_folder)
+                    )
+                    
+                    answer_text = result.get("answer", "無法獲取答案")
+                    sources = result.get("sources", [])
+                    
+                    # 更新聊天歷史
+                    update_chat_history(question, answer_text, sources)
                     
                     # 清空輸入框並重新運行
                     st.session_state.chat_input = ""

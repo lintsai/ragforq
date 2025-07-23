@@ -29,7 +29,7 @@ STREAMLIT_PORT = int(os.getenv("STREAMLIT_PORT", "8501"))
 # 其他設置
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 MAX_TOKENS_CHUNK = int(os.getenv("MAX_TOKENS_CHUNK", "500").split("#")[0].strip())
-SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", "3").split("#")[0].strip())
+SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", "10").split("#")[0].strip())
 
 # Ollama設置
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
