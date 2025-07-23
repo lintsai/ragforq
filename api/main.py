@@ -50,6 +50,7 @@ class QuestionRequest(BaseModel):
     use_query_rewrite: bool = True
     show_relevance: bool = True
     selected_model: Optional[str] = None  # 選擇的模型文件夾名稱（支援版本）
+    language: str = "繁體中文"  # 新增語言參數
 
 class SourceInfo(BaseModel):
     file_name: str
@@ -222,9 +223,9 @@ async def ask_question(request: QuestionRequest):
         
         # 根據是否使用查詢改寫選擇函數
         if request.use_query_rewrite:
-            answer, sources, documents, rewritten_query = engine.get_answer_with_query_rewrite(request.question)
+            answer, sources, documents, rewritten_query = engine.get_answer_with_query_rewrite(request.question, request.language)
         else:
-            answer, sources, documents = engine.get_answer_with_sources(request.question)
+            answer, sources, documents = engine.get_answer_with_sources(request.question, request.language)
             rewritten_query = None
         
         # 處理來源

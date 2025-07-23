@@ -94,7 +94,7 @@ class RAGEngine:
 
         # --- 新增：通用知識問答模板與鏈 ---
         self.general_knowledge_prompt = PromptTemplate(
-            template="""你是一個聰明且樂於助人的 AI 助手。請根據你的通用知識和邏輯推理能力，盡力回答以下問題。
+            template="""你是一個聰明且樂於助人的並專注於廣明光電IT知識的 AI 助手。請根據你的通用知識和邏輯推理能力，盡力回答以下問題。
 
 用戶問題: {question}
 
@@ -195,12 +195,13 @@ class RAGEngine:
         
         return "\n".join(sources)
     
-    def rewrite_query(self, original_query: str) -> str:
+    def rewrite_query(self, original_query: str, language: str = "繁體中文") -> str:
         """
         改寫用戶查詢，使其更適合 RAG 檢索
         
         Args:
             original_query: 原始用戶查詢
+            language: 目標語言
             
         Returns:
             改寫後的查詢
@@ -208,7 +209,7 @@ class RAGEngine:
         try:
             # 定義查詢改寫提示
             rewrite_prompt = PromptTemplate(
-                template="""你是一個專業的查詢優化專家。請識別以下用戶問題，並將其改寫為更適合從文檔檢索系統中獲取準確答案的格式。
+                template="""你是一個專業的廣明光電IT知識查詢優化專家。請識別以下用戶問題，並將其改寫為更適合從文檔檢索系統中獲取準確答案的格式。
 
 原始問題: {question}
 
@@ -219,16 +220,21 @@ class RAGEngine:
 4. 確保改寫後的問題更有針對性、更明確。
 5. 不要添加原問題中不存在的信息。
 6. 如果原問題已經很清晰，可以保持不變。
+7. 以廣明光電IT知識及廣明光電的產業知識為範圍
+8. 請用 "{language}" 進行改寫。
 
 改寫後的問題 (直接輸出改寫結果，不要添加任何前綴或說明):""",
-                input_variables=["question"]
+                input_variables=["question", "language"]
             )
             
             # 創建查詢改寫鏈
             rewrite_chain = rewrite_prompt | self.llm | StrOutputParser()
             
             # 獲取改寫結果
-            rewritten_query = rewrite_chain.invoke({"question": original_query})
+            rewritten_query = rewrite_chain.invoke({
+                "question": original_query,
+                "language": language
+            })
             logger.info(f"原始查詢: {original_query}")
             logger.info(f"改寫查詢: {rewritten_query}")
             
@@ -238,21 +244,22 @@ class RAGEngine:
             logger.error(f"改寫查詢時出錯: {str(e)}")
             return original_query  # 如果出錯，返回原始查詢
     
-    def get_answer_with_query_rewrite(self, original_query: str) -> Tuple[str, str, List[Document], str]:
+    def get_answer_with_query_rewrite(self, original_query: str, language: str = "繁體中文") -> Tuple[str, str, List[Document], str]:
         """
         使用查詢改寫來優化問答效果
         
         Args:
             original_query: 原始用戶問題
+            language: 目標語言
             
         Returns:
             (回答, 來源列表字符串, 相關文檔, 改寫後的查詢) 的元組
         """
         # 改寫查詢
-        rewritten_query = self.rewrite_query(original_query)
+        rewritten_query = self.rewrite_query(original_query, language)
         
         # 使用改寫後的查詢獲取答案
-        answer = self.answer_question(rewritten_query)
+        answer = self.answer_question(rewritten_query, language)
         
         # 使用改寫後的查詢檢索文檔
         docs = self.retrieve_documents(rewritten_query)
@@ -264,14 +271,22 @@ class RAGEngine:
         
         return answer, sources, docs, rewritten_query
     
-    def answer_question(self, question: str) -> str:
+    def answer_question(self, question: str, language: str = "繁體中文") -> str:
         """回答問題，如果文檔中沒有答案，則使用通用知識並附帶免責聲明"""
         try:
             # 第一步：嘗試從文檔中獲取答案
             docs = self.retrieve_documents(question)
             context = self.format_context(docs)
-            
-            rag_response = self.qa_chain.invoke({
+
+            # 更新 QA prompt 以包含語言指令
+            qa_template_with_lang = self.qa_prompt.template + f"\n\n請用 '{language}' 來回答。"
+            qa_prompt_with_lang = PromptTemplate(
+                template=qa_template_with_lang,
+                input_variables=["context", "question"]
+            )
+            qa_chain_with_lang = qa_prompt_with_lang | self.llm | StrOutputParser()
+
+            rag_response = qa_chain_with_lang.invoke({
                 "context": context,
                 "question": question
             })
@@ -280,8 +295,16 @@ class RAGEngine:
             if "[NO_DOCUMENT_ANSWER]" in rag_response:
                 logger.info(f"在文檔中未找到答案，問題 '{question}' 將切換到通用知識模式...")
                 
+                # 更新通用知識 prompt 以包含語言指令
+                general_template_with_lang = self.general_knowledge_prompt.template + f"\n\n請用 '{language}' 來回答。"
+                general_prompt_with_lang = PromptTemplate(
+                    template=general_template_with_lang,
+                    input_variables=["question"]
+                )
+                general_chain_with_lang = general_prompt_with_lang | self.llm | StrOutputParser()
+
                 # 觸發通用知識鏈
-                general_response = self.general_knowledge_chain.invoke({
+                general_response = general_chain_with_lang.invoke({
                     "question": question
                 })
                 
@@ -297,17 +320,18 @@ class RAGEngine:
             logger.error(f"回答問題時出錯: {str(e)}")
             return f"處理問題時發生錯誤: {str(e)}"
     
-    def get_answer_with_sources(self, question: str) -> Tuple[str, str, List[Document]]:
+    def get_answer_with_sources(self, question: str, language: str = "繁體中文") -> Tuple[str, str, List[Document]]:
         """
         回答問題並包含來源信息
         
         Args:
             question: 用戶問題
+            language: 目標語言
             
         Returns:
             (回答, 來源列表字符串, 相關文檔) 的元組
         """
-        answer = self.answer_question(question)
+        answer = self.answer_question(question, language)
         
         if not self.retrieve_documents(question):
             return answer, "", []
@@ -380,7 +404,7 @@ if __name__ == "__main__":
     rag_engine = RAGEngine(indexer)
     
     # 示例問題
-    question = "請告訴我公司的假期政策是什麼？"
+    question = "ITP是甚麼？"
     
     # 獲取回答和來源
     answer, sources, _ = rag_engine.get_answer_with_sources(question)

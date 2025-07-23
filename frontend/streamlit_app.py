@@ -122,24 +122,13 @@ def retry_with_backoff(func, max_retries=3, initial_delay=1):
 def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None, language: str = "繁體中文") -> Dict[str, Any]:
     """獲取問題答案"""
     try:
-        # 根據選擇的語言添加語言提示
-        language_prompts = {
-            "English": "Please respond in English.",
-            "ไทย": "กรุณาตอบเป็นภาษาไทย",
-            "繁體中文": "請用繁體中文回答。",
-            "简体中文": "请用简体中文回答。"
-        }
-        
-        # 在問題前添加語言提示
-        language_prompt = language_prompts.get(language, "請用繁體中文回答。")
-        enhanced_question = f"{language_prompt} {question}"
-        
         payload = {
-            "question": enhanced_question,
+            "question": question,
             "include_sources": include_sources,
             "max_sources": max_sources,
             "use_query_rewrite": use_query_rewrite,
-            "show_relevance": show_relevance
+            "show_relevance": show_relevance,
+            "language": language  # 將語言作為獨立參數傳遞
         }
         
         if selected_model:
@@ -167,7 +156,7 @@ def get_indexed_files() -> List[Dict[str, Any]]:
         return []
 
 # 更新聊天歷史
-def update_chat_history(question, answer, sources=None):
+def update_chat_history(question, answer, sources=None, rewritten_question=None):
     """更新聊天歷史"""
     if len(st.session_state.chat_history) >= 10:  # 限制歷史記錄數量
         st.session_state.chat_history.pop(0)
@@ -176,6 +165,7 @@ def update_chat_history(question, answer, sources=None):
         "question": question,
         "answer": answer,
         "sources": sources,
+        "rewritten_question": rewritten_question,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     })
 
@@ -366,6 +356,15 @@ def main():
                     """, unsafe_allow_html=True)
                     
                     # AI 回答氣泡
+                    if chat.get("rewritten_question"):
+                        st.markdown(f"""
+                        <div style="display: flex; justify-content: center; margin: 10px 0;">
+                            <div style="background-color: #e0e0e0; color: #555; padding: 5px 10px; border-radius: 10px; max-width: 70%; font-size: 0.9em;">
+                                🔍 <strong>優化後查詢:</strong> {chat['rewritten_question']}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
                     st.markdown(f"""
                     <div style="display: flex; justify-content: flex-start; margin: 10px 0;">
                         <div style="background-color: #f1f3f4; color: #333; padding: 10px 15px; border-radius: 18px; max-width: 70%; word-wrap: break-word;">
@@ -432,9 +431,10 @@ def main():
 
                     answer_text = result.get("answer", "無法獲取答案")
                     sources = result.get("sources", [])
+                    rewritten_question = result.get("rewritten_question")
 
                     # 更新聊天歷史
-                    update_chat_history(question, answer_text, sources)
+                    update_chat_history(question, answer_text, sources, rewritten_question)
 
                     # 重新運行以更新界面
                     st.rerun()
