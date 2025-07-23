@@ -415,31 +415,13 @@ def main():
         # 輸入區域 - 固定在底部
         st.markdown("---")
         
-        # 問題輸入
-        col1, col2 = st.columns([5, 1])
-        
-        with col1:
-            question = st.text_input(
-                "輸入您的問題...",
-                placeholder="請輸入您的問題，例如：公司的年假政策是什麼？",
-                key="chat_input",
-                label_visibility="collapsed"
-            )
-        
-        with col2:
-            send_clicked = st.button("發送 📤", key="send_button", use_container_width=True)
-        
-        # 處理發送
-        if (send_clicked or question) and question.strip():
-            # 為防止重複提交，處理後清空輸入框
-            question_to_process = question
-            st.session_state.chat_input = ""
-
+        # 使用 st.chat_input 以獲得更好的聊天體驗
+        if question := st.chat_input("請輸入您的問題，例如：公司的年假政策是什麼？"):
             with st.spinner("🤖 AI助手正在思考..."):
                 try:
                     # 直接調用問答API
                     result = get_answer(
-                        question_to_process,
+                        question,
                         include_sources,
                         max_sources,
                         use_query_rewrite,
@@ -452,14 +434,14 @@ def main():
                     sources = result.get("sources", [])
 
                     # 更新聊天歷史
-                    update_chat_history(question_to_process, answer_text, sources)
+                    update_chat_history(question, answer_text, sources)
 
                     # 重新運行以更新界面
                     st.rerun()
 
                 except Exception as e:
                     error_msg = f"處理問題時發生錯誤: {str(e)}"
-                    update_chat_history(question_to_process, error_msg, [])
+                    update_chat_history(question, error_msg, [])
                     st.rerun()
         
         # 頁腳
