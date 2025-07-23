@@ -274,18 +274,26 @@ class RAGEngine:
     def answer_question(self, question: str, language: str = "繁體中文") -> str:
         """回答問題，如果文檔中沒有答案，則使用通用知識並附帶免責聲明"""
         try:
-            # 第一步：嘗試從文檔中獲取答案
-            docs = self.retrieve_documents(question)
-            context = self.format_context(docs)
+            # --- 語言指令強化 ---
+            # 將語言指令直接整合到模型的核心指令中
+            lang_instruction = f"請務必使用 '{language}' 來回答。"
 
-            # 更新 QA prompt 以包含語言指令
-            qa_template_with_lang = self.qa_prompt.template + f"\n\n請用 '{language}' 來回答。"
+            # --- RAG 問答鏈 ---
+            # 複製並修改基礎模板
+            qa_template_str = self.qa_prompt.template.replace(
+                "你是一個專業的廣明光電IT文檔問答助手。",
+                f"你是一個專業的廣明光電IT文檔問答助手。{lang_instruction}"
+            )
             qa_prompt_with_lang = PromptTemplate(
-                template=qa_template_with_lang,
+                template=qa_template_str,
                 input_variables=["context", "question"]
             )
             qa_chain_with_lang = qa_prompt_with_lang | self.llm | StrOutputParser()
 
+            # 第一步：嘗試從文檔中獲取答案
+            docs = self.retrieve_documents(question)
+            context = self.format_context(docs)
+            
             rag_response = qa_chain_with_lang.invoke({
                 "context": context,
                 "question": question
@@ -295,10 +303,13 @@ class RAGEngine:
             if "[NO_DOCUMENT_ANSWER]" in rag_response:
                 logger.info(f"在文檔中未找到答案，問題 '{question}' 將切換到通用知識模式...")
                 
-                # 更新通用知識 prompt 以包含語言指令
-                general_template_with_lang = self.general_knowledge_prompt.template + f"\n\n請用 '{language}' 來回答。"
+                # --- 通用知識問答鏈 ---
+                general_template_str = self.general_knowledge_prompt.template.replace(
+                    "你是一個聰明且樂於助人的並專注於廣明光電IT知識的 AI 助手。",
+                    f"你是一個聰明且樂於助人的並專注於廣明光電IT知識的 AI 助手。{lang_instruction}"
+                )
                 general_prompt_with_lang = PromptTemplate(
-                    template=general_template_with_lang,
+                    template=general_template_str,
                     input_variables=["question"]
                 )
                 general_chain_with_lang = general_prompt_with_lang | self.llm | StrOutputParser()
