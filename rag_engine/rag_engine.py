@@ -43,13 +43,13 @@ SOURCE_TEMPLATE = """以下是與問題相關的文檔來源列表：
 class RAGEngine:
     """RAG查詢引擎，負責檢索文件並回答問題"""
     
-    def __init__(self, document_indexer: DocumentIndexer, ollama_model: str = "llama3.2"):
+    def __init__(self, document_indexer: DocumentIndexer, ollama_model: str = None):
         """
         初始化RAG引擎
         
         Args:
             document_indexer: 文檔索引器實例
-            ollama_model: Ollama 語言模型名稱，必須指定
+            ollama_model: Ollama 語言模型名稱，如果為 None 則需要在使用時指定
         """
         self.document_indexer = document_indexer
         self.vector_store = document_indexer.get_vector_store()
@@ -367,4 +367,4 @@ if __name__ == "__main__":
     # 輸出結果
     print("問題:", question)
     print("\n回答:", answer)
-    print("\n來源:\n", sources) 
+    print("\n來源:\n", sources)

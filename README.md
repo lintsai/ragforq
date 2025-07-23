@@ -59,14 +59,14 @@
 
 - **對應檔案:** `.env` (本地直接啟動) 和 `.env.local` (本地 Docker 測試)
 - **核心配置:**
-    - **LLM 模型:** `phi3:mini` (輕量級、高效的語言模型)
-    - **Embedding 模型:** `nomic-embed-text` (輕量級、高效能的向量模型)
+  - **LLM 模型:** `phi3:mini` (輕量級、高效的語言模型)
+  - **Embedding 模型:** `nomic-embed-text` (輕量級、高效能的向量模型)
 - **首次設定指令:**
-    在開始開發前，請務必在您的 Ollama 中下載所需模型：
-    ```bash
-    ollama pull phi3:mini
-    ollama pull nomic-embed-text
-    ```
+  在開始開發前，請務必在您的 Ollama 中下載所需模型：
+  ```bash
+  ollama pull phi3:mini
+  ollama pull nomic-embed-text
+  ```
 
 ### 2. 生產環境 (Production)
 
@@ -74,14 +74,14 @@
 
 - **對應檔案:** `.env.production`
 - **核心配置:**
-    - **LLM 模型:** `qwen2:72b` (頂級效能的 720 億參數語言模型)
-    - **Embedding 模型:** `mxbai-embed-large` (頂級效能的向量模型)
+  - **LLM 模型:** `qwen2:72b` (頂級效能的 720 億參數語言模型)
+  - **Embedding 模型:** `mxbai-embed-large` (頂級效能的向量模型)
 - **首次設定指令:**
-    在部署伺服器上，請確保已下載所需模型：
-    ```bash
-    ollama pull qwen2:72b
-    ollama pull mxbai-embed-large
-    ```
+  在部署伺服器上，請確保已下載所需模型：
+  ```bash
+  ollama pull qwen2:72b
+  ollama pull mxbai-embed-large
+  ```
 
 ## 🚀 安裝部署
 
@@ -150,7 +150,7 @@
 
    ```bash
    # -v {本機路徑}:{容器內路徑}
-   docker run --rm -d -p 8501:8501 -p 8000:8000 --name ragforq-test-container -v D:\source\ragforq\.env.local:/app/.env -v D:\data:/q_drive_data/MIC共用文件庫/05_MIC專案 -v D:\source\ragforq\vector_db:/app/vector_db ragforq-local-test
+   docker run --memory=2g --memory-reservation=1g --rm -d -p 8501:8501 -p 8000:8000 --name ragforq-test-container -v D:\source\ragforq\.env.local:/app/.env -v D:\data:/q_drive_data/MIC共用文件庫/05_MIC專案 -v D:\so/app/vector_db ragforq-local-test;326a1a79-4850-40ed-b92b-1d4f0decf257
    ```
 
    * **-v D:\source\ragforq\.env.local:/app/.env**: 掛載本地設定檔，覆蓋映像檔中的版本。
@@ -344,6 +344,7 @@ vector_db/
 ```
 
 **版本管理說明**：
+
 - 基礎格式：`ollama@{model}@{embedding}`
 - 版本格式：`ollama@{model}@{embedding}#{version}`
 - 版本標識通常使用日期格式（如 `20250722`）
@@ -404,10 +405,12 @@ python scripts/add_model_files.py
 ### 配置變更
 
 #### 移除的配置項
+
 - `OLLAMA_MODEL`：不再使用固定配置，改為動態選擇
 - `OLLAMA_EMBEDDING_MODEL`：不再使用固定配置，改為動態選擇
 
 #### 保留的配置項
+
 - `OLLAMA_HOST`：Ollama 服務地址
 - `VECTOR_DB_PATH`：向量數據庫基礎路徑
 - 其他文件處理和系統配置
@@ -429,6 +432,7 @@ python scripts/add_model_files.py
 3. **問答無響應**：確認選擇的模型有向量數據，檢查模型是否正在訓練中，驗證 Ollama 模型是否可用
 
 #### 日誌查看
+
 - 索引日誌：`logs/indexing.log`
 - 應用日誌：`logs/app.log`
 - 管理員後台提供日誌下載功能

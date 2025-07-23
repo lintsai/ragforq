@@ -503,24 +503,9 @@ async def list_files():
     返回系統中已索引的文件列表及其相關信息
     """
     try:
-        # 獲取可用的 Ollama 模型
-        available_models = ollama_utils.get_model_names()
-        if not available_models:
-            raise HTTPException(status_code=503, detail="沒有可用的 Ollama 模型")
-        
-        # 選擇嵌入模型
-        default_embedding_model = None
-        for model in available_models:
-            if 'embed' in model.lower():
-                default_embedding_model = model
-                break
-        
-        if not default_embedding_model:
-            default_embedding_model = available_models[0]
-        
-        # 使用默認配置獲取文件列表
-        document_indexer = DocumentIndexer(ollama_embedding_model=default_embedding_model)
-        indexed_files = document_indexer.list_indexed_files()
+        # 嘗試使用默認RAG引擎獲取文件列表
+        engine = get_rag_engine()
+        indexed_files = engine.document_indexer.list_indexed_files()
         return indexed_files
     except HTTPException:
         # 重新拋出 HTTP 異常

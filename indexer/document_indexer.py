@@ -61,13 +61,13 @@ QA_TEMPLATE = """你是一個專業的文檔問答助手，你的任務是根據
 class DocumentIndexer:
     """文件索引器，負責解析文件內容並建立向量索引"""
     
-    def __init__(self, vector_db_path: str = VECTOR_DB_PATH, ollama_embedding_model: str = "llama3.2"):
+    def __init__(self, vector_db_path: str = VECTOR_DB_PATH, ollama_embedding_model: str = None):
         """
         初始化文件索引器
         
         Args:
             vector_db_path: 向量數據庫保存路徑
-            ollama_embedding_model: Ollama 嵌入模型名稱，必須指定
+            ollama_embedding_model: Ollama 嵌入模型名稱，如果為 None 則自動選擇
         """
         self.vector_db_path = vector_db_path
         self.documents = []

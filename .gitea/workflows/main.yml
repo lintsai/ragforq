@@ -122,6 +122,8 @@ jobs:
 
             echo "-> Running new container with image: ${IMAGE_TO_RUN}"
             docker run -d \
+              --memory=2g \
+              --memory-reservation=1g \
               --gpus all \
               --restart always \
               --network=host \
