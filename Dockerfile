@@ -1,6 +1,9 @@
 # --- Stage 1: Build Stage ---
 FROM python:3.10-slim as builder
 
+# 設定 TERM 環境變數（避免非互動式環境出錯）
+ENV TERM=xterm
+
 # 安裝 poetry
 RUN pip install poetry
 

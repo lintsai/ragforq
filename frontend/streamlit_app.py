@@ -262,222 +262,188 @@ def main():
                 st.session_state.current_answer = None
                 st._rerun()
 
-        # 主要問答界面
-        st.header("💬 智能問答")
+        # 主要聊天界面
+        st.header("💬 智能問答聊天")
         
-        # 模型選擇 - 每次都重新獲取最新的模型列表
-        try:
-            usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
-            if usable_models_response.status_code == 200:
-                usable_models = usable_models_response.json()
-                if usable_models:
-                    model_options = ["使用默認配置"] + [model['display_name'] for model in usable_models]
-                    model_folder_map = {model['display_name']: model['folder_name'] for model in usable_models}
-                    
-                    selected_display_name = st.selectbox(
-                        "選擇問答模型：",
-                        options=model_options,
-                        help="選擇用於問答的向量模型，每次都會重新讀取最新的模型列表。資料夾內有.lock檔為訓練中不可使用。"
-                    )
-                    
-                    # 獲取實際的文件夾名稱
-                    if selected_display_name == "使用默認配置":
-                        selected_model_folder = None
+        # 模型選擇 - 放在側邊欄
+        with st.sidebar:
+            st.markdown("### 模型設置")
+            try:
+                usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
+                if usable_models_response.status_code == 200:
+                    usable_models = usable_models_response.json()
+                    if usable_models:
+                        model_options = ["使用默認配置"] + [model['display_name'] for model in usable_models]
+                        model_folder_map = {model['display_name']: model['folder_name'] for model in usable_models}
+                        
+                        selected_display_name = st.selectbox(
+                            "選擇問答模型：",
+                            options=model_options,
+                            help="選擇用於問答的向量模型"
+                        )
+                        
+                        # 獲取實際的文件夾名稱
+                        if selected_display_name == "使用默認配置":
+                            selected_model_folder = None
+                        else:
+                            selected_model_folder = model_folder_map.get(selected_display_name)
                     else:
-                        selected_model_folder = model_folder_map.get(selected_display_name)
+                        st.warning("沒有可用的向量模型")
+                        selected_model_folder = None
                 else:
-                    st.warning("沒有可用的向量模型，請先進行模型訓練")
+                    st.error("無法獲取可用模型列表")
                     selected_model_folder = None
-            else:
-                st.error("無法獲取可用模型列表")
+            except Exception as e:
+                st.error(f"獲取模型列表時出錯: {str(e)}")
                 selected_model_folder = None
-        except Exception as e:
-            st.error(f"獲取模型列表時出錯: {str(e)}")
-            selected_model_folder = None
+        
+        # 聊天容器 - 顯示對話歷史
+        chat_container = st.container()
+        
+        with chat_container:
+            # 如果有聊天歷史，顯示所有對話
+            if st.session_state.chat_history:
+                for i, chat in enumerate(st.session_state.chat_history):
+                    # 用戶問題氣泡
+                    st.markdown(f"""
+                    <div style="display: flex; justify-content: flex-end; margin: 10px 0;">
+                        <div style="background-color: #007bff; color: white; padding: 10px 15px; border-radius: 18px; max-width: 70%; word-wrap: break-word;">
+                            <strong>您:</strong> {chat['question']}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # AI 回答氣泡
+                    st.markdown(f"""
+                    <div style="display: flex; justify-content: flex-start; margin: 10px 0;">
+                        <div style="background-color: #f1f3f4; color: #333; padding: 10px 15px; border-radius: 18px; max-width: 70%; word-wrap: break-word;">
+                            <strong>🤖 AI助手:</strong><br>{chat['answer']}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # 顯示相關文件（如果有）
+                    if "sources" in chat and chat["sources"]:
+                        # 去重處理
+                        unique_files = {}
+                        for source in chat["sources"]:
+                            file_path = source["file_path"]
+                            if file_path not in unique_files:
+                                unique_files[file_path] = source
+                        
+                        # 文件附件樣式
+                        files_html = "<div style='margin: 5px 0 15px 0;'>"
+                        files_html += "<div style='font-size: 0.9em; color: #666; margin-bottom: 5px;'>📎 相關文件:</div>"
+                        
+                        for idx, (_, source) in enumerate(unique_files.items(), 1):
+                            display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
+                            score_display = f"{source['score']:.2f}" if source.get('score') is not None else "未知"
+                            
+                            files_html += f"""
+                            <div style='background-color: #e3f2fd; border-left: 3px solid #2196f3; padding: 8px 12px; margin: 3px 0; border-radius: 4px; font-size: 0.85em;'>
+                                <div style='font-weight: bold; color: #1976d2;'>{source['file_name']}</div>
+                                <div style='color: #666; font-size: 0.8em;'>{display_path}</div>
+                                <div style='color: #666; font-size: 0.8em;'>相關度: {score_display} | {source.get('location_info', '無位置信息')}</div>
+                            </div>
+                            """
+                        
+                        files_html += "</div>"
+                        st.markdown(files_html, unsafe_allow_html=True)
+                        
+                        # 詳細信息展開器
+                        with st.expander(f"查看第 {i+1} 次對話的詳細文件信息", expanded=False):
+                            for idx, (_, source) in enumerate(unique_files.items(), 1):
+                                st.markdown(f"**文件 {idx}: {source['file_name']}**")
+                                display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
+                                st.write(f"📁 路徑: {display_path}")
+                                
+                                if source.get("location_info"):
+                                    st.write(f"📍 位置: {source['location_info']}")
+                                
+                                if source.get("score") is not None:
+                                    st.write(f"📊 相關度: {source['score']:.4f}")
+                                
+                                if show_relevance and source.get("relevance_reason"):
+                                    st.markdown("**🔍 相關性理由:**")
+                                    st.info(source["relevance_reason"])
+                                
+                                st.markdown("---")
+            
+            # 如果沒有聊天歷史，顯示歡迎信息
+            else:
+                st.markdown("""
+                <div style="text-align: center; padding: 40px 20px; color: #666;">
+                    <h3>👋 歡迎使用 Q槽文件智能助手</h3>
+                    <p>我可以幫助您快速查找和了解公司內部文檔中的信息</p>
+                    <p>請在下方輸入您的問題開始對話</p>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # 輸入區域 - 固定在底部
+        st.markdown("---")
         
         # 問題輸入
-        question = st.text_input(
-            "請輸入您的問題：", 
-            value=st.session_state.current_question,
-            help="您可以輸入問題或特殊命令，如 '列出文件' 來查看已索引的文件",
-            key="question_input",
-            on_change=handle_text_input_change
-        )
+        col1, col2 = st.columns([5, 1])
         
-        # 提問按鈕
-        col1, col2 = st.columns([1, 5])
         with col1:
-            search_clicked = st.button("提問", key="search_button")
-            if search_clicked and question:
-                # 如果點擊提問按鈕，直接設置搜索標誌
-                st.session_state.current_question = question
-                st.session_state.run_search = True
+            question = st.text_input(
+                "輸入您的問題...", 
+                value="",
+                placeholder="請輸入您的問題，例如：公司的年假政策是什麼？",
+                key="chat_input",
+                label_visibility="collapsed"
+            )
         
-        # 檢查是否需要執行搜索
-        run_search = 'run_search' in st.session_state and st.session_state.run_search
+        with col2:
+            send_clicked = st.button("發送 📤", key="send_button", use_container_width=True)
         
-        # 處理特殊命令或問題
-        if question and run_search:
-            # 重置搜索標誌
-            st.session_state.run_search = False
-            
-            # 清除之前的回答，創建新的容器顯示結果
-            st.session_state.current_answer = None
-            answer_container = st.container()
-            
-            with answer_container:
-                # 處理特殊命令
-                if any(keyword in question.strip().lower() for keyword in ["列出文件", "列出已索引文件", "文件列表", "show files", "list files", "索引文件", "已索引", "列出", "所有文件"]):
-                    with st.spinner("正在獲取文件列表..."):
+        # 處理發送
+        if (send_clicked or question) and question.strip():
+            # 添加用戶問題到歷史
+            with st.spinner("🤖 AI助手正在思考..."):
+                try:
+                    # 處理特殊命令
+                    if any(keyword in question.strip().lower() for keyword in ["列出文件", "列出已索引文件", "文件列表", "show files", "list files", "索引文件", "已索引", "列出", "所有文件"]):
                         indexed_files = get_indexed_files()
                         if indexed_files:
-                            # 直接顯示結果，不使用標準回答格式
-                            st.markdown(f"## 已索引文件清單（共 {len(indexed_files)} 個文件）")
-                            
-                            # 按文件名對文件進行分組和去重
+                            answer_text = f"已找到 {len(indexed_files)} 個已索引文件"
+                            # 創建文件列表作為 sources
+                            file_sources = []
                             unique_files = {}
                             for file in indexed_files:
                                 file_name = os.path.basename(file["file_path"])
                                 if file_name not in unique_files:
                                     unique_files[file_name] = file
-                            
-                            # 創建表格顯示文件基本信息
-                            file_data = []
-                            for idx, (_, file) in enumerate(unique_files.items(), 1):
-                                file_name = os.path.basename(file["file_path"])
-                                file_data.append({
-                                    "序號": idx,
-                                    "文件名": file_name,
-                                    "文件類型": file["file_type"],
-                                    "大小 (KB)": f"{file['file_size']/1024:.2f}",
-                                    "最後修改時間": file["last_modified"]
-                                })
-                            
-                            # 顯示表格
-                            st.table(file_data)
-                            
-                            # 下方顯示完整路徑信息，按文件名排序
-                            st.markdown("### 文件詳細路徑")
-                            for idx, (_, file) in enumerate(unique_files.items(), 1):
-                                file_name = os.path.basename(file["file_path"])
-                                # 將 Q_DRIVE_PATH 換成 DISPLAY_DRIVE_NAME
-                                display_path = file["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
-                                st.write(f"{idx}. **{file_name}** - {display_path}")
-                            
-                            # 保存到歷史記錄
-                            file_list_text = f"已找到 {len(indexed_files)} 個文件"
-                            update_chat_history(question, file_list_text)
-                        else:
-                            st.warning("未找到已索引文件。請確保已運行索引程序或檢查日誌以獲取詳細信息。")
-                            update_chat_history(question, "未找到已索引文件")
-                # 處理正常問題
-                else:
-                    try:
-                        with st.spinner("正在思考..."):
-                            # 使用重試機制獲取答案
-                            result = retry_with_backoff(
-                                lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance, selected_model_folder)
-                            )
-                            
-                            # 如果啟用了查詢優化，顯示優化後的查詢
-                            if use_query_rewrite and "rewritten_query" in result:
-                                rewritten_query = result["rewritten_query"]
-                                if rewritten_query != question:
-                                    with st.expander("查看優化後的查詢"):
-                                        st.markdown("**原始查詢:**")
-                                        st.info(question)
-                                        st.markdown("**優化後查詢:**")
-                                        st.success(rewritten_query)
-                            
-                            # 直接顯示答案，不添加標題
-                            answer_text = result.get("answer", "無法獲取答案")
-                            st.write(answer_text)
-                            
-                            # 保存當前回答
-                            st.session_state.current_answer = {
-                                "answer": answer_text,
-                                "sources": result.get("sources", [])
-                            }
-                            
-                            # 顯示來源文檔
-                            if include_sources and result.get("sources"):
-                                # 使用集合去重
-                                unique_files = {}
-                                for source in result["sources"]:
-                                    file_path = source["file_path"]
-                                    if file_path not in unique_files:
-                                        unique_files[file_path] = source
-                                
-                                # 顯示相關文件標題
-                                st.markdown("## 相關文件")
-                                
-                                # 創建相關文件表格（去重後）
-                                source_data = []
-                                for idx, (_, source) in enumerate(unique_files.items(), 1):
-                                    # 安全地處理分數格式化
-                                    if 'score' in source and source['score'] is not None:
-                                        score_display = f"{source['score']:.2f}"
-                                    else:
-                                        score_display = "未知"
-                                        
-                                    source_data.append({
-                                        "序號": idx,
-                                        "文件名": source['file_name'],
-                                        "位置": source.get('location_info', '無位置信息'),
-                                        "相關度": score_display
+                                    file_sources.append({
+                                        "file_name": file_name,
+                                        "file_path": file["file_path"],
+                                        "location_info": f"{file['file_type']} | {file['file_size']/1024:.2f}KB",
+                                        "score": 1.0
                                     })
-                                
-                                # 顯示相關文件表格
-                                st.table(source_data)
-                                
-                                # 顯示詳細相關文件信息
-                                st.markdown("### 文件詳細信息")
-                                for idx, (_, source) in enumerate(unique_files.items(), 1):
-                                    with st.expander(f"**文件 {idx}: {source['file_name']}**", expanded=False):
-                                        display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
-                                        st.write(f"文件路徑: {display_path}")
-                                        
-                                        if source.get("location_info"):
-                                            st.write(f"位置信息: {source['location_info']}")
-                                        
-                                        # 安全地處理分數顯示
-                                        if source.get("score") is not None:
-                                            st.write(f"相關度分數: {source['score']:.4f}")
-                                        else:
-                                            st.write("相關度分數: 未知")
-                                        
-                                        # 顯示相關性理由（如果有）
-                                        if show_relevance and source.get("relevance_reason"):
-                                            st.markdown("**相關性理由:**")
-                                            st.success(source["relevance_reason"])
-                                        
-                                        if source.get("content"):
-                                            st.markdown("**相關內容:**")
-                                            st.info(source["content"])
-                            
-                            # 更新聊天歷史
-                            update_chat_history(question, answer_text, result.get("sources", []))
-                    except Exception as e:
-                        st.error(f"處理問題時發生錯誤: {str(e)}")
-                        if st.button("重試"):
-                            st._rerun()
-        
-        # 顯示聊天歷史
-        if st.session_state.chat_history:
-            st.markdown("---")
-            st.markdown("## 歷史問答")
-            
-            for i, chat in enumerate(reversed(st.session_state.chat_history)):
-                with st.expander(f"問題: {chat['question']} ({chat['timestamp']})", expanded=False):
-                    st.markdown("**回答:**")
-                    st.write(chat["answer"])
+                            update_chat_history(question, answer_text, file_sources)
+                        else:
+                            update_chat_history(question, "未找到已索引文件", [])
+                    else:
+                        # 處理正常問題
+                        result = retry_with_backoff(
+                            lambda: get_answer(question, include_sources, max_sources, use_query_rewrite, show_relevance, selected_model_folder)
+                        )
+                        
+                        answer_text = result.get("answer", "無法獲取答案")
+                        sources = result.get("sources", [])
+                        
+                        # 更新聊天歷史
+                        update_chat_history(question, answer_text, sources)
                     
-                    # 顯示來源（如果有）
-                    if "sources" in chat and chat["sources"]:
-                        st.markdown("**相關文件:**")
-                        for idx, source in enumerate(chat["sources"], 1):
-                            display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
-                            st.write(f"{idx}. {source['file_name']} - {display_path}")
+                    # 清空輸入框並重新運行
+                    st.session_state.chat_input = ""
+                    st._rerun()
+                    
+                except Exception as e:
+                    error_msg = f"處理問題時發生錯誤: {str(e)}"
+                    update_chat_history(question, error_msg, [])
+                    st.session_state.chat_input = ""
+                    st._rerun()
         
         # 頁腳
         st.markdown(
@@ -709,4 +675,4 @@ if __name__ == "__main__":
     print(f"啟動Streamlit前端界面，端口: {args.port}")
 
 # Streamlit腳本執行時，直接調用main函數
-main() 
+main()
