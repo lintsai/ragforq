@@ -209,7 +209,7 @@ def main():
 
     def goto_admin():
         st.session_state.admin_tab = 1
-        st._rerun()
+        st.rerun()
 
     with st.sidebar:
         st.markdown("---")
@@ -224,6 +224,74 @@ def main():
         
         # 創建側邊欄
         with st.sidebar:
+            # 模型選擇 - 移到最上面
+            st.markdown("### 🤖 模型設置")
+            try:
+                usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
+                if usable_models_response.status_code == 200:
+                    usable_models = usable_models_response.json()
+                    if usable_models:
+                        # 找到默認模型（第一個有數據且不在訓練中的模型）
+                        default_model = None
+                        for model in usable_models:
+                            if model.get('has_data', False) and not model.get('is_training', False):
+                                default_model = model['display_name']
+                                break
+                        
+                        # 構建選項列表
+                        if default_model:
+                            model_options = [f"🌟 {default_model} (默認)"] + [model['display_name'] for model in usable_models if model['display_name'] != default_model]
+                        else:
+                            model_options = [model['display_name'] for model in usable_models]
+                        
+                        model_folder_map = {model['display_name']: model['folder_name'] for model in usable_models}
+                        
+                        selected_display_name = st.selectbox(
+                            "選擇問答模型：",
+                            options=model_options,
+                            help="選擇用於問答的向量模型，帶🌟的是系統推薦的默認模型"
+                        )
+                        
+                        # 獲取實際的文件夾名稱
+                        if selected_display_name.startswith("🌟"):
+                            # 移除星號和 "(默認)" 標記
+                            actual_name = selected_display_name.replace("🌟 ", "").replace(" (默認)", "")
+                            selected_model_folder = model_folder_map.get(actual_name)
+                        else:
+                            selected_model_folder = model_folder_map.get(selected_display_name)
+                        
+                        # 顯示當前選擇的模型狀態
+                        current_model_info = None
+                        for model in usable_models:
+                            model_name = model['display_name']
+                            if (selected_display_name.startswith("🌟") and model_name in selected_display_name) or model_name == selected_display_name:
+                                current_model_info = model
+                                break
+                        
+                        if current_model_info:
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if current_model_info.get('has_data', False):
+                                    st.success("✅ 有數據")
+                                else:
+                                    st.warning("⚠️ 無數據")
+                            with col2:
+                                if current_model_info.get('is_training', False):
+                                    st.warning("⏳ 訓練中")
+                                else:
+                                    st.success("✅ 可用")
+                    else:
+                        st.warning("沒有可用的向量模型，將使用系統默認配置")
+                        selected_model_folder = None
+                else:
+                    st.error("無法獲取可用模型列表，將使用系統默認配置")
+                    selected_model_folder = None
+            except Exception as e:
+                st.error(f"獲取模型列表時出錯: {str(e)}，將使用系統默認配置")
+                selected_model_folder = None
+            
+            st.markdown("---")
+            
             st.markdown("### 關於")
             st.write("Q槽文件智能助手可以幫助您快速查找和了解公司內部文檔中的信息。")
             st.write("只需輸入您的問題，系統將自動搜索最相關的文檔並提供回答。")
@@ -246,37 +314,6 @@ def main():
                 if st.button(q, key=f"example_{q}"):
                     handle_example_click(q)
             
-            # 模型選擇
-            st.markdown("### 模型設置")
-            try:
-                usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
-                if usable_models_response.status_code == 200:
-                    usable_models = usable_models_response.json()
-                    if usable_models:
-                        model_options = ["使用默認配置"] + [model['display_name'] for model in usable_models]
-                        model_folder_map = {model['display_name']: model['folder_name'] for model in usable_models}
-                        
-                        selected_display_name = st.selectbox(
-                            "選擇問答模型：",
-                            options=model_options,
-                            help="選擇用於問答的向量模型"
-                        )
-                        
-                        # 獲取實際的文件夾名稱
-                        if selected_display_name == "使用默認配置":
-                            selected_model_folder = None
-                        else:
-                            selected_model_folder = model_folder_map.get(selected_display_name)
-                    else:
-                        st.warning("沒有可用的向量模型")
-                        selected_model_folder = None
-                else:
-                    st.error("無法獲取可用模型列表")
-                    selected_model_folder = None
-            except Exception as e:
-                st.error(f"獲取模型列表時出錯: {str(e)}")
-                selected_model_folder = None
-            
             # 顯示系統狀態
             st.markdown("### 系統狀態")
             status = st.session_state.api_status
@@ -296,7 +333,7 @@ def main():
             if st.button("清除歷史記錄", key="clear_history"):
                 st.session_state.chat_history = []
                 st.session_state.current_answer = None
-                st._rerun()
+                st.rerun()
 
         # 主要聊天界面
         st.header("💬 智能問答聊天")
@@ -418,12 +455,12 @@ def main():
                     update_chat_history(question, answer_text, sources)
                     
                     # 重新運行以更新界面，不修改session_state
-                    st._rerun()
+                    st.rerun()
                     
                 except Exception as e:
                     error_msg = f"處理問題時發生錯誤: {str(e)}"
                     update_chat_history(question, error_msg, [])
-                    st._rerun()
+                    st.rerun()
         
         # 頁腳
         st.markdown(
