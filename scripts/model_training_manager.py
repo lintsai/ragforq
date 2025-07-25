@@ -15,6 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.vector_db_manager import vector_db_manager
 from utils.ollama_utils import ollama_utils
+from utils.log_manager import setup_model_logger
 from indexer.document_indexer import DocumentIndexer
 from indexer.file_crawler import FileCrawler
 from config.config import Q_DRIVE_PATH, get_supported_file_extensions
@@ -262,59 +263,54 @@ class ModelTrainingManager:
 
 def main():
     """主函數"""
-    # 設置日誌
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    logger.info("模型訓練管理器啟動")
-    
-    # 優先從暫存檔案讀取（API 調用），如果沒有則從 .model 文件讀取
-    ollama_model = None
-    ollama_embedding_model = None
-    version = None
-    
+    # 讀取模型資訊並設置日誌
+    model_folder_name = None
     try:
-        logger.info("正在讀取訓練資訊檔案...")
         with open("temp_training_info.json", "r") as f:
             training_info = json.load(f)
         ollama_model = training_info["ollama_model"]
         ollama_embedding_model = training_info["ollama_embedding_model"]
         version = training_info.get("version")
+        
+        model_folder_name = vector_db_manager.get_model_folder_name(ollama_model, ollama_embedding_model, version)
+        setup_model_logger(model_folder_name)
+        
         logger.info(f"從臨時文件讀取到模型資訊: {ollama_model} + {ollama_embedding_model}, 版本: {version}")
+
     except FileNotFoundError:
-        logger.info("未找到臨時訓練資訊檔案，嘗試從現有模型中選擇...")
-        # 從可用的模型中選擇一個進行增量訓練
+        # 如果沒有臨時文件，則為自動增量訓練，選擇第一個可用模型
         try:
             usable_models = vector_db_manager.get_usable_models()
             if not usable_models:
+                logging.basicConfig(level=logging.INFO) # Fallback logger
                 logger.error("沒有可用的模型進行增量訓練，請先進行初始訓練")
                 sys.exit(1)
             
-            # 選擇第一個可用模型
             selected_model = usable_models[0]
             model_info = selected_model['model_info']
             ollama_model = model_info['OLLAMA_MODEL']
             ollama_embedding_model = model_info['OLLAMA_EMBEDDING_MODEL']
             version = model_info.get('version')
-            
+            model_folder_name = selected_model['folder_name']
+
+            setup_model_logger(model_folder_name)
             logger.info(f"自動選擇模型: {ollama_model} + {ollama_embedding_model}, 版本: {version}")
-            logger.info(f"模型路徑: {selected_model['folder_path']}")
-            
+
         except Exception as e:
+            logging.basicConfig(level=logging.INFO) # Fallback logger
             logger.error(f"獲取可用模型失敗: {str(e)}")
             sys.exit(1)
-    except json.JSONDecodeError as e:
-        logger.error(f"解析訓練資訊檔案失敗: {str(e)}")
-        sys.exit(1)
-    except KeyError as e:
-        logger.error(f"訓練資訊檔案缺少必要欄位: {str(e)}")
+
+    except Exception as e:
+        logging.basicConfig(level=logging.INFO) # Fallback logger
+        logger.error(f"讀取訓練資訊或設置日誌時出錯: {e}")
         sys.exit(1)
 
+    logger.info("模型訓練管理器啟動")
+    
     manager = ModelTrainingManager()
 
-    action = sys.argv[1] if len(sys.argv) > 1 else None
+    action = sys.argv[1] if len(sys.argv) > 1 else 'incremental' # 默認為增量
     logger.info(f"執行動作: {action}")
 
     try:

@@ -11,6 +11,8 @@ import requests
 from typing import List, Dict, Any, Optional
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
+import pytz
 
 # 添加項目根目錄到路徑
 frontend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -166,7 +168,7 @@ def update_chat_history(question, answer, sources=None, rewritten_question=None)
         "answer": answer,
         "sources": sources,
         "rewritten_question": rewritten_question,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d %H:%M:%S")
     })
 
 # 處理範例問題點擊
@@ -482,6 +484,41 @@ def main():
                             help="用於文本嵌入的模型"
                         )
                     
+                    # 版本選擇
+                    st.markdown("### 版本管理")
+                    version_options = ["✨ 建立新版本"]
+                    existing_versions = []
+                    try:
+                        versions_resp = requests.get(
+                            f"{API_URL}/api/model-versions",
+                            params={
+                                "ollama_model": selected_ollama_model,
+                                "ollama_embedding_model": selected_embedding_model
+                            },
+                            timeout=5
+                        )
+                        if versions_resp.status_code == 200:
+                            existing_versions = [v['version'] for v in versions_resp.json() if v.get('version')]
+                            version_options.extend(sorted(existing_versions, reverse=True))
+                    except Exception as e:
+                        st.warning(f"無法獲取版本列表: {e}")
+
+                    selected_version_option = st.selectbox(
+                        "選擇訓練版本:",
+                        options=version_options,
+                        help="選擇一個現有版本進行增量訓練，或建立一個帶有今天日期的新版本。"
+                    )
+
+                    # 確定最終要發送到API的版本號
+                    final_version = None
+                    if selected_version_option == "✨ 建立新版本":
+                        from datetime import datetime
+                        import pytz
+                        final_version = datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y%m%d')
+                        st.info(f"將建立新版本: **{final_version}**")
+                    else:
+                        final_version = selected_version_option
+
                     # 檢查向量數據是否存在
                     try:
                         vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=5)
@@ -493,10 +530,14 @@ def main():
                             current_model_has_data = False
                             current_model_training = False
                             
+                            # 構建目標資料夾名稱以進行精確匹配
+                            # 注意：此處的前端邏輯無法完美複製後端的 folder_name 生成，但可以模擬
+                            target_folder_part = f"{selected_ollama_model.replace(':', '_')}@{selected_embedding_model.replace(':', '_')}"
+                            if final_version:
+                                target_folder_part += f"#{final_version}"
+
                             for model in vector_models:
-                                if (model['model_info'] and 
-                                    model['model_info'].get('OLLAMA_MODEL') == selected_ollama_model and
-                                    model['model_info'].get('OLLAMA_EMBEDDING_MODEL') == selected_embedding_model):
+                                if target_folder_part in model['folder_name']:
                                     current_model_exists = True
                                     current_model_has_data = model['has_data']
                                     current_model_training = model['is_training']
@@ -506,13 +547,13 @@ def main():
                             st.markdown("### 當前選擇模型狀態")
                             if current_model_exists:
                                 if current_model_training:
-                                    st.warning("⏳ 該模型組合正在訓練中（資料夾內有.lock檔）...")
+                                    st.warning("⏳ 該模型版本正在訓練中...")
                                 elif current_model_has_data:
-                                    st.success("✅ 該模型組合已有向量數據，可進行增量訓練或重新索引")
+                                    st.success("✅ 該模型版本已有向量數據，可進行增量訓練或重新索引")
                                 else:
-                                    st.info("📝 該模型組合已創建但無數據，可進行初始訓練")
+                                    st.info("📝 該模型版本已創建但無數據，可進行初始訓練")
                             else:
-                                st.info("🆕 該模型組合尚未創建，將創建新的向量資料夾進行初始訓練")
+                                st.info("🆕 該模型版本尚未創建，將創建新的向量資料夾進行初始訓練")
                     except:
                         pass
                     
@@ -522,14 +563,15 @@ def main():
                     
                     with btn_cols[0]:
                         if st.button("🚀 初始訓練", key="new_initial_training", 
-                                   disabled=current_model_training if 'current_model_training' in locals() else False):
+                                   disabled=current_model_training or (current_model_exists and current_model_has_data)):
                             try:
                                 resp = requests.post(
                                     f"{API_URL}/admin/training/initial",
                                     headers={"admin_token": admin_token},
                                     json={
                                         "ollama_model": selected_ollama_model,
-                                        "ollama_embedding_model": selected_embedding_model
+                                        "ollama_embedding_model": selected_embedding_model,
+                                        "version": final_version
                                     }
                                 )
                                 if resp.status_code == 200:
@@ -541,14 +583,15 @@ def main():
                     
                     with btn_cols[1]:
                         if st.button("📈 增量訓練", key="new_incremental_training",
-                                   disabled=current_model_training if 'current_model_training' in locals() else False):
+                                   disabled=current_model_training or not (current_model_exists and current_model_has_data)):
                             try:
                                 resp = requests.post(
                                     f"{API_URL}/admin/training/incremental",
                                     headers={"admin_token": admin_token},
                                     json={
                                         "ollama_model": selected_ollama_model,
-                                        "ollama_embedding_model": selected_embedding_model
+                                        "ollama_embedding_model": selected_embedding_model,
+                                        "version": final_version
                                     }
                                 )
                                 if resp.status_code == 200:
@@ -560,14 +603,15 @@ def main():
                     
                     with btn_cols[2]:
                         if st.button("🔄 重新索引", key="new_reindex_training",
-                                   disabled=current_model_training if 'current_model_training' in locals() else False):
+                                   disabled=current_model_training or not (current_model_exists and current_model_has_data)):
                             try:
                                 resp = requests.post(
                                     f"{API_URL}/admin/training/reindex",
                                     headers={"admin_token": admin_token},
                                     json={
                                         "ollama_model": selected_ollama_model,
-                                        "ollama_embedding_model": selected_embedding_model
+                                        "ollama_embedding_model": selected_embedding_model,
+                                        "version": final_version
                                     }
                                 )
                                 if resp.status_code == 200:
@@ -629,31 +673,90 @@ def main():
 
             
             # log下載鈕
-            with st.expander("📥 Log 下載"):
+            with st.expander("📥 Log 下載 (根據上方選擇的模型)"):
                 try:
-                    log_resp = requests.get(f"{API_URL}/admin/get_indexing_log", params={"log_type": "indexing"}, headers={"admin_token": admin_token}, timeout=10)
-                    if log_resp.status_code == 200:
-                        st.download_button("下載索引Log", data=log_resp.content, file_name="indexing.log", mime="text/plain")
+                    # 獲取所有日誌文件列表
+                    log_list_resp = requests.get(f"{API_URL}/admin/logs", headers={"admin_token": admin_token}, timeout=10)
+                    if log_list_resp.status_code == 200:
+                        all_log_files = log_list_resp.json()
+                        
+                        # 根據當前選擇的模型進行篩選
+                        # 清理模型名稱以匹配日誌文件名中的格式
+                        clean_model = selected_ollama_model.replace(':', '_').replace('/', '_').replace('\\', '_')
+                        clean_embedding = selected_embedding_model.replace(':', '_').replace('/', '_').replace('\\', '_')
+                        
+                        relevant_logs = [
+                            log for log in all_log_files 
+                            if clean_model in log and clean_embedding in log
+                        ]
+
+                        if relevant_logs:
+                            selected_log = st.selectbox("選擇要下載的日誌文件:", options=relevant_logs, key="log_selector")
+                            
+                            if selected_log:
+                                # 準備下載按鈕
+                                log_content_resp = requests.get(
+                                    f"{API_URL}/admin/download_log",
+                                    params={"filename": selected_log},
+                                    headers={"admin_token": admin_token},
+                                    timeout=20
+                                )
+                                if log_content_resp.status_code == 200:
+                                    st.download_button(
+                                        label=f"下載 {selected_log}",
+                                        data=log_content_resp.content,
+                                        file_name=selected_log,
+                                        mime="text/plain",
+                                        key=f"download_{selected_log}"
+                                    )
+                                else:
+                                    st.error(f"無法獲取日誌 '{selected_log}' 的內容")
+                        else:
+                            st.info("找不到與當前所選模型相關的日誌文件。")
                     else:
-                        st.warning("尚無日誌可下載")
+                        st.error("無法獲取日誌文件列表。")
                 except Exception as e:
-                    st.error(f"下載Log失敗: {e}")
+                    st.error(f"獲取日誌時發生錯誤: {e}")
             
             # --- 監控當前狀態 ---
             st.markdown("---")
             st.subheader("📈 監控當前狀態")
             st_autorefresh(interval=60000, key="monitor_all_autorefresh")
+            
+            # 獲取當前選擇模型的 folder_name
+            model_folder_name = None
             try:
-                resp = requests.get(f"{API_URL}/admin/monitor_all", headers={"admin_token": admin_token}, timeout=10)
+                folder_name_resp = requests.get(
+                    f"{API_URL}/api/internal/get-model-folder-name",
+                    params={
+                        "ollama_model": selected_ollama_model,
+                        "ollama_embedding_model": selected_embedding_model,
+                        "version": final_version
+                    },
+                    timeout=5
+                )
+                if folder_name_resp.status_code == 200:
+                    model_folder_name = folder_name_resp.json().get("folder_name")
+            except Exception as e:
+                st.warning(f"無法獲取模型文件夾名稱: {e}")
+
+            try:
+                params = {}
+                if model_folder_name:
+                    params["model_folder_name"] = model_folder_name
+
+                resp = requests.get(f"{API_URL}/admin/monitor_all", headers={"admin_token": admin_token}, params=params, timeout=10)
+                
                 if resp.status_code == 200:
                     data = resp.json()
                     status_text = data.get('status', '')
                     progress_text = data.get('progress', '')
                     realtime_text = data.get('realtime', '')
                 else:
-                    status_text = progress_text = realtime_text = "(監控API回應異常)"
+                    status_text = progress_text = realtime_text = f"(監控API回應異常: {resp.status_code})"
             except Exception as e:
                 status_text = progress_text = realtime_text = f"監控API錯誤: {e}"
+
             st.markdown("#### 狀態 Console")
             st.code(status_text, language="bash")
             st.markdown("#### 進度 Console")

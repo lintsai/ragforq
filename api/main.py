@@ -10,7 +10,7 @@ from pydantic import BaseModel
 import uvicorn
 import subprocess
 from fastapi.responses import FileResponse, PlainTextResponse
-from scripts.monitor_indexing import get_status_text, get_progress_text, get_monitor_text
+from scripts.monitor_indexing import get_status_text, get_progress_text, get_monitor_text, get_indexing_status
 
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -293,13 +293,35 @@ async def ask_question(request: QuestionRequest):
 
 
 
-@app.get("/admin/get_indexing_log")
-async def get_indexing_log(request: Request, log_type: str = "indexing"):  # log_type: indexing/reindex
+@app.get("/admin/logs")
+async def list_logs(request: Request):
+    """列出所有可用的日誌文件"""
     await check_admin(request)
-    log_file = f"logs/{log_type}.log" if log_type != "indexing" else "logs/indexing.log"
-    if not os.path.exists(log_file):
+    log_dir = Path("logs")
+    if not log_dir.exists():
+        return []
+    
+    log_files = [f.name for f in log_dir.iterdir() if f.is_file() and f.name.endswith(".log")]
+    return sorted(log_files, reverse=True)
+
+@app.get("/admin/download_log")
+async def download_log(request: Request, filename: str = Query(...)):
+    """下載指定的日誌文件"""
+    await check_admin(request)
+    
+    # 安全性檢查：防止路徑遍歷
+    if '/' in filename or '\\' in filename:
+        raise HTTPException(status_code=400, detail="無效的文件名")
+        
+    log_file = Path("logs") / filename
+    
+    if not log_file.exists() or not log_file.is_file():
         return PlainTextResponse("(尚無日誌)", status_code=404)
-    return FileResponse(log_file, filename=os.path.basename(log_file), media_type='text/plain')
+        
+    return FileResponse(str(log_file), filename=log_file.name, media_type='text/plain')
+
+
+
 
 @app.get("/admin/monitor_status")
 async def monitor_status(request: Request):
@@ -317,13 +339,22 @@ async def monitor_realtime(request: Request):
     return PlainTextResponse(get_monitor_text(once=True))
 
 @app.get("/admin/monitor_all")
-async def monitor_all(request: Request):
+async def monitor_all(request: Request, model_folder_name: Optional[str] = Query(None)):
     await check_admin(request)
+    indexing_status = get_indexing_status(model_folder_name)
     return {
-        "status": get_status_text(),
-        "progress": get_progress_text(),
-        "realtime": get_monitor_text(once=True)
+        "status": get_status_text(model_folder_name),
+        "progress": get_progress_text(model_folder_name),
+        "realtime": get_monitor_text(model_folder_name, once=True),
+        "training_model": indexing_status.get('training_model_name')
     }
+
+# 新增：內部使用的API
+@app.get("/api/internal/get-model-folder-name")
+async def get_model_folder_name_endpoint(ollama_model: str, ollama_embedding_model: str, version: Optional[str] = None):
+    """根據模型組件生成標準化的文件夾名稱"""
+    folder_name = vector_db_manager.get_model_folder_name(ollama_model, ollama_embedding_model, version)
+    return {"folder_name": folder_name}
 
 # 新增：模型管理相關 API
 @app.get("/api/ollama/models", response_model=List[ModelInfo])
@@ -397,6 +428,16 @@ async def get_usable_models():
     except Exception as e:
         logger.error(f"獲取可用模型列表失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"獲取可用模型列表失敗: {str(e)}")
+
+@app.get("/api/model-versions", response_model=List[Dict[str, Any]])
+async def get_model_versions(ollama_model: str = Query(...), ollama_embedding_model: str = Query(...)):
+    """獲取指定模型組合的所有版本"""
+    try:
+        versions = vector_db_manager.get_model_versions(ollama_model, ollama_embedding_model)
+        return versions
+    except Exception as e:
+        logger.error(f"獲取模型版本列表失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取模型版本列表失敗: {str(e)}")
 
 @app.post("/admin/training/initial")
 async def start_initial_training(request: Request, training_request: TrainingRequest):

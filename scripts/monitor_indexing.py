@@ -10,9 +10,14 @@ import json
 import argparse
 from pathlib import Path
 from datetime import datetime
+import pytz
+from typing import Optional
 
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.vector_db_manager import VectorDBManager
+
 
 def clear_screen():
     """清屏"""
@@ -29,11 +34,38 @@ def get_file_size_str(size_bytes):
         i += 1
     return f"{size_bytes:.1f}{size_names[i]}"
 
-def get_indexing_status():
-    """獲取索引狀態"""
-    from config.config import VECTOR_DB_PATH
+def get_indexing_status(model_folder_name: Optional[str] = None):
+    """
+    獲取索引狀態。
+    如果提供了 model_folder_name，則只獲取該模型的狀態。
+    否則，掃描所有模型以查找正在訓練的模型。
+    """
+    db_manager = VectorDBManager()
     
+    training_model_path = None
+    display_name = None
+
+    if model_folder_name:
+        # 檢查特定模型
+        model_path = db_manager.base_path / model_folder_name
+        if model_path.exists():
+            model_info = db_manager.get_model_info(model_path)
+            display_name = db_manager._get_display_name(model_folder_name, model_info)
+            # 只有當它真的在訓練時，才將其視為目標
+            if db_manager.is_training(model_path):
+                 training_model_path = model_path
+    else:
+        # 全域掃描
+        models = db_manager.list_available_models()
+        for model in models:
+            if model['is_training']:
+                training_model_path = Path(model['folder_path'])
+                display_name = model['display_name']
+                break
+
     status = {
+        'training_model_name': display_name if training_model_path else (display_name if model_folder_name else None),
+        'is_training': training_model_path is not None,
         'progress_file_exists': False,
         'progress': {},
         'indexed_files_count': 0,
@@ -42,8 +74,14 @@ def get_indexing_status():
         'last_log_lines': []
     }
     
+    # 狀態報告的目標路徑（無論是否在訓練中）
+    status_target_path = db_manager.base_path / model_folder_name if model_folder_name else training_model_path
+
+    if not status_target_path:
+        return status
+
     # 檢查進度文件
-    progress_file = Path(VECTOR_DB_PATH) / "indexing_progress.json"
+    progress_file = status_target_path / "indexing_progress.json"
     if progress_file.exists():
         status['progress_file_exists'] = True
         try:
@@ -53,7 +91,7 @@ def get_indexing_status():
             status['progress'] = {'error': str(e)}
     
     # 檢查已索引文件數量
-    indexed_files_path = Path(VECTOR_DB_PATH) / "indexed_files.pkl"
+    indexed_files_path = status_target_path / "indexed_files.pkl"
     if indexed_files_path.exists():
         try:
             import pickle
@@ -65,8 +103,8 @@ def get_indexing_status():
     
     # 檢查向量數據庫大小
     vector_files = [
-        Path(VECTOR_DB_PATH) / "index.faiss",
-        Path(VECTOR_DB_PATH) / "index.pkl"
+        status_target_path / "index.faiss",
+        status_target_path / "index.pkl"
     ]
     total_size = 0
     for file_path in vector_files:
@@ -75,7 +113,7 @@ def get_indexing_status():
     status['vector_db_size'] = total_size
     
     # 檢查日誌文件
-    log_file = Path("logs/indexing.log")
+    log_file = Path(f"logs/{status_target_path.name}.log")
     if log_file.exists():
         status['log_file_size'] = log_file.stat().st_size
         try:
@@ -125,25 +163,33 @@ def get_system_status():
     
     return status
 
-def display_status():
+def display_status(model_folder_name: Optional[str] = None):
     """顯示狀態信息"""
     clear_screen()
     
     print("=" * 80)
-    print(f"索引監控面板 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"索引監控面板 - {datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
     
     # 獲取狀態
-    indexing_status = get_indexing_status()
+    indexing_status = get_indexing_status(model_folder_name)
     system_status = get_system_status()
     
     # 顯示索引狀態
     print("\n📊 索引狀態:")
     print("-" * 40)
     
+    training_model_name = indexing_status.get('training_model_name')
+    if training_model_name:
+        status_text = "正在訓練中" if indexing_status.get('is_training') else "已選擇（未在訓練）"
+        print(f"🎯 當前監控模型: {training_model_name} ({status_text})")
+    else:
+        print("💤 未指定監控模型或無模型正在訓練")
+
     if indexing_status['progress_file_exists']:
         progress = indexing_status['progress']
         if 'error' in progress:
+
             print(f"❌ 進度文件錯誤: {progress['error']}")
         else:
             in_progress = progress.get('in_progress', False)
@@ -265,31 +311,34 @@ def reset_progress():
     except Exception as e:
         print(f"❌ 重置進度失敗: {str(e)}")
 
-def get_status_text():
+def get_status_text(model_folder_name: Optional[str] = None):
     from io import StringIO
     import sys as _sys
     buf = StringIO()
     _stdout = _sys.stdout
     _sys.stdout = buf
     try:
-        display_status()
+        display_status(model_folder_name)
     finally:
         _sys.stdout = _stdout
     return buf.getvalue()
 
-def get_progress_text():
+def get_progress_text(model_folder_name: Optional[str] = None):
     from io import StringIO
     import sys as _sys
     buf = StringIO()
     _stdout = _sys.stdout
     _sys.stdout = buf
     try:
+        # Note: show_detailed_progress is not yet adapted for model_folder_name
+        # It will need similar logic to get_indexing_status if used.
+        # For now, it might report global state.
         show_detailed_progress()
     finally:
         _sys.stdout = _stdout
     return buf.getvalue()
 
-def get_monitor_text(interval=5, once=False):
+def get_monitor_text(model_folder_name: Optional[str] = None, interval=5, once=False):
     from io import StringIO
     import sys as _sys
     import time as _time
@@ -298,17 +347,18 @@ def get_monitor_text(interval=5, once=False):
     _sys.stdout = buf
     try:
         if once:
-            display_status()
+            display_status(model_folder_name)
         else:
             try:
                 while True:
-                    display_status()
+                    display_status(model_folder_name)
                     _time.sleep(interval)
             except KeyboardInterrupt:
                 print("\n\n監控已停止")
     finally:
         _sys.stdout = _stdout
     return buf.getvalue()
+
 
 def main():
     parser = argparse.ArgumentParser(description="索引監控工具")
