@@ -672,7 +672,107 @@ def main():
             
 
             
+            # 鎖定狀態管理
+            st.markdown("---")
+            st.subheader("🔒 鎖定狀態管理")
+            
+            try:
+                lock_status_resp = requests.get(f"{API_URL}/admin/lock-status", headers={"admin_token": admin_token}, timeout=10)
+                if lock_status_resp.status_code == 200:
+                    lock_status_list = lock_status_resp.json()
+                    
+                    if lock_status_list:
+                        for status in lock_status_list:
+                            with st.expander(f"🔐 {status['model_name']}", expanded=False):
+                                col1, col2, col3 = st.columns(3)
+                                
+                                with col1:
+                                    if status['is_locked']:
+                                        if status['is_lock_valid']:
+                                            st.warning("🔒 已鎖定 (有效)")
+                                        else:
+                                            st.error("🔒 已鎖定 (無效)")
+                                    else:
+                                        st.success("🔓 未鎖定")
+                                
+                                with col2:
+                                    if status['has_data']:
+                                        st.success("✅ 有數據")
+                                    else:
+                                        st.warning("⚠️ 無數據")
+                                
+                                with col3:
+                                    if status['can_use']:
+                                        st.success("🟢 可使用")
+                                    else:
+                                        st.error("🔴 不可使用")
+                                
+                                st.write(f"**狀態說明:** {status['lock_reason']}")
+                                
+                                if status['lock_info']:
+                                    st.write("**鎖定詳情:**")
+                                    lock_info = status['lock_info']
+                                    if 'created_at' in lock_info:
+                                        st.write(f"- 鎖定時間: {lock_info['created_at']}")
+                                    if 'pid' in lock_info:
+                                        st.write(f"- 進程ID: {lock_info['pid']}")
+                                    if 'process_name' in lock_info:
+                                        st.write(f"- 進程名稱: {lock_info['process_name']}")
+                                
+                                # 解鎖按鈕
+                                if status['is_locked']:
+                                    unlock_reason = st.text_input(
+                                        "解鎖原因:", 
+                                        value="管理員手動解鎖", 
+                                        key=f"unlock_reason_{status['folder_name']}"
+                                    )
+                                    
+                                    if st.button(f"🔓 強制解鎖", key=f"unlock_{status['folder_name']}"):
+                                        try:
+                                            unlock_resp = requests.post(
+                                                f"{API_URL}/admin/force-unlock",
+                                                headers={"admin_token": admin_token},
+                                                json={
+                                                    "folder_name": status['folder_name'],
+                                                    "reason": unlock_reason
+                                                }
+                                            )
+                                            if unlock_resp.status_code == 200:
+                                                result = unlock_resp.json()
+                                                st.success(f"✅ {result['message']}")
+                                                st.rerun()
+                                            else:
+                                                st.error(f"❌ 解鎖失敗: {unlock_resp.text}")
+                                        except Exception as e:
+                                            st.error(f"❌ 解鎖操作失敗: {e}")
+                        
+                        # 批量清理無效鎖定
+                        st.markdown("### 批量操作")
+                        if st.button("🧹 清理所有無效鎖定", key="cleanup_locks"):
+                            try:
+                                cleanup_resp = requests.post(
+                                    f"{API_URL}/admin/cleanup-invalid-locks",
+                                    headers={"admin_token": admin_token}
+                                )
+                                if cleanup_resp.status_code == 200:
+                                    result = cleanup_resp.json()
+                                    st.success("✅ 清理完成")
+                                    for model_name, message in result['results'].items():
+                                        st.info(f"- {model_name}: {message}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ 清理失敗: {cleanup_resp.text}")
+                            except Exception as e:
+                                st.error(f"❌ 清理操作失敗: {e}")
+                    else:
+                        st.info("沒有找到任何模型")
+                else:
+                    st.error("無法獲取鎖定狀態")
+            except Exception as e:
+                st.error(f"獲取鎖定狀態失敗: {e}")
+
             # log下載鈕
+            st.markdown("---")
             with st.expander("📥 Log 下載 (根據上方選擇的模型)"):
                 try:
                     # 獲取所有日誌文件列表

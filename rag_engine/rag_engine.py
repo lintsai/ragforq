@@ -230,11 +230,22 @@ class RAGEngine:
             # 創建查詢改寫鏈
             rewrite_chain = rewrite_prompt | self.llm | StrOutputParser()
             
-            # 獲取改寫結果
-            rewritten_query = rewrite_chain.invoke({
-                "question": original_query,
-                "language": language
-            })
+            # 使用超時機制獲取改寫結果
+            import concurrent.futures
+            
+            def _invoke_rewrite():
+                return rewrite_chain.invoke({
+                    "question": original_query,
+                    "language": language
+                })
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_invoke_rewrite)
+                try:
+                    rewritten_query = future.result(timeout=15)  # 15秒超時
+                except concurrent.futures.TimeoutError:
+                    logger.error("查詢改寫超時，使用原始查詢")
+                    return original_query
             logger.info(f"原始查詢: {original_query}")
             logger.info(f"改寫查詢: {rewritten_query}")
             
@@ -294,10 +305,22 @@ class RAGEngine:
             docs = self.retrieve_documents(question)
             context = self.format_context(docs)
             
-            rag_response = qa_chain_with_lang.invoke({
-                "context": context,
-                "question": question
-            })
+            # 使用超時機制調用LangChain
+            import concurrent.futures
+            
+            def _invoke_chain():
+                return qa_chain_with_lang.invoke({
+                    "context": context,
+                    "question": question
+                })
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_invoke_chain)
+                try:
+                    rag_response = future.result(timeout=90)  # 90秒超時
+                except concurrent.futures.TimeoutError:
+                    logger.error("RAG問答鏈調用超時")
+                    return "系統正在處理您的問題，但響應時間較長。這可能是由於系統負載較高。建議您稍後再試，或聯繫管理員檢查系統狀態。"
             
             # 第二步：檢查是否觸發了Fallback
             if "[NO_DOCUMENT_ANSWER]" in rag_response:
@@ -314,10 +337,19 @@ class RAGEngine:
                 )
                 general_chain_with_lang = general_prompt_with_lang | self.llm | StrOutputParser()
 
-                # 觸發通用知識鏈
-                general_response = general_chain_with_lang.invoke({
-                    "question": question
-                })
+                # 使用超時機制觸發通用知識鏈
+                def _invoke_general_chain():
+                    return general_chain_with_lang.invoke({
+                        "question": question
+                    })
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_invoke_general_chain)
+                    try:
+                        general_response = future.result(timeout=20)  # 20秒超時
+                    except concurrent.futures.TimeoutError:
+                        logger.error("通用知識鏈調用超時")
+                        return "抱歉，系統響應超時，請稍後再試。"
                 
                 # 構建帶有免責聲明的最終回答
                 disclaimer = "（在您提供的文檔中未找到直接答案，以下是基於通用知識的回答。請注意，此內容僅為模型基於公開資訊的推論，並非肯定答案。）"

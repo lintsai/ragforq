@@ -81,8 +81,13 @@ class ModelTrainingManager:
             logger.warning(f"模型 {ollama_model}+{ollama_embedding_model} 已有向量數據，請使用增量訓練或重新索引")
             return False
         
-        # 創建鎖定文件
-        self.vector_db_manager.create_lock_file(model_path)
+        # 創建鎖定文件，包含進程信息
+        process_info = {
+            "training_type": "initial",
+            "model_combination": f"{ollama_model}+{ollama_embedding_model}",
+            "version": version
+        }
+        self.vector_db_manager.create_lock_file(model_path, process_info)
         
         try:
             logger.info(f"開始初始訓練: {ollama_model} + {ollama_embedding_model}")
@@ -143,8 +148,13 @@ class ModelTrainingManager:
             logger.error(f"模型 {ollama_model}+{ollama_embedding_model} 沒有向量數據，請先進行初始訓練")
             return False
         
-        # 創建鎖定文件
-        self.vector_db_manager.create_lock_file(model_path)
+        # 創建鎖定文件，包含進程信息
+        process_info = {
+            "training_type": "incremental",
+            "model_combination": f"{ollama_model}+{ollama_embedding_model}",
+            "version": version
+        }
+        self.vector_db_manager.create_lock_file(model_path, process_info)
         
         try:
             logger.info(f"開始增量訓練: {ollama_model} + {ollama_embedding_model}")
@@ -206,8 +216,13 @@ class ModelTrainingManager:
         
         model_path = self.vector_db_manager.get_model_path(ollama_model, ollama_embedding_model)
         
-        # 創建鎖定文件
-        self.vector_db_manager.create_lock_file(model_path)
+        # 創建鎖定文件，包含進程信息
+        process_info = {
+            "training_type": "reindex",
+            "model_combination": f"{ollama_model}+{ollama_embedding_model}",
+            "version": version
+        }
+        self.vector_db_manager.create_lock_file(model_path, process_info)
         
         try:
             logger.info(f"開始重新索引: {ollama_model} + {ollama_embedding_model}")

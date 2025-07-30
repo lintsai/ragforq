@@ -242,16 +242,16 @@ class VectorDBManager:
         index_pkl = model_path / "index.pkl"
         return index_faiss.exists() and index_pkl.exists()
     
-    def create_lock_file(self, model_path: Path) -> None:
+    def create_lock_file(self, model_path: Path, process_info: dict = None) -> None:
         """
         創建訓練鎖定文件
         
         Args:
             model_path: 模型文件夾路徑
+            process_info: 進程信息（可選）
         """
-        lock_file = model_path / ".lock"
-        lock_file.touch()
-        logger.info(f"創建訓練鎖定文件: {lock_file}")
+        from utils.training_lock_manager import training_lock_manager
+        training_lock_manager.create_lock(model_path, process_info)
     
     def remove_lock_file(self, model_path: Path) -> None:
         """
@@ -260,14 +260,52 @@ class VectorDBManager:
         Args:
             model_path: 模型文件夾路徑
         """
-        lock_file = model_path / ".lock"
-        if lock_file.exists():
-            lock_file.unlink()
-            logger.info(f"移除訓練鎖定文件: {lock_file}")
+        from utils.training_lock_manager import training_lock_manager
+        training_lock_manager.remove_lock(model_path)
+    
+    def is_lock_valid(self, model_path: Path) -> tuple:
+        """
+        檢查鎖定是否有效
+        
+        Args:
+            model_path: 模型文件夾路徑
+            
+        Returns:
+            (是否有效, 原因描述)
+        """
+        from utils.training_lock_manager import training_lock_manager
+        return training_lock_manager.is_lock_valid(model_path)
+    
+    def get_lock_info(self, model_path: Path) -> dict:
+        """
+        獲取鎖定詳細信息
+        
+        Args:
+            model_path: 模型文件夾路徑
+            
+        Returns:
+            鎖定信息字典
+        """
+        from utils.training_lock_manager import training_lock_manager
+        return training_lock_manager.get_lock_info(model_path)
+    
+    def force_unlock_model(self, model_path: Path, reason: str = "管理員手動解鎖") -> bool:
+        """
+        強制解鎖模型
+        
+        Args:
+            model_path: 模型文件夾路徑
+            reason: 解鎖原因
+            
+        Returns:
+            是否成功解鎖
+        """
+        from utils.training_lock_manager import training_lock_manager
+        return training_lock_manager.force_unlock(model_path, reason)
     
     def get_usable_models(self) -> List[Dict[str, Any]]:
         """
-        獲取可用於問答的模型列表（有數據且未在訓練中）
+        獲取可用於問答的模型列表（有數據且未在訓練中，或訓練鎖定無效）
         對於同一模型組合的多個版本，優先返回最新的可用版本
         
         Returns:
@@ -279,14 +317,35 @@ class VectorDBManager:
         
         # 按模型組合分組
         for model in all_models:
-            if model['has_data'] and not model['is_training']:
-                model_info = model.get('model_info')
-                if model_info:
-                    # 使用模型組合作為鍵
-                    key = f"{model_info.get('OLLAMA_MODEL', '')}@{model_info.get('OLLAMA_EMBEDDING_MODEL', '')}"
-                    if key not in model_groups:
-                        model_groups[key] = []
-                    model_groups[key].append(model)
+            if model['has_data']:
+                # 檢查是否真的不可用
+                can_use = True
+                if model['is_training']:
+                    # 檢查鎖定是否有效
+                    model_path = Path(model['folder_path'])
+                    is_valid, reason = self.is_lock_valid(model_path)
+                    if is_valid:
+                        can_use = False
+                        logger.debug(f"模型 {model['display_name']} 正在有效訓練中: {reason}")
+                    else:
+                        logger.info(f"模型 {model['display_name']} 鎖定無效，自動清理: {reason}")
+                        # 自動清理無效鎖定
+                        try:
+                            self.remove_lock_file(model_path)
+                            model['is_training'] = False  # 更新狀態
+                            logger.info(f"已清理模型 {model['display_name']} 的無效鎖定")
+                        except Exception as e:
+                            logger.error(f"清理無效鎖定失敗: {str(e)}")
+                            can_use = False  # 如果清理失敗，仍然不可用
+                
+                if can_use:
+                    model_info = model.get('model_info')
+                    if model_info:
+                        # 使用模型組合作為鍵
+                        key = f"{model_info.get('OLLAMA_MODEL', '')}@{model_info.get('OLLAMA_EMBEDDING_MODEL', '')}"
+                        if key not in model_groups:
+                            model_groups[key] = []
+                        model_groups[key].append(model)
         
         # 為每個模型組合選擇最佳版本
         for group_models in model_groups.values():

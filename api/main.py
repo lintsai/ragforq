@@ -98,10 +98,10 @@ rag_engines = {}
 
 def get_rag_engine(selected_model: Optional[str] = None):
     """
-    獲取或初始化RAG引擎
+    獲取或初始化RAG引擎，支持智能模型選擇和訓練狀態檢查
     
     Args:
-        selected_model: 選擇的模型文件夾名稱，如果為 None 則使用默認配置
+        selected_model: 選擇的模型文件夾名稱，如果為 None 則自動選擇最佳可用模型
     """
     global rag_engines
     
@@ -109,7 +109,7 @@ def get_rag_engine(selected_model: Optional[str] = None):
         if selected_model:
             # 使用指定的模型
             if selected_model not in rag_engines:
-                logger.info(f"初始化RAG引擎 - 模型: {selected_model}")
+                logger.info(f"初始化RAG引擎 - 指定模型: {selected_model}")
                 
                 # 獲取模型信息
                 models = vector_db_manager.list_available_models()
@@ -128,59 +128,88 @@ def get_rag_engine(selected_model: Optional[str] = None):
                 if not vector_db_manager.has_vector_data(Path(model_path)):
                     raise HTTPException(status_code=400, detail=f"模型 {selected_model} 沒有向量數據")
                 
+                # 檢查訓練狀態和鎖定有效性
                 if vector_db_manager.is_training(Path(model_path)):
-                    raise HTTPException(status_code=400, detail=f"模型 {selected_model} 正在訓練中")
+                    is_valid, reason = vector_db_manager.is_lock_valid(Path(model_path))
+                    if is_valid:
+                        raise HTTPException(status_code=423, detail=f"模型 {selected_model} 正在訓練中: {reason}")
+                    else:
+                        # 鎖定無效，自動清理
+                        logger.warning(f"檢測到無效鎖定，自動清理: {reason}")
+                        vector_db_manager.remove_lock_file(Path(model_path))
                 
-                # 創建文檔索引器和RAG引擎
-                document_indexer = DocumentIndexer(
+                # 創建安全的超時RAG引擎
+                from utils.timeout_rag_engine import create_safe_rag_engine
+                rag_engines[selected_model] = create_safe_rag_engine(
                     vector_db_path=model_path,
-                    ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL']
-                )
-                rag_engines[selected_model] = RAGEngine(
-                    document_indexer, 
-                    ollama_model=model_info['OLLAMA_MODEL']
+                    ollama_model=model_info['OLLAMA_MODEL'],
+                    ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL'],
+                    timeout=30  # 30秒超時
                 )
             
             return rag_engines[selected_model]
         else:
-            # 使用默認配置
-            if 'default' not in rag_engines:
-                logger.info("初始化默認RAG引擎...")
+            # 自動選擇最佳可用模型
+            if 'auto_selected' not in rag_engines:
+                logger.info("自動選擇最佳可用模型...")
                 
-                # 獲取可用的 Ollama 模型
-                available_models = ollama_utils.get_model_names()
-                if not available_models:
-                    raise HTTPException(status_code=503, detail="沒有可用的 Ollama 模型，請確保 Ollama 服務正在運行並已下載模型")
+                # 首先嘗試獲取可用的向量模型
+                usable_models = vector_db_manager.get_usable_models()
                 
-                # 選擇默認模型
-                default_embedding_model = None
-                default_language_model = None
-                
-                # 優先選擇常見的嵌入模型
-                for model in available_models:
-                    if 'embed' in model.lower():
-                        default_embedding_model = model
-                        break
-                
-                # 選擇語言模型
-                for model in available_models:
-                    if 'embed' not in model.lower():
-                        default_language_model = model
-                        break
-                
-                # 如果沒有找到合適的模型，使用第一個可用模型
-                if not default_embedding_model:
-                    default_embedding_model = available_models[0]
-                if not default_language_model:
-                    default_language_model = available_models[0]
-                
-                logger.info(f"使用默認模型 - 語言模型: {default_language_model}, 嵌入模型: {default_embedding_model}")
-                
-                # 使用默認模型創建文檔索引器和RAG引擎
-                document_indexer = DocumentIndexer(ollama_embedding_model=default_embedding_model)
-                rag_engines['default'] = RAGEngine(document_indexer, ollama_model=default_language_model)
+                if usable_models:
+                    # 使用第一個可用的向量模型
+                    best_model = usable_models[0]
+                    model_info = best_model['model_info']
+                    model_path = best_model['folder_path']
+                    
+                    logger.info(f"自動選擇向量模型: {best_model['display_name']}")
+                    
+                    # 創建安全的超時RAG引擎
+                    from utils.timeout_rag_engine import create_safe_rag_engine
+                    rag_engines['auto_selected'] = create_safe_rag_engine(
+                        vector_db_path=model_path,
+                        ollama_model=model_info['OLLAMA_MODEL'],
+                        ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL'],
+                        timeout=30  # 30秒超時
+                    )
+                else:
+                    # 回退到默認配置
+                    logger.info("沒有可用的向量模型，使用默認配置...")
+                    
+                    # 獲取可用的 Ollama 模型
+                    available_models = ollama_utils.get_model_names()
+                    if not available_models:
+                        raise HTTPException(status_code=503, detail="沒有可用的 Ollama 模型，請確保 Ollama 服務正在運行並已下載模型")
+                    
+                    # 選擇默認模型
+                    default_embedding_model = None
+                    default_language_model = None
+                    
+                    # 優先選擇常見的嵌入模型
+                    for model in available_models:
+                        if 'embed' in model.lower():
+                            default_embedding_model = model
+                            break
+                    
+                    # 選擇語言模型
+                    for model in available_models:
+                        if 'embed' not in model.lower():
+                            default_language_model = model
+                            break
+                    
+                    # 如果沒有找到合適的模型，使用第一個可用模型
+                    if not default_embedding_model:
+                        default_embedding_model = available_models[0]
+                    if not default_language_model:
+                        default_language_model = available_models[0]
+                    
+                    logger.info(f"使用默認模型 - 語言模型: {default_language_model}, 嵌入模型: {default_embedding_model}")
+                    
+                    # 使用默認模型創建文檔索引器和RAG引擎
+                    document_indexer = DocumentIndexer(ollama_embedding_model=default_embedding_model)
+                    rag_engines['auto_selected'] = RAGEngine(document_indexer, ollama_model=default_language_model)
             
-            return rag_engines['default']
+            return rag_engines['auto_selected']
     
     except HTTPException:
         # 重新拋出 HTTP 異常
@@ -531,6 +560,96 @@ async def start_reindex_training(request: Request, training_request: TrainingReq
     except Exception as e:
         logger.error(f"開始重新索引失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"開始重新索引失敗: {str(e)}")
+
+@app.get("/admin/lock-status")
+async def get_lock_status(request: Request):
+    """獲取所有模型的鎖定狀態"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        lock_status = []
+        
+        for model in models:
+            model_path = Path(model['folder_path'])
+            is_locked = vector_db_manager.is_training(model_path)
+            
+            if is_locked:
+                is_valid, reason = vector_db_manager.is_lock_valid(model_path)
+                lock_info = vector_db_manager.get_lock_info(model_path)
+            else:
+                is_valid, reason = True, "沒有鎖定"
+                lock_info = None
+            
+            lock_status.append({
+                "model_name": model['display_name'],
+                "folder_name": model['folder_name'],
+                "is_locked": is_locked,
+                "is_lock_valid": is_valid,
+                "lock_reason": reason,
+                "lock_info": lock_info,
+                "has_data": model['has_data'],
+                "can_use": model['has_data'] and (not is_locked or not is_valid)
+            })
+        
+        return lock_status
+    except Exception as e:
+        logger.error(f"獲取鎖定狀態失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取鎖定狀態失敗: {str(e)}")
+
+@app.post("/admin/force-unlock")
+async def force_unlock_model(request: Request, folder_name: str = Body(...), reason: str = Body("管理員手動解鎖")):
+    """強制解鎖指定模型"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        model_path = Path(target_model['folder_path'])
+        
+        if not vector_db_manager.is_training(model_path):
+            return {"status": "success", "message": "模型沒有被鎖定"}
+        
+        success = vector_db_manager.force_unlock_model(model_path, reason)
+        
+        if success:
+            # 清理對應的RAG引擎緩存
+            if folder_name in rag_engines:
+                del rag_engines[folder_name]
+            if 'auto_selected' in rag_engines:
+                del rag_engines['auto_selected']
+            
+            return {"status": "success", "message": f"成功解鎖模型: {target_model['display_name']}"}
+        else:
+            return {"status": "error", "message": "解鎖失敗"}
+            
+    except Exception as e:
+        logger.error(f"強制解鎖失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"強制解鎖失敗: {str(e)}")
+
+@app.post("/admin/cleanup-invalid-locks")
+async def cleanup_invalid_locks(request: Request):
+    """清理所有無效的鎖定文件"""
+    await check_admin(request)
+    try:
+        from utils.training_lock_manager import training_lock_manager
+        results = training_lock_manager.cleanup_invalid_locks(vector_db_manager.base_path)
+        
+        # 清理RAG引擎緩存
+        global rag_engines
+        rag_engines.clear()
+        
+        return {"status": "success", "results": results}
+    except Exception as e:
+        logger.error(f"清理無效鎖定失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"清理無效鎖定失敗: {str(e)}")
 
 @app.get("/health")
 async def health_check():

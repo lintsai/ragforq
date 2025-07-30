@@ -27,6 +27,7 @@ streamlit-autorefresh = "^1.0.1"
 xlrd = "^2.0.2"
 olefile = "^0.47"
 pytz = "^2025.2"
+psutil = "^7.0.0"
 
 [build-system]
 requires = ["poetry-core"]
