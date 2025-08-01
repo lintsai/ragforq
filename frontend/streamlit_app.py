@@ -243,31 +243,28 @@ def main():
                 if usable_models_response.status_code == 200:
                     usable_models = usable_models_response.json()
                     if usable_models:
-                        # 找到默認模型（第一個有數據且不在訓練中的模型）
-                        default_model = None
-                        for model in usable_models:
-                            if model.get('has_data', False) and not model.get('is_training', False):
-                                default_model = model['display_name']
-                                break
+                        # 模型已經按時間降冪排序，第一個就是最新的（默認模型）
+                        default_model = usable_models[0]['display_name']
                         
-                        # 構建選項列表
-                        if default_model:
-                            model_options = [f"🌟 {default_model} (默認)"] + [model['display_name'] for model in usable_models if model['display_name'] != default_model]
-                        else:
-                            model_options = [model['display_name'] for model in usable_models]
+                        # 構建選項列表，第一個模型標記為最新
+                        model_options = [f"🌟 {default_model} (最新)"]
+                        
+                        # 添加其他模型
+                        for model in usable_models[1:]:
+                            model_options.append(model['display_name'])
                         
                         model_folder_map = {model['display_name']: model['folder_name'] for model in usable_models}
                         
                         selected_display_name = st.selectbox(
                             "選擇問答模型：",
                             options=model_options,
-                            help="選擇用於問答的向量模型，帶🌟的是系統推薦的默認模型"
+                            help="選擇用於問答的向量模型，帶🌟的是最新訓練的默認模型"
                         )
                         
                         # 獲取實際的文件夾名稱
                         if selected_display_name.startswith("🌟"):
-                            # 移除星號和 "(默認)" 標記
-                            actual_name = selected_display_name.replace("🌟 ", "").replace(" (默認)", "")
+                            # 移除星號和 "(最新)" 標記
+                            actual_name = selected_display_name.replace("🌟 ", "").replace(" (最新)", "")
                             selected_model_folder = model_folder_map.get(actual_name)
                         else:
                             selected_model_folder = model_folder_map.get(selected_display_name)
@@ -327,8 +324,9 @@ def main():
             )
             st.session_state.selected_language = selected_language
             
-            include_sources = st.checkbox("包含相關文件", value=True)
-            max_sources = st.number_input("最大相關文件數", min_value=1, max_value=20, value=10)
+            # 固定設置，不再提供用戶選項
+            include_sources = True  # 總是包含相關文件
+            max_sources = 5  # 固定回應5筆結果
             show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關")
             use_query_rewrite = st.checkbox("使用查詢優化", value=True, help="自動改寫查詢以獲得更準確的結果")
 

@@ -306,16 +306,15 @@ class VectorDBManager:
     def get_usable_models(self) -> List[Dict[str, Any]]:
         """
         獲取可用於問答的模型列表（有數據且未在訓練中，或訓練鎖定無效）
-        對於同一模型組合的多個版本，優先返回最新的可用版本
+        按時間降冪排序，最新訓練出來的為預設
         
         Returns:
-            可用模型列表
+            可用模型列表，按創建時間降冪排序
         """
         all_models = self.list_available_models()
         usable_models = []
-        model_groups = {}  # 按模型組合分組
         
-        # 按模型組合分組
+        # 篩選可用模型
         for model in all_models:
             if model['has_data']:
                 # 檢查是否真的不可用
@@ -339,30 +338,52 @@ class VectorDBManager:
                             can_use = False  # 如果清理失敗，仍然不可用
                 
                 if can_use:
-                    model_info = model.get('model_info')
-                    if model_info:
-                        # 使用模型組合作為鍵
-                        key = f"{model_info.get('OLLAMA_MODEL', '')}@{model_info.get('OLLAMA_EMBEDDING_MODEL', '')}"
-                        if key not in model_groups:
-                            model_groups[key] = []
-                        model_groups[key].append(model)
+                    usable_models.append(model)
         
-        # 為每個模型組合選擇最佳版本
-        for group_models in model_groups.values():
-            if len(group_models) == 1:
-                usable_models.append(group_models[0])
-            else:
-                # 按版本排序，優先選擇最新版本
-                # 版本排序規則：有具體版本號的優先於 "current"，版本號按字典序倒序
-                def version_sort_key(model):
-                    version = model.get('version', 'current')
-                    if version == 'current':
-                        return ('0', '')  # current 版本排在最後
-                    else:
-                        return ('1', version)  # 具體版本按版本號倒序
-                
-                sorted_models = sorted(group_models, key=version_sort_key, reverse=True)
-                usable_models.append(sorted_models[0])  # 選擇最新版本
+        # 按時間降冪排序，當前版本優先，然後是最新的
+        def get_sort_key(model):
+            """獲取排序鍵，當前版本優先，然後按時間降冪排序"""
+            model_info = model.get('model_info', {})
+            version = model.get('version')
+            
+            # 1. 當前版本 (current) 優先級最高，使用一個很大的時間戳
+            if version == 'current':
+                import time
+                return time.time() + 999999999  # 確保當前版本排在最前面
+            
+            # 2. 優先使用 .model 文件中的 created_at 時間
+            if 'created_at' in model_info:
+                try:
+                    from datetime import datetime
+                    created_time = datetime.fromisoformat(model_info['created_at'])
+                    return created_time.timestamp()
+                except:
+                    pass
+            
+            # 3. 其次使用版本號（如果是日期格式）
+            if version and version != 'current':
+                try:
+                    # 嘗試將版本號解析為日期（格式如 20250131）
+                    if len(version) == 8 and version.isdigit():
+                        from datetime import datetime
+                        version_date = datetime.strptime(version, '%Y%m%d')
+                        return version_date.timestamp()
+                except:
+                    pass
+            
+            # 4. 最後使用文件夾的修改時間
+            try:
+                folder_path = Path(model['folder_path'])
+                if folder_path.exists():
+                    return folder_path.stat().st_mtime
+            except:
+                pass
+            
+            # 5. 如果都失敗，返回 0（最舊）
+            return 0
+        
+        # 按時間降冪排序（最新的在前）
+        usable_models.sort(key=get_sort_key, reverse=True)
         
         return usable_models
     

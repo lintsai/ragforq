@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class TimeoutRAGEngine:
     """帶超時機制的安全RAG引擎"""
     
-    def __init__(self, document_indexer, ollama_model: str, timeout: int = 30):
+    def __init__(self, document_indexer, ollama_model: str, timeout: int = 120):
         """
         初始化超時RAG引擎
         
@@ -185,13 +185,14 @@ class TimeoutRAGEngine:
             error_answer = f"抱歉，處理您的問題時發生錯誤。請稍後再試。"
             return error_answer, "", [], original_query
     
-    def generate_relevance_reason(self, question: str, doc_content: str) -> str:
+    def generate_relevance_reason(self, question: str, doc_content: str, language: str = "繁體中文") -> str:
         """
         安全的相關性理由生成
         
         Args:
             question: 用戶查詢
             doc_content: 文檔內容
+            language: 目標語言
             
         Returns:
             相關性理由描述
@@ -202,23 +203,37 @@ class TimeoutRAGEngine:
             
             # 使用較短的超時時間
             def _generate_reason():
-                return rag_engine.generate_relevance_reason(question, doc_content)
+                return rag_engine.generate_relevance_reason(question, doc_content, language)
             
             # 相關性理由生成使用較短超時時間
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_generate_reason)
                 try:
-                    result = future.result(timeout=10)  # 10秒超時
+                    result = future.result(timeout=20)  # 20秒超時
                     return result
                 except FutureTimeoutError:
                     logger.warning("相關性理由生成超時")
-                    return "相關性分析超時"
+                    # 根據語言返回超時訊息
+                    timeout_messages = {
+                        "繁體中文": "相關性分析超時",
+                        "简体中文": "相关性分析超时",
+                        "English": "Relevance analysis timeout",
+                        "ไทย": "การวิเคราะห์ความเกี่ยวข้องหมดเวลา"
+                    }
+                    return timeout_messages.get(language, "相關性分析超時")
                     
         except Exception as e:
             logger.error(f"生成相關性理由失敗: {str(e)}")
-            return "無法生成相關性理由"
+            # 根據語言返回錯誤訊息
+            error_messages = {
+                "繁體中文": "無法生成相關性理由",
+                "简体中文": "无法生成相关性理由", 
+                "English": "Unable to generate relevance reason",
+                "ไทย": "ไม่สามารถสร้างเหตุผลความเกี่ยวข้องได้"
+            }
+            return error_messages.get(language, "無法生成相關性理由")
 
-def create_safe_rag_engine(vector_db_path: str, ollama_model: str, ollama_embedding_model: str, timeout: int = 30) -> TimeoutRAGEngine:
+def create_safe_rag_engine(vector_db_path: str, ollama_model: str, ollama_embedding_model: str, timeout: int = 120) -> TimeoutRAGEngine:
     """
     創建安全的RAG引擎
     

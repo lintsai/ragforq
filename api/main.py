@@ -144,7 +144,7 @@ def get_rag_engine(selected_model: Optional[str] = None):
                     vector_db_path=model_path,
                     ollama_model=model_info['OLLAMA_MODEL'],
                     ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL'],
-                    timeout=30  # 30秒超時
+                    timeout=120  # 120秒超時
                 )
             
             return rag_engines[selected_model]
@@ -170,7 +170,7 @@ def get_rag_engine(selected_model: Optional[str] = None):
                         vector_db_path=model_path,
                         ollama_model=model_info['OLLAMA_MODEL'],
                         ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL'],
-                        timeout=30  # 30秒超時
+                        timeout=120  # 120秒超時
                     )
                 else:
                     # 回退到默認配置
@@ -284,13 +284,20 @@ async def ask_question(request: QuestionRequest):
                     if request.show_relevance:
                         # 安全獲取分數值
                         score = metadata.get("score")
-                        # 如果存在文件內容，使用LLM生成相關性理由
+                        # 如果存在文件內容，使用LLM生成相關性理由（使用用戶選擇的語言）
                         try:
                             if hasattr(doc, "page_content") and doc.page_content and doc.page_content.strip():
-                                relevance_reason = engine.generate_relevance_reason(request.question, doc.page_content)
+                                relevance_reason = engine.generate_relevance_reason(request.question, doc.page_content, request.language)
                         except Exception as e:
                             logger.error(f"生成相關性理由時出錯: {str(e)}")
-                            relevance_reason = "無法生成相關性理由"
+                            # 根據語言返回錯誤訊息
+                            error_messages = {
+                                "繁體中文": "無法生成相關性理由",
+                                "简体中文": "无法生成相关性理由",
+                                "English": "Unable to generate relevance reason",
+                                "ไทย": "ไม่สามารถสร้างเหตุผลความเกี่ยวข้องได้"
+                            }
+                            relevance_reason = error_messages.get(request.language, "無法生成相關性理由")
                     
                     source_info = SourceInfo(
                         file_name=metadata.get("file_name", os.path.basename(file_path)),
