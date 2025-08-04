@@ -16,7 +16,7 @@ from scripts.monitor_indexing import get_status_text, get_progress_text, get_mon
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.config import APP_HOST, APP_PORT, is_q_drive_accessible, ADMIN_TOKEN
-from rag_engine.rag_engine import RAGEngine
+from rag_engine.rag_engine_factory import get_rag_engine_for_language, get_supported_languages, validate_language
 from indexer.document_indexer import DocumentIndexer
 from langchain_core.documents import Document
 from utils.ollama_utils import ollama_utils
@@ -96,20 +96,29 @@ class TrainingRequest(BaseModel):
 # 初始化RAG引擎緩存
 rag_engines = {}
 
-def get_rag_engine(selected_model: Optional[str] = None):
+def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體中文"):
     """
-    獲取或初始化RAG引擎，支持智能模型選擇和訓練狀態檢查
+    獲取或初始化指定語言的RAG引擎，支持智能模型選擇和訓練狀態檢查
     
     Args:
         selected_model: 選擇的模型文件夾名稱，如果為 None 則自動選擇最佳可用模型
+        language: 目標語言
     """
     global rag_engines
     
+    # 驗證語言支持
+    if not validate_language(language):
+        logger.warning(f"不支持的語言: {language}，默認使用繁體中文")
+        language = "繁體中文"
+    
+    # 創建緩存鍵，包含語言信息
+    cache_key = f"{selected_model or 'auto_selected'}_{language}"
+    
     try:
-        if selected_model:
-            # 使用指定的模型
-            if selected_model not in rag_engines:
-                logger.info(f"初始化RAG引擎 - 指定模型: {selected_model}")
+        if cache_key not in rag_engines:
+            if selected_model:
+                # 使用指定的模型
+                logger.info(f"初始化{language}RAG引擎 - 指定模型: {selected_model}")
                 
                 # 獲取模型信息
                 models = vector_db_manager.list_available_models()
@@ -138,20 +147,21 @@ def get_rag_engine(selected_model: Optional[str] = None):
                         logger.warning(f"檢測到無效鎖定，自動清理: {reason}")
                         vector_db_manager.remove_lock_file(Path(model_path))
                 
-                # 創建安全的超時RAG引擎
-                from utils.timeout_rag_engine import create_safe_rag_engine
-                rag_engines[selected_model] = create_safe_rag_engine(
+                # 創建文檔索引器
+                document_indexer = DocumentIndexer(
                     vector_db_path=model_path,
-                    ollama_model=model_info['OLLAMA_MODEL'],
-                    ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL'],
-                    timeout=120  # 120秒超時
+                    ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL']
                 )
-            
-            return rag_engines[selected_model]
-        else:
-            # 自動選擇最佳可用模型
-            if 'auto_selected' not in rag_engines:
-                logger.info("自動選擇最佳可用模型...")
+                
+                # 使用工廠創建對應語言的RAG引擎
+                rag_engines[cache_key] = get_rag_engine_for_language(
+                    language=language,
+                    document_indexer=document_indexer,
+                    ollama_model=model_info['OLLAMA_MODEL']
+                )
+            else:
+                # 自動選擇最佳可用模型
+                logger.info(f"自動選擇最佳可用模型用於{language}...")
                 
                 # 首先嘗試獲取可用的向量模型
                 usable_models = vector_db_manager.get_usable_models()
@@ -162,19 +172,23 @@ def get_rag_engine(selected_model: Optional[str] = None):
                     model_info = best_model['model_info']
                     model_path = best_model['folder_path']
                     
-                    logger.info(f"自動選擇向量模型: {best_model['display_name']}")
+                    logger.info(f"自動選擇向量模型: {best_model['display_name']} 用於{language}")
                     
-                    # 創建安全的超時RAG引擎
-                    from utils.timeout_rag_engine import create_safe_rag_engine
-                    rag_engines['auto_selected'] = create_safe_rag_engine(
+                    # 創建文檔索引器
+                    document_indexer = DocumentIndexer(
                         vector_db_path=model_path,
-                        ollama_model=model_info['OLLAMA_MODEL'],
-                        ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL'],
-                        timeout=120  # 120秒超時
+                        ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL']
+                    )
+                    
+                    # 使用工廠創建對應語言的RAG引擎
+                    rag_engines[cache_key] = get_rag_engine_for_language(
+                        language=language,
+                        document_indexer=document_indexer,
+                        ollama_model=model_info['OLLAMA_MODEL']
                     )
                 else:
                     # 回退到默認配置
-                    logger.info("沒有可用的向量模型，使用默認配置...")
+                    logger.info(f"沒有可用的向量模型，使用默認配置用於{language}...")
                     
                     # 獲取可用的 Ollama 模型
                     available_models = ollama_utils.get_model_names()
@@ -203,20 +217,26 @@ def get_rag_engine(selected_model: Optional[str] = None):
                     if not default_language_model:
                         default_language_model = available_models[0]
                     
-                    logger.info(f"使用默認模型 - 語言模型: {default_language_model}, 嵌入模型: {default_embedding_model}")
+                    logger.info(f"使用默認模型用於{language} - 語言模型: {default_language_model}, 嵌入模型: {default_embedding_model}")
                     
-                    # 使用默認模型創建文檔索引器和RAG引擎
+                    # 使用默認模型創建文檔索引器
                     document_indexer = DocumentIndexer(ollama_embedding_model=default_embedding_model)
-                    rag_engines['auto_selected'] = RAGEngine(document_indexer, ollama_model=default_language_model)
-            
-            return rag_engines['auto_selected']
+                    
+                    # 使用工廠創建對應語言的RAG引擎
+                    rag_engines[cache_key] = get_rag_engine_for_language(
+                        language=language,
+                        document_indexer=document_indexer,
+                        ollama_model=default_language_model
+                    )
+        
+        return rag_engines[cache_key]
     
     except HTTPException:
         # 重新拋出 HTTP 異常
         raise
     except Exception as e:
-        logger.error(f"初始化 RAG 引擎時出錯: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"初始化 RAG 引擎失敗: {str(e)}")
+        logger.error(f"初始化{language} RAG 引擎時出錯: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"初始化{language} RAG 引擎失敗: {str(e)}")
 
 # 管理API - 權限驗證
 
@@ -248,69 +268,106 @@ async def ask_question(request: QuestionRequest):
     
     try:
         # 獲取RAG引擎
-        engine = get_rag_engine(request.selected_model)
+        engine = get_rag_engine(request.selected_model, request.language)
         
         # 根據是否使用查詢改寫選擇函數
         if request.use_query_rewrite:
-            answer, sources, documents, rewritten_query = engine.get_answer_with_query_rewrite(request.question, request.language)
+            answer, sources, documents, rewritten_query = engine.get_answer_with_query_rewrite(request.question)
         else:
-            answer, sources, documents = engine.get_answer_with_sources(request.question, request.language)
+            answer, sources, documents = engine.get_answer_with_sources(request.question)
             rewritten_query = None
         
-        # 處理來源
+        # 處理來源 - 按相關度排序取得最高分的文件
         source_info_list = []
         if request.include_sources and documents:
-            seen_files = set()
+            # 建立文件相關度映射 - 每個文件保留最高相關度的段落
+            file_relevance_map = {}
             
             for doc in documents:
                 metadata = doc.metadata
                 file_path = metadata.get("file_path", "")
+                score = metadata.get("score", float('inf'))  # 默認最低相關度
                 
-                if file_path and file_path not in seen_files:
-                    seen_files.add(file_path)
-                    
-                    # 提取位置信息
-                    location_info = None
-                    if "page_number" in metadata:
-                        location_info = f"頁碼: {metadata['page_number']}"
-                    elif "block_number" in metadata:
-                        location_info = f"塊: {metadata['block_number']}"
-                    elif "sheet_name" in metadata:
-                        location_info = f"工作表: {metadata['sheet_name']}"
-                    
-                    # 如果啟用了相關性理由，獲取相關性分數和理由
-                    relevance_reason = None
-                    score = None
-                    if request.show_relevance:
-                        # 安全獲取分數值
-                        score = metadata.get("score")
-                        # 如果存在文件內容，使用LLM生成相關性理由（使用用戶選擇的語言）
-                        try:
-                            if hasattr(doc, "page_content") and doc.page_content and doc.page_content.strip():
-                                relevance_reason = engine.generate_relevance_reason(request.question, doc.page_content, request.language)
-                        except Exception as e:
-                            logger.error(f"生成相關性理由時出錯: {str(e)}")
-                            # 根據語言返回錯誤訊息
-                            error_messages = {
-                                "繁體中文": "無法生成相關性理由",
-                                "简体中文": "无法生成相关性理由",
-                                "English": "Unable to generate relevance reason",
-                                "ไทย": "ไม่สามารถสร้างเหตุผลความเกี่ยวข้องได้"
-                            }
-                            relevance_reason = error_messages.get(request.language, "無法生成相關性理由")
-                    
-                    source_info = SourceInfo(
-                        file_name=metadata.get("file_name", os.path.basename(file_path)),
-                        file_path=file_path,
-                        location_info=location_info,
-                        relevance_reason=relevance_reason,
-                        score=score
-                    )
-                    source_info_list.append(source_info)
+                if file_path:
+                    # 如果文件還沒記錄，或者當前段落相關度更高（score更小）
+                    if file_path not in file_relevance_map or score < file_relevance_map[file_path]['score']:
+                        file_relevance_map[file_path] = {
+                            'doc': doc,
+                            'score': score,
+                            'metadata': metadata
+                        }
             
-            # 如果指定了最大來源數量，則限制結果
-            if request.max_sources:
-                source_info_list = source_info_list[:request.max_sources]
+            # 按相關度排序文件（score越小越相關）
+            sorted_files = sorted(file_relevance_map.items(), key=lambda x: x[1]['score'])
+            
+            # 限制來源數量，默認最多5筆
+            max_sources = request.max_sources if request.max_sources is not None else 5
+            
+            # 處理最相關的文件
+            for file_path, file_info in sorted_files[:max_sources]:
+                doc = file_info['doc']
+                metadata = file_info['metadata']
+                score = file_info['score']
+                
+                # 提取位置信息
+                location_info = None
+                if "page_number" in metadata:
+                    location_info = f"頁碼: {metadata['page_number']}"
+                elif "block_number" in metadata:
+                    location_info = f"塊: {metadata['block_number']}"
+                elif "sheet_name" in metadata:
+                    location_info = f"工作表: {metadata['sheet_name']}"
+                
+                # 暫時存儲，稍後批量生成相關性理由
+                relevance_reason = None
+                
+                source_info = SourceInfo(
+                    file_name=metadata.get("file_name", os.path.basename(file_path)),
+                    file_path=file_path,
+                    location_info=location_info,
+                    relevance_reason=relevance_reason,
+                    score=score if score != float('inf') else None
+                )
+                source_info_list.append(source_info)
+            
+            # 批量生成相關性理由，提高效能
+            if request.show_relevance and source_info_list:
+                try:
+                    # 收集所有需要生成理由的文檔內容
+                    docs_for_relevance = []
+                    for file_path, file_info in sorted_files[:max_sources]:
+                        doc = file_info['doc']
+                        if hasattr(doc, "page_content") and doc.page_content and doc.page_content.strip():
+                            docs_for_relevance.append(doc.page_content[:500])  # 限制長度
+                        else:
+                            docs_for_relevance.append("")
+                    
+                    # 批量生成相關性理由
+                    if docs_for_relevance:
+                        batch_reasons = engine.generate_batch_relevance_reasons(request.question, docs_for_relevance)
+                        
+                        # 將生成的理由分配給對應的來源
+                        for i, source_info in enumerate(source_info_list):
+                            if i < len(batch_reasons):
+                                source_info.relevance_reason = batch_reasons[i]
+                            else:
+                                source_info.relevance_reason = f"相關度分數: {source_info.score:.3f}" if source_info.score else "相關文檔"
+                
+                except Exception as e:
+                    logger.error(f"批量生成相關性理由時出錯: {str(e)}")
+                    # 如果批量生成失敗，使用簡單的分數說明
+                    for source_info in source_info_list:
+                        if source_info.score is not None:
+                            if source_info.score < 0.5:
+                                source_info.relevance_reason = "高度相關文檔"
+                            elif source_info.score < 1.0:
+                                source_info.relevance_reason = "相關文檔"
+                            elif source_info.score < 1.5:
+                                source_info.relevance_reason = "部分相關文檔"
+                            else:
+                                source_info.relevance_reason = "可能相關文檔"
+                        else:
+                            source_info.relevance_reason = "相關文檔"
         
         response = {
             "answer": answer,
@@ -662,6 +719,16 @@ async def cleanup_invalid_locks(request: Request):
 async def health_check():
     """健康檢查端點"""
     return {"status": "healthy"}
+
+@app.get("/api/supported-languages")
+async def get_supported_languages_endpoint():
+    """獲取支持的語言列表"""
+    try:
+        languages = get_supported_languages()
+        return {"supported_languages": languages}
+    except Exception as e:
+        logger.error(f"獲取支持語言列表失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取支持語言列表失敗: {str(e)}")
 
 @app.get("/files", response_model=List[FileInfo])
 async def list_files():

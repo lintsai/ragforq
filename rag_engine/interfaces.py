@@ -1,0 +1,243 @@
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Tuple, Optional
+from langchain_core.documents import Document
+
+class RAGEngineInterface(ABC):
+    """RAG引擎接口，定義所有RAG引擎必須實現的方法"""
+    
+    def __init__(self, document_indexer, ollama_model: str = None):
+        """
+        初始化RAG引擎
+        
+        Args:
+            document_indexer: 文檔索引器實例
+            ollama_model: Ollama 語言模型名稱
+        """
+        self.document_indexer = document_indexer
+        self.vector_store = document_indexer.get_vector_store()
+        self.ollama_model = ollama_model
+    
+    @abstractmethod
+    def get_language(self) -> str:
+        """返回此引擎支持的語言"""
+        pass
+    
+    @abstractmethod
+    def rewrite_query(self, original_query: str) -> str:
+        """
+        將用戶查詢優化為適合向量檢索的查詢
+        
+        Args:
+            original_query: 原始用戶查詢
+            
+        Returns:
+            優化後的查詢
+        """
+        pass
+    
+    @abstractmethod
+    def answer_question(self, question: str) -> str:
+        """
+        回答用戶問題
+        
+        Args:
+            question: 用戶問題
+            
+        Returns:
+            回答內容
+        """
+        pass
+    
+    def retrieve_documents(self, query: str, top_k: int = 5) -> List[Document]:
+        """
+        檢索與查詢最相關的文檔（通用實現）
+        
+        Args:
+            query: 用戶查詢
+            top_k: 返回的最大文檔數量
+            
+        Returns:
+            按相關度排序的文檔列表
+        """
+        try:
+            vector_store = self.vector_store
+            # 檢索更多文檔以便後續按文件去重和排序
+            search_count = max(top_k * 3, 15)  # 至少檢索15個段落
+            documents = vector_store.similarity_search_with_score(query, k=search_count)
+            
+            # 按相似度排序（距離越小越相關）
+            sorted_docs = sorted(documents, key=lambda x: x[1])
+            
+            # 保留相關的文檔，使用更寬鬆的閾值
+            filtered_docs = []
+            for doc, score in sorted_docs:
+                if score < 2.0:  # 稍微放寬相似度閾值
+                    doc.metadata['score'] = score
+                    filtered_docs.append(doc)
+                    
+                    # 限制最終返回的段落數量，但保留足夠多的選擇
+                    if len(filtered_docs) >= search_count:
+                        break
+            
+            return filtered_docs
+            
+        except Exception as e:
+            # 如果失敗，使用簡單搜索
+            try:
+                documents = vector_store.similarity_search(query, k=max(top_k * 2, 10))
+                return documents
+            except Exception:
+                return []
+    
+    def format_context(self, docs: List[Document]) -> str:
+        """格式化文檔內容（通用實現）"""
+        if not docs:
+            return self._get_no_docs_message()
+            
+        context_parts = []
+        # 使用更多文檔內容，但限制總長度避免超出模型限制
+        max_docs = min(len(docs), 8)  # 最多使用8個文檔段落
+        total_length = 0
+        max_total_length = 4000  # 限制總字數避免超出模型上下文
+        
+        for i, doc in enumerate(docs[:max_docs], 1):
+            content = doc.page_content.strip()
+            if content:
+                # 檢查是否會超出總長度限制
+                if total_length + len(content) > max_total_length:
+                    # 如果會超出，截取部分內容
+                    remaining_length = max_total_length - total_length
+                    if remaining_length > 100:  # 至少保留100字符才有意義
+                        content = content[:remaining_length] + "..."
+                    else:
+                        break  # 如果剩餘空間太少，就不再添加
+                
+                # 添加文件來源信息以便用戶了解內容來源
+                file_name = doc.metadata.get("file_name", "未知文件")
+                context_parts.append(f"相關內容 {i} (來源: {file_name}):\n{content}\n")
+                total_length += len(content)
+                
+                # 如果已達到長度限制，停止添加
+                if total_length >= max_total_length:
+                    break
+                
+        return "\n".join(context_parts)
+    
+    def format_sources(self, documents: List[Document]) -> str:
+        """格式化文檔來源列表（通用實現）"""
+        sources = []
+        seen_files = set()
+        
+        for doc in documents:
+            metadata = doc.metadata
+            file_path = metadata.get("file_path", "")
+            file_name = metadata.get("file_name", "未知文件")
+            
+            if file_path and file_path not in seen_files:
+                seen_files.add(file_path)
+                location_info = ""
+                if "page_number" in metadata:
+                    location_info = f"（頁碼: {metadata['page_number']}）"
+                elif "block_number" in metadata:
+                    location_info = f"（塊: {metadata['block_number']}）"
+                elif "sheet_name" in metadata:
+                    location_info = f"（工作表: {metadata['sheet_name']}）"
+                
+                sources.append(f"- {file_name} {location_info}")
+        
+        return "\n".join(sources)
+    
+    def get_answer_with_sources(self, question: str) -> Tuple[str, str, List[Document]]:
+        """
+        回答問題並包含來源信息
+        
+        Args:
+            question: 用戶問題
+            
+        Returns:
+            (回答, 來源列表字符串, 相關文檔) 的元組
+        """
+        # 先檢索文檔，確保回答和來源使用相同的文檔
+        optimized_query = self.rewrite_query(question)
+        docs = self.retrieve_documents(optimized_query)
+        
+        if not docs:
+            # 如果沒有找到文檔，使用常識回答
+            answer = self._generate_general_knowledge_answer(question) if hasattr(self, '_generate_general_knowledge_answer') else self._get_no_docs_message()
+            return answer, "", []
+        
+        # 基於檢索到的文檔生成回答
+        context = self.format_context(docs)
+        answer = self._generate_answer(question, context) if hasattr(self, '_generate_answer') else self.answer_question(question)
+        
+        sources = self.format_sources(docs)
+        return answer, sources, docs
+    
+    def get_answer_with_query_rewrite(self, original_query: str) -> Tuple[str, str, List[Document], str]:
+        """
+        使用查詢重寫策略來優化問答效果
+        
+        Args:
+            original_query: 原始用戶問題
+            
+        Returns:
+            (回答, 來源列表字符串, 相關文檔, 重寫查詢) 的元組
+        """
+        # 先檢索文檔，確保回答和來源使用相同的文檔
+        rewritten_query = self.rewrite_query(original_query)
+        docs = self.retrieve_documents(rewritten_query)
+        
+        if not docs:
+            # 如果沒有找到文檔，使用常識回答
+            answer = self._generate_general_knowledge_answer(original_query) if hasattr(self, '_generate_general_knowledge_answer') else self._get_no_docs_message()
+            return answer, "", [], rewritten_query
+        
+        # 基於檢索到的文檔生成回答
+        context = self.format_context(docs)
+        answer = self._generate_answer(original_query, context) if hasattr(self, '_generate_answer') else self.answer_question(original_query)
+        
+        sources = self.format_sources(docs)
+        return answer, sources, docs, rewritten_query
+    
+    @abstractmethod
+    def generate_relevance_reason(self, question: str, doc_content: str) -> str:
+        """
+        生成文檔與查詢之間的相關性理由
+        
+        Args:
+            question: 用戶查詢
+            doc_content: 文檔內容
+            
+        Returns:
+            相關性理由描述
+        """
+        pass
+    
+    @abstractmethod
+    def _get_no_docs_message(self) -> str:
+        """獲取無文檔時的訊息"""
+        pass
+    
+    @abstractmethod
+    def _get_error_message(self) -> str:
+        """獲取錯誤訊息"""
+        pass
+    
+    @abstractmethod
+    def _get_timeout_message(self) -> str:
+        """獲取超時訊息"""
+        pass
+    
+    def _generate_answer(self, question: str, context: str) -> str:
+        """
+        生成回答的默認實現（子類可以重寫）
+        
+        Args:
+            question: 用戶問題
+            context: 格式化的文檔上下文
+            
+        Returns:
+            生成的回答
+        """
+        # 默認實現：直接調用answer_question
+        return self.answer_question(question)

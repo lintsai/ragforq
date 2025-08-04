@@ -390,9 +390,7 @@ python scripts/model_training_manager.py reindex \
 
 #### 添加模型信息到現有資料夾
 
-```bash
-python scripts/add_model_files.py
-```
+
 
 ### 技術實現
 

@@ -1,0 +1,303 @@
+import os
+import sys
+import logging
+import concurrent.futures
+from typing import List, Dict, Any, Tuple, Optional
+from pathlib import Path
+
+# 添加項目根目錄到路徑
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config.config import OLLAMA_HOST
+from rag_engine.interfaces import RAGEngineInterface
+from langchain_core.prompts import PromptTemplate
+from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser
+from langchain_ollama import OllamaLLM
+
+# 設置日誌
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class SimplifiedChineseRAGEngine(RAGEngineInterface):
+    """简体中文RAG引擎实现"""
+    
+    def __init__(self, document_indexer, ollama_model: str = None):
+        super().__init__(document_indexer, ollama_model)
+        
+        self.llm = OllamaLLM(
+            model=ollama_model,
+            base_url=OLLAMA_HOST,
+            temperature=0.4
+        )
+        logger.info(f"简体中文RAG引擎初始化完成，使用模型: {ollama_model}")
+    
+    def get_language(self) -> str:
+        return "简体中文"
+    
+    def rewrite_query(self, original_query: str) -> str:
+        """
+        将简体中文查询优化为更精准适合向量检索的完整描述
+        """
+        try:
+            rewrite_prompt = PromptTemplate(
+                template="""将以下简体中文问题优化为适合文档检索的描述。请直接输出优化结果，不要包含任何说明文字。
+
+问题: {question}
+
+要求:
+- 保持简体中文
+- 转换为描述性语句
+- 扩展相关术语和同义词
+- 包含文档中可能的表达方式
+
+优化结果:""",
+                input_variables=["question"]
+            )
+            
+            rewrite_chain = rewrite_prompt | self.llm | StrOutputParser()
+            
+            def _invoke_rewrite():
+                return rewrite_chain.invoke({"question": original_query})
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_invoke_rewrite)
+                try:
+                    optimized_query = future.result(timeout=15)
+                    logger.info(f"简体中文查询优化: {original_query} -> {optimized_query}")
+                    return optimized_query.strip()
+                except concurrent.futures.TimeoutError:
+                    logger.error("简体中文查询优化超时，使用原始查询")
+                    return original_query
+            
+        except Exception as e:
+            logger.error(f"简体中文查询优化时出错: {str(e)}")
+            return original_query
+    
+    def answer_question(self, question: str) -> str:
+        """使用简体中文回答问题"""
+        try:
+            # 优化查询
+            optimized_query = self.rewrite_query(question)
+            
+            # 检索文档
+            docs = self.retrieve_documents(optimized_query)
+            
+            if not docs:
+                return self._generate_general_knowledge_answer(question)
+            
+            # 格式化上下文
+            context = self.format_context(docs)
+            
+            # 生成回答
+            return self._generate_answer(question, context)
+            
+        except Exception as e:
+            logger.error(f"简体中文问答时出错: {str(e)}")
+            return f"{self._get_error_message()}: {str(e)}"
+    
+    def _generate_answer(self, question: str, context: str) -> str:
+        """生成简体中文回答"""
+        template = """请用简体中文回答问题。
+
+上下文：{context}
+
+问题：{question}
+
+指示：
+1. 仅使用简体中文回答
+2. 基于提供的上下文回答
+3. 如果上下文不足，请明确说明
+4. 保持回答简洁准确
+
+简体中文回答："""
+
+        prompt = PromptTemplate(
+            template=template,
+            input_variables=["context", "question"]
+        )
+        
+        chain = prompt | self.llm | StrOutputParser()
+        
+        def _invoke():
+            return chain.invoke({"context": context, "question": question})
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_invoke)
+            try:
+                answer = future.result(timeout=60)
+                
+                if not answer or len(answer.strip()) < 5:
+                    return self._get_general_fallback(question)
+                
+                return answer.strip()
+                
+            except concurrent.futures.TimeoutError:
+                logger.error("简体中文回答生成超时")
+                return self._get_timeout_message()
+    
+    def generate_relevance_reason(self, question: str, doc_content: str) -> str:
+        """生成简体中文相关性理由"""
+        if not question or not question.strip():
+            return "无法生成相关性理由：查询为空"
+        
+        if not doc_content or not doc_content.strip():
+            return "无法生成相关性理由：文档内容为空"
+            
+        try:
+            trimmed_content = doc_content[:1000].strip()
+            
+            relevance_prompt = PromptTemplate(
+                template="""你是一个文档相关性评估专家。请简明扼要地解释为什么下面的文档内容与用户查询相关。
+
+用户查询: {question}
+
+文档内容:
+-----------------
+{doc_content}
+-----------------
+
+请提供1-2句简短的简体中文解释，说明这个文档为什么与查询相关。不要重复查询内容，直接解释关联性。
+
+相关性理由：""",
+                input_variables=["question", "doc_content"]
+            )
+            
+            relevance_chain = relevance_prompt | self.llm | StrOutputParser()
+            
+            def _invoke_relevance():
+                return relevance_chain.invoke({
+                    "question": question,
+                    "doc_content": trimmed_content
+                })
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_invoke_relevance)
+                try:
+                    reason = future.result(timeout=20)
+                    return reason.strip() if reason else "无法确定相关性理由"
+                except concurrent.futures.TimeoutError:
+                    return "生成相关性理由超时"
+            
+        except Exception as e:
+            logger.error(f"生成简体中文相关性理由时出错: {str(e)}")
+            return "生成相关性理由失败"
+    
+    def _get_no_docs_message(self) -> str:
+        return "抱歉，在QSI文档中找不到与您问题相关的信息。"
+    
+    def _get_error_message(self) -> str:
+        return "处理问题时发生错误"
+    
+    def _get_timeout_message(self) -> str:
+        return "系统处理超时，请稍后再试。"
+    
+    def _generate_general_knowledge_answer(self, question: str) -> str:
+        """当找不到相关文档时，基于常识提供回答"""
+        try:
+            general_prompt = PromptTemplate(
+                template="""你是一个IT领域的专家助手。虽然在QSI内部文档中找不到相关资料，但请基于一般IT常识来回答以下问题。
+
+问题：{question}
+
+请注意：
+1. 使用简体中文回答
+2. 基于一般IT知识提供有用的回答
+3. 明确说明这是基于常识的回答，不是来自QSI内部文档
+4. 如果是QSI特定的问题，建议联系相关部门
+
+简体中文回答：""",
+                input_variables=["question"]
+            )
+            
+            general_chain = general_prompt | self.llm | StrOutputParser()
+            
+            def _invoke_general():
+                return general_chain.invoke({"question": question})
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_invoke_general)
+                try:
+                    answer = future.result(timeout=30)
+                    # 添加免责声明
+                    disclaimer = "\n\n※ 注意：以上回答基于一般IT常识，非来自QSI内部文档。如需准确信息，请联系相关部门。"
+                    return answer.strip() + disclaimer
+                except concurrent.futures.TimeoutError:
+                    logger.error("常识回答生成超时")
+                    return self._get_no_docs_message()
+        
+        except Exception as e:
+            logger.error(f"生成常识回答时出错: {str(e)}")
+            return self._get_no_docs_message()
+    
+    def generate_batch_relevance_reasons(self, question: str, doc_contents: list) -> list:
+        """批量生成多个文档的相关性理由，提高效能"""
+        if not question or not question.strip() or not doc_contents:
+            return ["无法生成相关性理由"] * len(doc_contents)
+        
+        try:
+            # 构建批量处理的prompt
+            docs_text = ""
+            for i, content in enumerate(doc_contents, 1):
+                if content and content.strip():
+                    docs_text += f"文档{i}: {content[:300]}...\n\n"
+                else:
+                    docs_text += f"文档{i}: (空内容)\n\n"
+            
+            batch_prompt = PromptTemplate(
+                template="""请为以下文档分别生成与用户查询的相关性理由。每个理由用一句话简洁说明。
+
+用户查询: {question}
+
+文档内容:
+{docs_text}
+
+请按顺序为每个文档生成相关性理由，格式如下:
+1. [文档1的相关性理由]
+2. [文档2的相关性理由]
+3. [文档3的相关性理由]
+...
+
+相关性理由:""",
+                input_variables=["question", "docs_text"]
+            )
+            
+            batch_chain = batch_prompt | self.llm | StrOutputParser()
+            
+            def _invoke_batch():
+                return batch_chain.invoke({
+                    "question": question,
+                    "docs_text": docs_text
+                })
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_invoke_batch)
+                try:
+                    batch_result = future.result(timeout=25)
+                    
+                    # 解析批量结果
+                    reasons = []
+                    lines = batch_result.strip().split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if line and (line.startswith(('1.', '2.', '3.', '4.', '5.')) or '.' in line[:3]):
+                            # 移除序号，保留理由
+                            reason = line.split('.', 1)[1].strip() if '.' in line else line
+                            reasons.append(reason)
+                    
+                    # 确保返回正确数量的理由
+                    while len(reasons) < len(doc_contents):
+                        reasons.append("相关文档")
+                    
+                    return reasons[:len(doc_contents)]
+                    
+                except concurrent.futures.TimeoutError:
+                    logger.error("批量生成相关性理由超时")
+                    return [f"相关文档 {i+1}" for i in range(len(doc_contents))]
+        
+        except Exception as e:
+            logger.error(f"批量生成相关性理由时出错: {str(e)}")
+            return [f"相关文档 {i+1}" for i in range(len(doc_contents))]
+    
+    def _get_general_fallback(self, query: str) -> str:
+        return f"根据一般IT知识，关于「{query}」的相关信息可能需要查阅更多QSI内部文档。"
