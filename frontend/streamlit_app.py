@@ -206,7 +206,7 @@ def main():
         return
     
     # --- 分頁設計 ---
-    tab_names = ["💬 智能問答", "🛠️ 管理員後台"]
+    tab_names = ["💬 智能問答", "🛠️ 管理員後台", "🗄️ 向量資料庫維護"]
     tabs = st.tabs(tab_names)
 
     # --- sidebar 保留管理入口 ---
@@ -861,6 +861,244 @@ def main():
             st.code(progress_text, language="bash")
             st.markdown("#### 實時監控 Console")
             st.code(realtime_text, language="bash")
+        else:
+            st.warning("請輸入管理員Token以使用管理功能")
+
+    # --- 向量資料庫維護分頁 ---
+    with tabs[2]:
+        st.header("🗄️ 向量資料庫內容維護")
+        admin_token_db = st.text_input("管理員Token", type="password", key="admin_token_db")
+        
+        if admin_token_db:
+            st.success("已輸入Token，可操作向量資料庫內容維護功能")
+            
+            # 模型選擇
+            st.subheader("� 選擇庫要維護的模型")
+            
+            try:
+                vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=10)
+                if vector_models_resp.status_code == 200:
+                    vector_models = vector_models_resp.json()
+                    
+                    # 只顯示有數據且未在訓練的模型
+                    available_models = [m for m in vector_models if m['has_data'] and not m['is_training']]
+                    
+                    if available_models:
+                        model_options = {m['display_name']: m['folder_name'] for m in available_models}
+                        selected_model_name = st.selectbox(
+                            "選擇模型:",
+                            options=list(model_options.keys()),
+                            key="selected_model_for_content"
+                        )
+                        selected_model_folder = model_options[selected_model_name]
+                        
+                        st.markdown("---")
+                        
+                        # 內容管理選項
+                        content_tabs = st.tabs(["📄 瀏覽文檔", "✏️ 編輯文檔", "➕ 新增文檔"])
+                        
+                        # 瀏覽文檔
+                        with content_tabs[0]:
+                            st.subheader("📄 瀏覽向量資料庫中的文檔")
+                            
+                            # 分頁控制
+                            col1, col2, col3 = st.columns([1, 2, 1])
+                            with col1:
+                                page = st.number_input("頁碼", min_value=1, value=1, key="doc_page")
+                            with col2:
+                                page_size = st.selectbox("每頁顯示", [10, 20, 50], index=1, key="doc_page_size")
+                            
+                            # 獲取文檔列表
+                            try:
+                                docs_resp = requests.get(
+                                    f"{API_URL}/admin/vector-db/documents",
+                                    headers={"admin_token": admin_token_db},
+                                    params={
+                                        "folder_name": selected_model_folder,
+                                        "page": page,
+                                        "page_size": page_size
+                                    }
+                                )
+                                
+                                if docs_resp.status_code == 200:
+                                    docs_data = docs_resp.json()
+                                    documents = docs_data.get('documents', [])
+                                    total = docs_data.get('total', 0)
+                                    total_pages = docs_data.get('total_pages', 1)
+                                    
+                                    st.info(f"共找到 {total} 個文檔，第 {page}/{total_pages} 頁")
+                                    
+                                    for doc in documents:
+                                        with st.expander(f"📄 {doc['file_name']} (chunk {doc['chunk_index']})", expanded=False):
+                                            st.write(f"**文件路徑:** {doc['file_path']}")
+                                            st.write(f"**文檔ID:** {doc['id']}")
+                                            st.write("**內容預覽:**")
+                                            st.text_area("內容預覽", value=doc['content'], height=100, disabled=True, key=f"preview_{doc['id']}", label_visibility="hidden")
+                                            
+                                            col1, col2 = st.columns(2)
+                                            with col1:
+                                                if st.button("📝 編輯此文檔", key=f"edit_btn_{doc['id']}"):
+                                                    st.session_state[f"editing_doc_{doc['id']}"] = True
+                                                    st.session_state["edit_doc_id"] = doc['id']
+                                                    st.rerun()
+                                            
+                                            with col2:
+                                                if st.button("🗑️ 刪除此文檔", key=f"del_btn_{doc['id']}", type="secondary"):
+                                                    if st.session_state.get(f"confirm_del_{doc['id']}", False):
+                                                        try:
+                                                            del_resp = requests.delete(
+                                                                f"{API_URL}/admin/vector-db/document/{doc['id']}",
+                                                                headers={"admin_token": admin_token_db},
+                                                                params={"folder_name": selected_model_folder}
+                                                            )
+                                                            if del_resp.status_code == 200:
+                                                                st.success("✅ 文檔已刪除")
+                                                                st.session_state[f"confirm_del_{doc['id']}"] = False
+                                                                st.rerun()
+                                                            else:
+                                                                st.error(f"刪除失敗: {del_resp.text}")
+                                                        except Exception as e:
+                                                            st.error(f"刪除失敗: {e}")
+                                                    else:
+                                                        st.warning("⚠️ 確定要刪除此文檔嗎？")
+                                                        if st.button("確認刪除", key=f"confirm_del_btn_{doc['id']}", type="primary"):
+                                                            st.session_state[f"confirm_del_{doc['id']}"] = True
+                                                            st.rerun()
+                                else:
+                                    st.error(f"獲取文檔列表失敗: {docs_resp.text}")
+                            except Exception as e:
+                                st.error(f"獲取文檔列表失敗: {e}")
+                        
+                        # 編輯文檔
+                        with content_tabs[1]:
+                            st.subheader("✏️ 編輯文檔內容")
+                            
+                            # 檢查是否有要編輯的文檔
+                            edit_doc_id = st.session_state.get("edit_doc_id")
+                            if edit_doc_id:
+                                try:
+                                    # 獲取文檔詳情
+                                    doc_resp = requests.get(
+                                        f"{API_URL}/admin/vector-db/document/{edit_doc_id}",
+                                        headers={"admin_token": admin_token_db},
+                                        params={"folder_name": selected_model_folder}
+                                    )
+                                    
+                                    if doc_resp.status_code == 200:
+                                        doc_data = doc_resp.json()
+                                        
+                                        st.write(f"**編輯文檔:** {doc_data['file_name']}")
+                                        st.write(f"**文檔ID:** {doc_data['id']}")
+                                        
+                                        # 編輯內容
+                                        new_content = st.text_area(
+                                            "文檔內容:",
+                                            value=doc_data['content'],
+                                            height=300,
+                                            key=f"edit_content_{edit_doc_id}"
+                                        )
+                                        
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            if st.button("💾 保存修改", key="save_edit", type="primary"):
+                                                try:
+                                                    update_resp = requests.put(
+                                                        f"{API_URL}/admin/vector-db/document/{edit_doc_id}",
+                                                        headers={"admin_token": admin_token_db},
+                                                        params={"folder_name": selected_model_folder},
+                                                        json={"content": new_content}
+                                                    )
+                                                    
+                                                    if update_resp.status_code == 200:
+                                                        st.success("✅ 文檔已更新")
+                                                        st.session_state["edit_doc_id"] = None
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(f"更新失敗: {update_resp.text}")
+                                                except Exception as e:
+                                                    st.error(f"更新失敗: {e}")
+                                        
+                                        with col2:
+                                            if st.button("❌ 取消編輯", key="cancel_edit"):
+                                                st.session_state["edit_doc_id"] = None
+                                                st.rerun()
+                                    else:
+                                        st.error(f"獲取文檔詳情失敗: {doc_resp.text}")
+                                        st.session_state["edit_doc_id"] = None
+                                except Exception as e:
+                                    st.error(f"獲取文檔詳情失敗: {e}")
+                                    st.session_state["edit_doc_id"] = None
+                            else:
+                                st.info("請從「瀏覽文檔」頁面選擇要編輯的文檔")
+                        
+                        # 新增文檔
+                        with content_tabs[2]:
+                            st.subheader("➕ 新增文檔到向量資料庫")
+                            
+                            with st.form("add_document_form"):
+                                file_name = st.text_input("文件名稱", placeholder="例如: 手動添加的文檔.txt")
+                                content = st.text_area("文檔內容", height=300, placeholder="請輸入要添加到向量資料庫的內容...")
+                                
+                                # 可選的元數據
+                                st.write("**可選元數據:**")
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    file_path = st.text_input("文件路徑", placeholder="例如: /manual/custom_doc.txt")
+                                with col2:
+                                    chunk_index = st.number_input("塊索引", min_value=0, value=0)
+                                
+                                submitted = st.form_submit_button("➕ 添加文檔", type="primary")
+                                
+                                if submitted:
+                                    if not content.strip():
+                                        st.error("請輸入文檔內容")
+                                    else:
+                                        try:
+                                            metadata = {
+                                                "file_name": file_name or "手動添加的文檔",
+                                                "file_path": file_path or "manual_add",
+                                                "chunk_index": chunk_index
+                                            }
+                                            
+                                            add_resp = requests.post(
+                                                f"{API_URL}/admin/vector-db/document",
+                                                headers={"admin_token": admin_token_db},
+                                                params={"folder_name": selected_model_folder},
+                                                json={
+                                                    "content": content.strip(),
+                                                    "metadata": metadata
+                                                }
+                                            )
+                                            
+                                            if add_resp.status_code == 200:
+                                                st.success("✅ 文檔已成功添加到向量資料庫")
+                                                st.rerun()
+                                            else:
+                                                st.error(f"添加失敗: {add_resp.text}")
+                                        except Exception as e:
+                                            st.error(f"添加失敗: {e}")
+                    else:
+                        st.warning("沒有可用於內容維護的模型（需要有數據且未在訓練中）")
+                        
+                        # 顯示所有模型的狀態
+                        if vector_models:
+                            st.subheader("📊 所有模型狀態")
+                            for model in vector_models:
+                                status_text = []
+                                if not model['has_data']:
+                                    status_text.append("無數據")
+                                if model['is_training']:
+                                    status_text.append("訓練中")
+                                
+                                status_str = f" ({', '.join(status_text)})" if status_text else " (可用)"
+                                st.write(f"- {model['display_name']}{status_str}")
+                else:
+                    st.error("無法獲取向量模型列表")
+            except Exception as e:
+                st.error(f"獲取向量模型列表失敗: {e}")
+                        
+        else:
+            st.warning("請輸入管理員Token以使用向量資料庫內容維護功能")
 
 
 if __name__ == "__main__":

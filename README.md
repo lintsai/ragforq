@@ -10,6 +10,7 @@
 - [本地Docker環境測試指南](#-本地docker環境測試指南)
 - [快速開始](#-快速開始)
 - [索引管理](#-索引管理)
+- [向量資料庫內容維護](#-向量資料庫內容維護)
 - [故障排除與恢復](#️-故障排除與恢復)
 - [API文檔](#-api文檔)
 - [維護與監控](#-維護與監控)
@@ -27,6 +28,8 @@
 - ⚡ **高性能**：並行處理和批量索引優化
 - 🎛️ **模型管理**：支持多模型管理，可動態選擇不同的語言模型和嵌入模型組合
 - 📚 **向量數據庫管理**：每個模型組合獨立的向量數據庫，支持並行訓練和使用
+- ✏️ **內容維護**：可直接編輯向量資料庫中的文檔內容，支持增刪改查操作
+- 🔐 **安全管理**：管理員token保護，確保維護操作的安全性
 
 ## 🏗️ 系統架構
 
@@ -492,6 +495,73 @@ python scripts/monitor_changes.py --interval 3600
 # 完全重建索引
 python scripts/reindex.py
 ```
+
+## ✏️ 向量資料庫內容維護
+
+系統提供了完整的向量資料庫內容維護功能，允許管理員直接編輯RAG系統中的文檔內容。
+
+### 🌐 Web介面操作
+
+1. **訪問維護介面**
+   - 打開前端界面：`http://localhost:8501`
+   - 選擇「🗄️ 向量資料庫內容維護」分頁
+   - 輸入管理員Token：`ragadmin123`
+
+2. **選擇要維護的模型**
+   - 系統會顯示所有有數據且未在訓練中的模型
+   - 選擇要編輯的模型
+
+3. **內容維護操作**
+   - **📄 瀏覽文檔**：分頁查看向量資料庫中的所有文檔
+   - **✏️ 編輯文檔**：直接編輯文檔內容，自動更新嵌入向量
+   - **➕ 新增文檔**：手動添加新文檔到向量資料庫
+
+### 🔧 API直接操作
+
+```bash
+# 獲取文檔列表
+curl -H "admin_token: ragadmin123" \
+  "http://localhost:8000/admin/vector-db/documents?folder_name=模型名稱&page=1&page_size=20"
+
+# 獲取特定文檔
+curl -H "admin_token: ragadmin123" \
+  "http://localhost:8000/admin/vector-db/document/文檔ID?folder_name=模型名稱"
+
+# 更新文檔內容
+curl -X PUT -H "admin_token: ragadmin123" -H "Content-Type: application/json" \
+  -d '{"content":"新的文檔內容"}' \
+  "http://localhost:8000/admin/vector-db/document/文檔ID?folder_name=模型名稱"
+
+# 添加新文檔
+curl -X POST -H "admin_token: ragadmin123" -H "Content-Type: application/json" \
+  -d '{"content":"文檔內容","metadata":{"file_name":"新文檔.txt"}}' \
+  "http://localhost:8000/admin/vector-db/document?folder_name=模型名稱"
+
+# 刪除文檔
+curl -X DELETE -H "admin_token: ragadmin123" \
+  "http://localhost:8000/admin/vector-db/document/文檔ID?folder_name=模型名稱"
+```
+
+### 🧪 功能測試
+
+```bash
+# 測試內容維護功能
+python tests/test_content_maintenance.py
+```
+
+### 📊 應用場景
+
+- **內容糾錯**：發現RAG回答中有錯誤時，直接編輯源文檔
+- **知識更新**：業務規則變化時，直接更新相關內容
+- **內容優化**：改善文檔表達，提高RAG回答質量
+- **即時生效**：編輯後立即影響RAG問答結果
+
+### 🔒 安全特性
+
+- 所有操作都需要管理員token驗證
+- 只能操作未在訓練中的模型
+- 修改後自動重新計算嵌入向量
+- 完整的操作日誌記錄
 
 ## 🛠️ 故障排除與恢復
 

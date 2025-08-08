@@ -715,6 +715,707 @@ async def cleanup_invalid_locks(request: Request):
         logger.error(f"清理無效鎖定失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"清理無效鎖定失敗: {str(e)}")
 
+# 向量資料庫維護 API
+@app.get("/admin/vector-db/info")
+async def get_vector_db_info(request: Request, folder_name: str = Query(...)):
+    """獲取指定向量資料庫的詳細信息"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        model_path = Path(target_model['folder_path'])
+        
+        # 收集詳細信息
+        info = {
+            "folder_name": folder_name,
+            "folder_path": str(model_path),
+            "model_info": target_model['model_info'],
+            "has_data": target_model['has_data'],
+            "is_training": target_model['is_training'],
+            "version": target_model.get('version'),
+            "display_name": target_model['display_name']
+        }
+        
+        # 文件系統信息
+        if model_path.exists():
+            import os
+            folder_size = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
+            file_count = len([f for f in model_path.rglob('*') if f.is_file()])
+            
+            info["filesystem"] = {
+                "folder_size_bytes": folder_size,
+                "folder_size_mb": round(folder_size / (1024 * 1024), 2),
+                "file_count": file_count,
+                "created_time": os.path.getctime(model_path),
+                "modified_time": os.path.getmtime(model_path)
+            }
+            
+            # 檢查關鍵文件
+            key_files = {
+                "index.faiss": (model_path / "index.faiss").exists(),
+                "index.pkl": (model_path / "index.pkl").exists(),
+                ".model": (model_path / ".model").exists(),
+                ".lock": (model_path / ".lock").exists()
+            }
+            info["key_files"] = key_files
+            
+            # 如果有向量數據，嘗試獲取更多信息
+            if target_model['has_data']:
+                try:
+                    info["vector_stats"] = {
+                        "status": "有向量數據",
+                        "note": "詳細統計需要載入向量數據庫"
+                    }
+                except Exception as e:
+                    info["vector_stats"] = {
+                        "status": "無法獲取向量統計",
+                        "error": str(e)
+                    }
+        
+        return info
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"獲取向量資料庫信息失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取信息失敗: {str(e)}")
+
+@app.post("/admin/vector-db/backup")
+async def backup_vector_db(request: Request, backup_request: dict = Body(...)):
+    """備份指定的向量資料庫"""
+    await check_admin(request)
+    try:
+        folder_name = backup_request.get("folder_name")
+        if not folder_name:
+            raise HTTPException(status_code=400, detail="缺少 folder_name 參數")
+        
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        model_path = Path(target_model['folder_path'])
+        
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail=f"模型路徑不存在: {model_path}")
+        
+        # 創建備份
+        import shutil
+        import datetime
+        
+        backup_dir = Path("backups")
+        backup_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"{folder_name}_backup_{timestamp}"
+        backup_path = backup_dir / backup_name
+        
+        # 複製整個資料夾
+        shutil.copytree(model_path, backup_path)
+        
+        # 創建備份信息文件
+        backup_info = {
+            "original_folder": folder_name,
+            "original_path": str(model_path),
+            "backup_time": datetime.datetime.now().isoformat(),
+            "model_info": target_model['model_info'],
+            "backup_size_bytes": sum(f.stat().st_size for f in backup_path.rglob('*') if f.is_file())
+        }
+        
+        with open(backup_path / ".backup_info", 'w', encoding='utf-8') as f:
+            json.dump(backup_info, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"成功備份向量資料庫: {folder_name} -> {backup_path}")
+        
+        return {
+            "status": "success",
+            "backup_path": str(backup_path),
+            "backup_name": backup_name,
+            "backup_size_mb": round(backup_info["backup_size_bytes"] / (1024 * 1024), 2)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"備份向量資料庫失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"備份失敗: {str(e)}")
+
+@app.delete("/admin/vector-db/delete")
+async def delete_vector_db(request: Request, delete_request: dict = Body(...)):
+    """刪除指定的向量資料庫"""
+    await check_admin(request)
+    try:
+        folder_name = delete_request.get("folder_name")
+        if not folder_name:
+            raise HTTPException(status_code=400, detail="缺少 folder_name 參數")
+        
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        # 檢查是否正在訓練
+        if target_model['is_training']:
+            is_valid, reason = vector_db_manager.is_lock_valid(Path(target_model['folder_path']))
+            if is_valid:
+                raise HTTPException(status_code=423, detail=f"模型正在訓練中，無法刪除: {reason}")
+        
+        model_path = Path(target_model['folder_path'])
+        
+        if not model_path.exists():
+            return {"status": "success", "message": "模型資料夾已不存在"}
+        
+        # 刪除資料夾
+        import shutil
+        shutil.rmtree(model_path)
+        
+        # 清理相關的RAG引擎緩存
+        global rag_engines
+        keys_to_remove = [key for key in rag_engines.keys() if folder_name in key]
+        for key in keys_to_remove:
+            del rag_engines[key]
+        
+        logger.info(f"成功刪除向量資料庫: {folder_name}")
+        
+        return {
+            "status": "success",
+            "message": f"成功刪除模型: {target_model['display_name']}"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"刪除向量資料庫失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"刪除失敗: {str(e)}")
+
+@app.post("/admin/vector-db/cleanup-empty")
+async def cleanup_empty_folders(request: Request):
+    """清理空的向量資料庫資料夾"""
+    await check_admin(request)
+    try:
+        import shutil
+        
+        cleaned_count = 0
+        cleaned_folders = []
+        
+        if vector_db_manager.base_path.exists():
+            for folder in vector_db_manager.base_path.iterdir():
+                if folder.is_dir():
+                    # 檢查是否為空資料夾或只有 .model 文件但沒有實際數據
+                    has_vector_data = vector_db_manager.has_vector_data(folder)
+                    is_training = vector_db_manager.is_training(folder)
+                    
+                    # 如果沒有向量數據且沒有在訓練，檢查是否為空資料夾
+                    if not has_vector_data and not is_training:
+                        files = list(folder.rglob('*'))
+                        # 只有 .model 文件或完全空的資料夾
+                        if len(files) == 0 or (len(files) == 1 and files[0].name == '.model'):
+                            try:
+                                shutil.rmtree(folder)
+                                cleaned_folders.append(folder.name)
+                                cleaned_count += 1
+                                logger.info(f"清理空資料夾: {folder.name}")
+                            except Exception as e:
+                                logger.error(f"清理資料夾失敗 {folder.name}: {str(e)}")
+        
+        return {
+            "status": "success",
+            "cleaned_count": cleaned_count,
+            "cleaned_folders": cleaned_folders
+        }
+        
+    except Exception as e:
+        logger.error(f"清理空資料夾失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"清理失敗: {str(e)}")
+
+@app.get("/admin/vector-db/stats")
+async def get_vector_db_stats(request: Request):
+    """獲取向量資料庫統計信息"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        
+        total_size = 0
+        total_files = 0
+        stats_by_status = {
+            "with_data": 0,
+            "training": 0,
+            "empty": 0,
+            "usable": 0
+        }
+        
+        model_details = []
+        
+        for model in models:
+            model_path = Path(model['folder_path'])
+            
+            if model_path.exists():
+                # 計算資料夾大小和文件數
+                folder_size = sum(f.stat().st_size for f in model_path.rglob('*') if f.is_file())
+                file_count = len([f for f in model_path.rglob('*') if f.is_file()])
+                
+                total_size += folder_size
+                total_files += file_count
+                
+                # 統計狀態
+                if model['has_data']:
+                    stats_by_status["with_data"] += 1
+                    if not model['is_training']:
+                        stats_by_status["usable"] += 1
+                else:
+                    stats_by_status["empty"] += 1
+                
+                if model['is_training']:
+                    stats_by_status["training"] += 1
+                
+                model_details.append({
+                    "name": model['display_name'],
+                    "folder_name": model['folder_name'],
+                    "size_mb": round(folder_size / (1024 * 1024), 2),
+                    "file_count": file_count,
+                    "has_data": model['has_data'],
+                    "is_training": model['is_training']
+                })
+        
+        return {
+            "total_models": len(models),
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+            "total_files": total_files,
+            "stats_by_status": stats_by_status,
+            "model_details": sorted(model_details, key=lambda x: x['size_mb'], reverse=True)
+        }
+        
+    except Exception as e:
+        logger.error(f"獲取統計信息失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取統計失敗: {str(e)}")
+
+@app.get("/admin/vector-db/integrity-check")
+async def check_vector_db_integrity(request: Request):
+    """檢查向量資料庫完整性"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        issues = []
+        all_valid = True
+        
+        for model in models:
+            model_path = Path(model['folder_path'])
+            model_issues = []
+            
+            # 檢查資料夾是否存在
+            if not model_path.exists():
+                model_issues.append("資料夾不存在")
+                all_valid = False
+            else:
+                # 檢查 .model 文件
+                if not (model_path / ".model").exists():
+                    model_issues.append("缺少 .model 文件")
+                    all_valid = False
+                else:
+                    # 檢查 .model 文件內容
+                    try:
+                        model_info = vector_db_manager.get_model_info(model_path)
+                        if not model_info:
+                            model_issues.append(".model 文件無法讀取")
+                            all_valid = False
+                        elif not model_info.get('OLLAMA_MODEL') or not model_info.get('OLLAMA_EMBEDDING_MODEL'):
+                            model_issues.append(".model 文件缺少必要信息")
+                            all_valid = False
+                    except Exception as e:
+                        model_issues.append(f".model 文件錯誤: {str(e)}")
+                        all_valid = False
+                
+                # 如果聲稱有數據，檢查向量文件
+                if model['has_data']:
+                    if not (model_path / "index.faiss").exists():
+                        model_issues.append("缺少 index.faiss 文件")
+                        all_valid = False
+                    if not (model_path / "index.pkl").exists():
+                        model_issues.append("缺少 index.pkl 文件")
+                        all_valid = False
+                
+                # 檢查鎖定文件的有效性
+                if model['is_training']:
+                    is_valid, reason = vector_db_manager.is_lock_valid(model_path)
+                    if not is_valid:
+                        model_issues.append(f"無效的訓練鎖定: {reason}")
+                        all_valid = False
+            
+            if model_issues:
+                issues.append({
+                    "model_name": model['display_name'],
+                    "folder_name": model['folder_name'],
+                    "issues": model_issues
+                })
+        
+        return {
+            "all_valid": all_valid,
+            "total_models_checked": len(models),
+            "models_with_issues": len(issues),
+            "issues": issues
+        }
+        
+    except Exception as e:
+        logger.error(f"完整性檢查失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"完整性檢查失敗: {str(e)}")
+
+# 向量資料庫內容維護 API
+@app.get("/admin/vector-db/documents")
+async def get_vector_documents(request: Request, folder_name: str = Query(...), page: int = Query(1), page_size: int = Query(20)):
+    """獲取向量資料庫中的文檔列表"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        if not target_model['has_data']:
+            return {"documents": [], "total": 0, "page": page, "page_size": page_size}
+        
+        # 創建文檔索引器來訪問向量資料庫
+        from indexer.document_indexer import DocumentIndexer
+        indexer = DocumentIndexer(
+            vector_db_path=target_model['folder_path'],
+            ollama_embedding_model=target_model['model_info']['OLLAMA_EMBEDDING_MODEL']
+        )
+        
+        # 獲取所有文檔
+        vector_store = indexer.get_vector_store()
+        if not vector_store:
+            return {"documents": [], "total": 0, "page": page, "page_size": page_size}
+        
+        all_docs = vector_store.docstore._dict
+        documents = []
+        
+        for doc_id, doc in all_docs.items():
+            documents.append({
+                "id": doc_id,
+                "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
+                "full_content": doc.page_content,
+                "metadata": doc.metadata,
+                "file_path": doc.metadata.get("file_path", "未知"),
+                "file_name": doc.metadata.get("file_name", "未知"),
+                "chunk_index": doc.metadata.get("chunk_index", 0)
+            })
+        
+        # 分頁
+        total = len(documents)
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_docs = documents[start_idx:end_idx]
+        
+        return {
+            "documents": paginated_docs,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total + page_size - 1) // page_size
+        }
+        
+    except Exception as e:
+        logger.error(f"獲取向量文檔失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取文檔失敗: {str(e)}")
+
+@app.get("/admin/vector-db/document/{doc_id}")
+async def get_vector_document(request: Request, folder_name: str = Query(...), doc_id: str = ""):
+    """獲取特定文檔的詳細內容"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        if not target_model['has_data']:
+            raise HTTPException(status_code=404, detail="模型沒有數據")
+        
+        # 創建文檔索引器來訪問向量資料庫
+        from indexer.document_indexer import DocumentIndexer
+        indexer = DocumentIndexer(
+            vector_db_path=target_model['folder_path'],
+            ollama_embedding_model=target_model['model_info']['OLLAMA_EMBEDDING_MODEL']
+        )
+        
+        vector_store = indexer.get_vector_store()
+        if not vector_store:
+            raise HTTPException(status_code=404, detail="向量存儲不存在")
+        
+        all_docs = vector_store.docstore._dict
+        if doc_id not in all_docs:
+            raise HTTPException(status_code=404, detail=f"找不到文檔: {doc_id}")
+        
+        doc = all_docs[doc_id]
+        return {
+            "id": doc_id,
+            "content": doc.page_content,
+            "metadata": doc.metadata,
+            "file_path": doc.metadata.get("file_path", "未知"),
+            "file_name": doc.metadata.get("file_name", "未知"),
+            "chunk_index": doc.metadata.get("chunk_index", 0)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"獲取文檔詳情失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取文檔詳情失敗: {str(e)}")
+
+@app.put("/admin/vector-db/document/{doc_id}")
+async def update_vector_document(request: Request, folder_name: str = Query(...), doc_id: str = "", update_data: dict = Body(...)):
+    """更新向量資料庫中的文檔內容"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        if not target_model['has_data']:
+            raise HTTPException(status_code=404, detail="模型沒有數據")
+        
+        # 檢查是否正在訓練
+        if target_model['is_training']:
+            raise HTTPException(status_code=423, detail="模型正在訓練中，無法編輯")
+        
+        new_content = update_data.get("content")
+        if not new_content:
+            raise HTTPException(status_code=400, detail="缺少內容")
+        
+        # 創建文檔索引器來訪問向量資料庫
+        from indexer.document_indexer import DocumentIndexer
+        indexer = DocumentIndexer(
+            vector_db_path=target_model['folder_path'],
+            ollama_embedding_model=target_model['model_info']['OLLAMA_EMBEDDING_MODEL']
+        )
+        
+        vector_store = indexer.get_vector_store()
+        if not vector_store:
+            raise HTTPException(status_code=404, detail="向量存儲不存在")
+        
+        all_docs = vector_store.docstore._dict
+        if doc_id not in all_docs:
+            raise HTTPException(status_code=404, detail=f"找不到文檔: {doc_id}")
+        
+        # 更新文檔內容
+        old_doc = all_docs[doc_id]
+        updated_doc = Document(
+            page_content=new_content,
+            metadata=old_doc.metadata
+        )
+        
+        # 重新計算嵌入向量
+        new_embedding = indexer.embeddings.embed_documents([new_content])[0]
+        
+        # 更新向量存儲
+        vector_store.docstore._dict[doc_id] = updated_doc
+        
+        # 更新FAISS索引中的向量
+        import numpy as np
+        vector_id = int(doc_id.split('_')[-1]) if '_' in doc_id else 0
+        vector_store.index.remove_ids(np.array([vector_id]))
+        vector_store.index.add(np.array([new_embedding]).astype('float32'))
+        
+        # 保存更新後的向量存儲
+        indexer._save_vector_store()
+        
+        logger.info(f"成功更新文檔 {doc_id} 的內容")
+        
+        return {
+            "status": "success",
+            "message": f"成功更新文檔內容",
+            "document": {
+                "id": doc_id,
+                "content": new_content,
+                "metadata": updated_doc.metadata
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"更新文檔失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"更新文檔失敗: {str(e)}")
+
+@app.delete("/admin/vector-db/document/{doc_id}")
+async def delete_vector_document(request: Request, folder_name: str = Query(...), doc_id: str = ""):
+    """刪除向量資料庫中的特定文檔"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        if not target_model['has_data']:
+            raise HTTPException(status_code=404, detail="模型沒有數據")
+        
+        # 檢查是否正在訓練
+        if target_model['is_training']:
+            raise HTTPException(status_code=423, detail="模型正在訓練中，無法刪除")
+        
+        # 創建文檔索引器來訪問向量資料庫
+        from indexer.document_indexer import DocumentIndexer
+        indexer = DocumentIndexer(
+            vector_db_path=target_model['folder_path'],
+            ollama_embedding_model=target_model['model_info']['OLLAMA_EMBEDDING_MODEL']
+        )
+        
+        vector_store = indexer.get_vector_store()
+        if not vector_store:
+            raise HTTPException(status_code=404, detail="向量存儲不存在")
+        
+        all_docs = vector_store.docstore._dict
+        if doc_id not in all_docs:
+            raise HTTPException(status_code=404, detail=f"找不到文檔: {doc_id}")
+        
+        # 刪除文檔
+        del all_docs[doc_id]
+        
+        # 從FAISS索引中移除對應的向量
+        import numpy as np
+        try:
+            vector_id = int(doc_id.split('_')[-1]) if '_' in doc_id else 0
+            vector_store.index.remove_ids(np.array([vector_id]))
+        except Exception as e:
+            logger.warning(f"無法從FAISS索引中移除向量 {vector_id}: {str(e)}")
+        
+        # 保存更新後的向量存儲
+        indexer._save_vector_store()
+        
+        logger.info(f"成功刪除文檔 {doc_id}")
+        
+        return {
+            "status": "success",
+            "message": f"成功刪除文檔 {doc_id}"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"刪除文檔失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"刪除文檔失敗: {str(e)}")
+
+@app.post("/admin/vector-db/document")
+async def add_vector_document(request: Request, folder_name: str = Query(...), doc_data: dict = Body(...)):
+    """向向量資料庫添加新文檔"""
+    await check_admin(request)
+    try:
+        models = vector_db_manager.list_available_models()
+        target_model = None
+        
+        for model in models:
+            if model['folder_name'] == folder_name:
+                target_model = model
+                break
+        
+        if not target_model:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        
+        # 檢查是否正在訓練
+        if target_model['is_training']:
+            raise HTTPException(status_code=423, detail="模型正在訓練中，無法添加")
+        
+        content = doc_data.get("content")
+        metadata = doc_data.get("metadata", {})
+        
+        if not content:
+            raise HTTPException(status_code=400, detail="缺少文檔內容")
+        
+        # 創建文檔索引器來訪問向量資料庫
+        from indexer.document_indexer import DocumentIndexer
+        indexer = DocumentIndexer(
+            vector_db_path=target_model['folder_path'],
+            ollama_embedding_model=target_model['model_info']['OLLAMA_EMBEDDING_MODEL']
+        )
+        
+        # 創建新文檔
+        new_doc = Document(
+            page_content=content,
+            metadata={
+                "file_name": metadata.get("file_name", "手動添加"),
+                "file_path": metadata.get("file_path", "manual_add"),
+                "chunk_index": metadata.get("chunk_index", 0),
+                "added_manually": True,
+                **metadata
+            }
+        )
+        
+        # 添加到向量存儲
+        vector_store = indexer.get_vector_store()
+        if vector_store:
+            # 使用現有的向量存儲添加文檔
+            vector_store.add_documents([new_doc])
+        else:
+            # 創建新的向量存儲
+            vector_store = indexer.embeddings.from_documents([new_doc], indexer.embeddings)
+            indexer.vector_store = vector_store
+        
+        # 保存向量存儲
+        indexer._save_vector_store()
+        
+        logger.info(f"成功添加新文檔到模型 {folder_name}")
+        
+        return {
+            "status": "success",
+            "message": "成功添加新文檔",
+            "document": {
+                "content": content,
+                "metadata": new_doc.metadata
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"添加文檔失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"添加文檔失敗: {str(e)}")
+
 @app.get("/health")
 async def health_check():
     """健康檢查端點"""
