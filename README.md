@@ -391,9 +391,35 @@ python scripts/model_training_manager.py reindex \
   --ollama-embedding-model nomic-embed-text
 ```
 
-#### 添加模型信息到現有資料夾
+### 🔧 依賴和工具
 
+#### 依賴檢查
 
+檢查所有必要的依賴是否正確安裝：
+
+```bash
+# 檢查所有依賴狀態
+python scripts/check_dependencies.py
+```
+
+該工具會檢查：
+- Python版本（需要3.10.x）
+- 所有必要的Python包
+- 版本兼容性
+- 安裝建議
+
+#### 測試工具清理
+
+清理不必要的測試文件：
+
+```bash
+# 互動式清理測試文件
+python tests/cleanup_tests.py
+```
+
+#### 完整依賴文檔
+
+詳細的依賴說明請參考：[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)
 
 ### 技術實現
 
@@ -794,13 +820,18 @@ q-drive-rag-assistant/
 ├── rag_engine/            # RAG引擎
 │   └── rag_engine.py      # 查詢引擎
 ├── scripts/               # 實用腳本
-│   ├── initial_indexing.py      # 初始化索引
+│   ├── README.md                 # 腳本說明文檔
+│   ├── check_dependencies.py     # 依賴檢查工具
+│   ├── initial_indexing.py       # 初始化索引
 │   ├── stable_resume_indexing.py # 穩定恢復
-│   ├── monitor_indexing.py      # 監控工具
-│   ├── diagnose_indexing.py     # 診斷工具
-│   └── monitor_changes.py       # 文件監控
+│   ├── monitor_indexing.py       # 監控工具
+│   ├── model_training_manager.py # 模型訓練管理
+│   └── monitor_changes.py        # 文件監控
 ├── utils/                 # 工具函數
 │   └── file_parsers.py    # 文件解析器
+├── docs/                  # 文檔目錄
+│   ├── DEPENDENCIES.md    # 依賴說明文檔
+│   └── *.md              # 其他技術文檔
 ├── vector_db/             # 向量數據庫
 │   ├── index.faiss        # FAISS索引
 │   ├── index.pkl          # 索引元數據

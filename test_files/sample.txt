@@ -1,0 +1,24 @@
+This is a sample document for testing Dynamic RAG functionality.
+
+Dynamic RAG (Retrieval-Augmented Generation) is a new approach that doesn't require pre-built vector databases. Instead, it retrieves and processes relevant files at query time.
+
+Key features of Dynamic RAG:
+1. Real-time file retrieval
+2. No need for pre-indexing
+3. Immediate reflection of file changes
+4. Reduced storage requirements
+
+This technology is particularly useful for scenarios where:
+- Files change frequently
+- Storage space is limited
+- Quick deployment is needed
+- The file library is small to medium-sized
+
+Dynamic RAG works by:
+1. Intelligently selecting relevant files based on the query
+2. Processing file content in real-time
+3. Vectorizing both query and documents on-the-fly
+4. Computing similarity scores
+5. Generating answers based on the most relevant content
+
+This approach offers flexibility and efficiency for document-based question answering systems.

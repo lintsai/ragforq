@@ -48,9 +48,11 @@ class QuestionRequest(BaseModel):
     include_sources: bool = True
     max_sources: Optional[int] = None
     use_query_rewrite: bool = True
-    show_relevance: bool = True
+    language: str = "繁體中文"  # 回答語言
     selected_model: Optional[str] = None  # 選擇的模型文件夾名稱（支援版本）
-    language: str = "繁體中文"  # 新增語言參數
+    use_dynamic_rag: bool = False  # 是否使用Dynamic RAG
+    ollama_embedding_model: Optional[str] = None  # Dynamic RAG需要的嵌入模型
+    show_relevance: bool = True
 
 class SourceInfo(BaseModel):
     file_name: str
@@ -96,13 +98,18 @@ class TrainingRequest(BaseModel):
 # 初始化RAG引擎緩存
 rag_engines = {}
 
-def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體中文"):
+def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體中文", 
+                   use_dynamic_rag: bool = False, ollama_model: str = None, 
+                   ollama_embedding_model: str = None):
     """
     獲取或初始化指定語言的RAG引擎，支持智能模型選擇和訓練狀態檢查
     
     Args:
         selected_model: 選擇的模型文件夾名稱，如果為 None 則自動選擇最佳可用模型
         language: 目標語言
+        use_dynamic_rag: 是否使用Dynamic RAG
+        ollama_model: Ollama語言模型（Dynamic RAG需要）
+        ollama_embedding_model: Ollama嵌入模型（Dynamic RAG需要）
     """
     global rag_engines
     
@@ -112,11 +119,26 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
         language = "繁體中文"
     
     # 創建緩存鍵，包含語言信息
-    cache_key = f"{selected_model or 'auto_selected'}_{language}"
+    if use_dynamic_rag:
+        cache_key = f"dynamic_{ollama_model}_{ollama_embedding_model}_{language}"
+    else:
+        cache_key = f"{selected_model or 'auto_selected'}_{language}"
     
     try:
         if cache_key not in rag_engines:
-            if selected_model:
+            if use_dynamic_rag:
+                # 使用Dynamic RAG
+                logger.info(f"初始化Dynamic RAG引擎 - 語言: {language}, 模型: {ollama_model}, 嵌入: {ollama_embedding_model}")
+                
+                if not ollama_model or not ollama_embedding_model:
+                    raise HTTPException(status_code=400, detail="Dynamic RAG需要指定ollama_model和ollama_embedding_model")
+                
+                # 使用工廠創建Dynamic RAG引擎
+                rag_engines[cache_key] = get_rag_engine_for_language(
+                    "Dynamic", None, ollama_model, ollama_embedding_model
+                )
+                
+            elif selected_model:
                 # 使用指定的模型
                 logger.info(f"初始化{language}RAG引擎 - 指定模型: {selected_model}")
                 
@@ -268,7 +290,13 @@ async def ask_question(request: QuestionRequest):
     
     try:
         # 獲取RAG引擎
-        engine = get_rag_engine(request.selected_model, request.language)
+        engine = get_rag_engine(
+            selected_model=request.selected_model, 
+            language=request.language,
+            use_dynamic_rag=request.use_dynamic_rag,
+            ollama_model=request.selected_model if request.use_dynamic_rag else None,
+            ollama_embedding_model=request.ollama_embedding_model
+        )
         
         # 根據是否使用查詢改寫選擇函數
         if request.use_query_rewrite:
@@ -462,6 +490,33 @@ async def get_ollama_models():
         ) for model in models]
     except Exception as e:
         logger.error(f"獲取 Ollama 模型列表失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取模型列表失敗: {str(e)}")
+
+@app.get("/api/ollama/models/categorized")
+async def get_ollama_models_categorized():
+    """獲取分類的 Ollama 模型列表（用於 Dynamic RAG）"""
+    try:
+        models = ollama_utils.get_available_models()
+        
+        # 分類模型
+        language_models = []
+        embedding_models = []
+        
+        for model in models:
+            model_name = model['name'].lower()
+            
+            # 根據模型名稱判斷類型
+            if any(embed_keyword in model_name for embed_keyword in ['embed', 'embedding', 'nomic']):
+                embedding_models.append(model['name'])
+            else:
+                language_models.append(model['name'])
+        
+        return {
+            "language_models": language_models,
+            "embedding_models": embedding_models
+        }
+    except Exception as e:
+        logger.error(f"獲取分類 Ollama 模型列表失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"獲取模型列表失敗: {str(e)}")
 
 @app.get("/api/vector-models", response_model=List[VectorModelInfo])

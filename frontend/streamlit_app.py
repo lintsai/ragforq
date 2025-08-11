@@ -121,7 +121,7 @@ def retry_with_backoff(func, max_retries=3, initial_delay=1):
             time.sleep(delay)
             delay *= 2
 
-def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None, language: str = "繁體中文") -> Dict[str, Any]:
+def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None, language: str = "繁體中文", use_dynamic_rag: bool = False, dynamic_ollama_model: Optional[str] = None, dynamic_embedding_model: Optional[str] = None) -> Dict[str, Any]:
     """獲取問題答案"""
     try:
         payload = {
@@ -130,10 +130,14 @@ def get_answer(question: str, include_sources: bool = True, max_sources: Optiona
             "max_sources": max_sources,
             "use_query_rewrite": use_query_rewrite,
             "show_relevance": show_relevance,
-            "language": language  # 將語言作為獨立參數傳遞
+            "language": language,  # 將語言作為獨立參數傳遞
+            "use_dynamic_rag": use_dynamic_rag,
+            "ollama_embedding_model": dynamic_embedding_model
         }
         
-        if selected_model:
+        if use_dynamic_rag and dynamic_ollama_model:
+            payload["selected_model"] = dynamic_ollama_model
+        elif selected_model:
             payload["selected_model"] = selected_model
         
         response = requests.post(
@@ -258,7 +262,8 @@ def main():
                         selected_display_name = st.selectbox(
                             "選擇問答模型：",
                             options=model_options,
-                            help="選擇用於問答的向量模型，帶🌟的是最新訓練的默認模型"
+                            help="選擇用於問答的向量模型，帶🌟的是最新訓練的默認模型",
+                            key="main_model_selector"
                         )
                         
                         # 獲取實際的文件夾名稱
@@ -314,21 +319,79 @@ def main():
             # 添加設置選項
             st.markdown("### 設置")
             
+            # RAG模式選擇
+            rag_mode = st.radio(
+                "🔧 RAG模式：",
+                options=["傳統RAG", "Dynamic RAG"],
+                index=0,
+                help="傳統RAG使用預建向量資料庫，Dynamic RAG即時檢索文件",
+                key="rag_mode_selector"
+            )
+            
+            # Dynamic RAG 特殊設置
+            dynamic_ollama_model = None
+            dynamic_embedding_model = None
+            
+            if rag_mode == "Dynamic RAG":
+                st.info("💡 Dynamic RAG 無需預先建立向量資料庫，查詢時即時檢索文件")
+                
+                # 獲取可用的Ollama模型
+                try:
+                    ollama_models_response = requests.get(f"{API_URL}/api/ollama/models/categorized", timeout=5)
+                    if ollama_models_response.status_code == 200:
+                        ollama_models = ollama_models_response.json()
+                        
+                        # 語言模型選擇
+                        if ollama_models.get('language_models') and len(ollama_models['language_models']) > 0:
+                            dynamic_ollama_model = st.selectbox(
+                                "🤖 語言模型：",
+                                options=ollama_models['language_models'],
+                                help="選擇用於回答生成的語言模型",
+                                key="dynamic_language_model_selector"
+                            )
+                        else:
+                            st.warning("沒有找到可用的語言模型")
+                            dynamic_ollama_model = None
+                        
+                        # 嵌入模型選擇
+                        if ollama_models.get('embedding_models') and len(ollama_models['embedding_models']) > 0:
+                            dynamic_embedding_model = st.selectbox(
+                                "🔤 嵌入模型：",
+                                options=ollama_models['embedding_models'],
+                                help="選擇用於文本向量化的嵌入模型",
+                                key="dynamic_embedding_model_selector"
+                            )
+                        else:
+                            st.warning("沒有找到可用的嵌入模型")
+                            dynamic_embedding_model = None
+                    else:
+                        st.error(f"無法獲取Ollama模型列表，狀態碼: {ollama_models_response.status_code}")
+                        dynamic_ollama_model = None
+                        dynamic_embedding_model = None
+                except Exception as e:
+                    st.error(f"獲取Ollama模型時出錯: {str(e)}")
+                    dynamic_ollama_model = None
+                    dynamic_embedding_model = None
+            
             # 語言選擇
             language_options = ["繁體中文", "简体中文", "English", "ไทย"]
+            if rag_mode == "Dynamic RAG":
+                language_options.append("Dynamic")  # Dynamic RAG支援動態語言
+            
             selected_language = st.selectbox(
                 "🌐 回答語言：",
                 options=language_options,
-                index=language_options.index(st.session_state.selected_language),
-                help="選擇AI回答時使用的語言"
+                index=language_options.index(st.session_state.selected_language) if st.session_state.selected_language in language_options else 0,
+                help="選擇AI回答時使用的語言",
+                key="language_selector"
             )
             st.session_state.selected_language = selected_language
             
             # 固定設置，不再提供用戶選項
             include_sources = True  # 總是包含相關文件
             max_sources = 5  # 固定回應5筆結果
-            show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關")
-            use_query_rewrite = st.checkbox("使用查詢優化", value=True, help="自動改寫查詢以獲得更準確的結果")
+            show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關", key="show_relevance_checkbox")
+            use_query_rewrite = st.checkbox("使用查詢優化", value=True, help="自動改寫查詢以獲得更準確的結果", key="use_query_rewrite_checkbox")
 
             # 添加清除歷史按鈕
             if st.button("清除歷史記錄", key="clear_history"):
@@ -426,7 +489,10 @@ def main():
                         use_query_rewrite,
                         show_relevance,
                         selected_model_folder,
-                        selected_language
+                        selected_language,
+                        use_dynamic_rag=(rag_mode == "Dynamic RAG"),
+                        dynamic_ollama_model=dynamic_ollama_model,
+                        dynamic_embedding_model=dynamic_embedding_model
                     )
 
                     answer_text = result.get("answer", "無法獲取答案")
@@ -473,13 +539,15 @@ def main():
                         selected_ollama_model = st.selectbox(
                             "選擇 Ollama 語言模型：",
                             options=model_names,
-                            help="用於問答的語言模型"
+                            help="用於問答的語言模型",
+                            key="admin_ollama_model_selector"
                         )
                     with col2:
                         selected_embedding_model = st.selectbox(
                             "選擇 Ollama 嵌入模型：",
                             options=model_names,
-                            help="用於文本嵌入的模型"
+                            help="用於文本嵌入的模型",
+                            key="admin_embedding_model_selector"
                         )
                     
                     # 版本選擇
@@ -504,7 +572,8 @@ def main():
                     selected_version_option = st.selectbox(
                         "選擇訓練版本:",
                         options=version_options,
-                        help="選擇一個現有版本進行增量訓練，或建立一個帶有今天日期的新版本。"
+                        help="選擇一個現有版本進行增量訓練，或建立一個帶有今天日期的新版本。",
+                        key="admin_version_selector"
                     )
 
                     # 確定最終要發送到API的版本號
@@ -1036,16 +1105,16 @@ def main():
                             st.subheader("➕ 新增文檔到向量資料庫")
                             
                             with st.form("add_document_form"):
-                                file_name = st.text_input("文件名稱", placeholder="例如: 手動添加的文檔.txt")
-                                content = st.text_area("文檔內容", height=300, placeholder="請輸入要添加到向量資料庫的內容...")
+                                file_name = st.text_input("文件名稱", placeholder="例如: 手動添加的文檔.txt", key="add_doc_filename")
+                                content = st.text_area("文檔內容", height=300, placeholder="請輸入要添加到向量資料庫的內容...", key="add_doc_content")
                                 
                                 # 可選的元數據
                                 st.write("**可選元數據:**")
                                 col1, col2 = st.columns(2)
                                 with col1:
-                                    file_path = st.text_input("文件路徑", placeholder="例如: /manual/custom_doc.txt")
+                                    file_path = st.text_input("文件路徑", placeholder="例如: /manual/custom_doc.txt", key="add_doc_filepath")
                                 with col2:
-                                    chunk_index = st.number_input("塊索引", min_value=0, value=0)
+                                    chunk_index = st.number_input("塊索引", min_value=0, value=0, key="add_doc_chunk_index")
                                 
                                 submitted = st.form_submit_button("➕ 添加文檔", type="primary")
                                 

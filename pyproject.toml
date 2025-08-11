@@ -28,6 +28,11 @@ xlrd = "^2.0.2"
 olefile = "^0.47"
 pytz = "^2025.2"
 psutil = "^7.0.0"
+# 新增的依賴
+requests = "^2.31.0"  # HTTP請求庫
+numpy = "^1.24.0"     # 數值計算庫
+pydantic = "^2.0.0"   # 數據驗證庫
+tqdm = "^4.66.0"      # 進度條庫
 
 [build-system]
 requires = ["poetry-core"]

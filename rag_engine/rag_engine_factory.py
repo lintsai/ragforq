@@ -12,6 +12,7 @@ from rag_engine.traditional_chinese_engine import TraditionalChineseRAGEngine
 from rag_engine.simplified_chinese_engine import SimplifiedChineseRAGEngine
 from rag_engine.english_engine import EnglishRAGEngine
 from rag_engine.thai_engine import ThaiRAGEngine
+from rag_engine.dynamic_rag_engine import DynamicRAGEngine
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +31,9 @@ class RAGEngineFactory:
         "english": "english",
         "泰文": "thai",
         "ไทย": "thai",
-        "thai": "thai"
+        "thai": "thai",
+        "Dynamic": "dynamic",  # 動態RAG
+        "動態": "dynamic"
     }
     
     # 引擎類映射
@@ -38,7 +41,8 @@ class RAGEngineFactory:
         "traditional_chinese": TraditionalChineseRAGEngine,
         "simplified_chinese": SimplifiedChineseRAGEngine,
         "english": EnglishRAGEngine,
-        "thai": ThaiRAGEngine
+        "thai": ThaiRAGEngine,
+        "dynamic": DynamicRAGEngine
     }
     
     def __init__(self):
@@ -66,7 +70,7 @@ class RAGEngineFactory:
             return "traditional_chinese"
         return normalized
     
-    def create_engine(self, language: str, document_indexer, ollama_model: str) -> RAGEngineInterface:
+    def create_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None) -> RAGEngineInterface:
         """
         創建指定語言的RAG引擎
         
@@ -74,6 +78,7 @@ class RAGEngineFactory:
             language: 目標語言
             document_indexer: 文檔索引器實例
             ollama_model: Ollama模型名稱
+            ollama_embedding_model: Ollama嵌入模型名稱（Dynamic RAG需要）
             
         Returns:
             對應語言的RAG引擎實例
@@ -84,14 +89,19 @@ class RAGEngineFactory:
         logger.info(f"創建{language}({normalized_lang})RAG引擎，使用模型: {ollama_model}")
         
         try:
-            engine = engine_class(document_indexer, ollama_model)
+            if normalized_lang == "dynamic":
+                # Dynamic RAG需要特殊參數
+                engine = engine_class(ollama_model, ollama_embedding_model, language)
+            else:
+                # 傳統RAG引擎
+                engine = engine_class(document_indexer, ollama_model)
             logger.info(f"{language}RAG引擎創建成功")
             return engine
         except Exception as e:
             logger.error(f"創建{language}RAG引擎失敗: {str(e)}")
             raise
     
-    def get_engine(self, language: str, document_indexer, ollama_model: str) -> RAGEngineInterface:
+    def get_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None) -> RAGEngineInterface:
         """
         獲取或創建指定語言的RAG引擎（帶緩存）
         
@@ -99,6 +109,7 @@ class RAGEngineFactory:
             language: 目標語言
             document_indexer: 文檔索引器實例
             ollama_model: Ollama模型名稱
+            ollama_embedding_model: Ollama嵌入模型名稱（Dynamic RAG需要）
             
         Returns:
             對應語言的RAG引擎實例
@@ -106,7 +117,10 @@ class RAGEngineFactory:
         normalized_lang = self.normalize_language(language)
         
         # 創建緩存鍵
-        cache_key = f"{normalized_lang}_{ollama_model}"
+        if normalized_lang == "dynamic":
+            cache_key = f"{normalized_lang}_{ollama_model}_{ollama_embedding_model}"
+        else:
+            cache_key = f"{normalized_lang}_{ollama_model}"
         
         # 檢查緩存
         if normalized_lang not in self._engines:
@@ -115,7 +129,7 @@ class RAGEngineFactory:
         if cache_key not in self._engines[normalized_lang]:
             # 創建新引擎
             self._engines[normalized_lang][cache_key] = self.create_engine(
-                language, document_indexer, ollama_model
+                language, document_indexer, ollama_model, ollama_embedding_model
             )
         
         return self._engines[normalized_lang][cache_key]
@@ -173,7 +187,7 @@ class RAGEngineFactory:
 # 創建全局工廠實例
 rag_engine_factory = RAGEngineFactory()
 
-def get_rag_engine_for_language(language: str, document_indexer, ollama_model: str) -> RAGEngineInterface:
+def get_rag_engine_for_language(language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None) -> RAGEngineInterface:
     """
     便捷函數：獲取指定語言的RAG引擎
     
@@ -181,11 +195,12 @@ def get_rag_engine_for_language(language: str, document_indexer, ollama_model: s
         language: 目標語言
         document_indexer: 文檔索引器實例
         ollama_model: Ollama模型名稱
+        ollama_embedding_model: Ollama嵌入模型名稱（Dynamic RAG需要）
         
     Returns:
         對應語言的RAG引擎實例
     """
-    return rag_engine_factory.get_engine(language, document_indexer, ollama_model)
+    return rag_engine_factory.get_engine(language, document_indexer, ollama_model, ollama_embedding_model)
 
 def clear_rag_engine_cache(language: Optional[str] = None, ollama_model: Optional[str] = None):
     """
