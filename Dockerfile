@@ -25,12 +25,16 @@ COPY poetry.lock pyproject.toml ./
 # 安裝專案依賴
 RUN poetry install --no-root --no-interaction --no-ansi
 
-# 替換掉 faiss-cpu 為 GPU 版本（如果存在）
-RUN . .venv/bin/activate && pip uninstall -y faiss-cpu || true
-RUN . .venv/bin/activate && pip install faiss-gpu
+# 先鎖定 numpy < 2，避免後續套件將其升級到 2.x
+RUN . .venv/bin/activate && pip install --no-cache-dir "numpy<2" --upgrade --force-reinstall
 
-# 安裝生產環境專用依賴（開發環境因兼容性問題移除的依賴）
-RUN . .venv/bin/activate && pip install vllm>=0.2.0 ray>=2.8.0
+# 替換掉 faiss-cpu 為 GPU 版本（如果存在），並確保 numpy 不被升級
+RUN . .venv/bin/activate && pip uninstall -y faiss-cpu || true
+RUN . .venv/bin/activate && pip install --no-cache-dir faiss-gpu
+
+# 安裝生產環境專用依賴（開發環境因兼容性問題移除的依賴），並在之後再鎖一次 numpy 版本
+RUN . .venv/bin/activate && pip install --no-cache-dir "vllm>=0.2.0" "ray>=2.8.0"
+RUN . .venv/bin/activate && pip install --no-cache-dir "numpy<2" --upgrade --force-reinstall
 
 
 # --- Stage 2: Final Stage ---
