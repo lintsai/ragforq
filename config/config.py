@@ -31,10 +31,83 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 MAX_TOKENS_CHUNK = int(os.getenv("MAX_TOKENS_CHUNK", "500").split("#")[0].strip())
 SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", "10").split("#")[0].strip())
 
-# Ollama設置
+# Hugging Face 設置
+HF_MODEL_CACHE_DIR = os.getenv("HF_MODEL_CACHE_DIR", "./models/cache")
+HF_USE_GPU = os.getenv("HF_USE_GPU", "true").lower() == "true"
+
+# Ollama 設置
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-# 注意：OLLAMA_MODEL 和 OLLAMA_EMBEDDING_MODEL 已移除，現在通過管理介面動態選擇
-# 如果需要默認值，可以在相應的類中設定
+
+# 環境配置
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")  # development, production
+
+# 用戶配置管理 - 平台和模型選擇通過前端設置流程管理
+def load_user_config():
+    """載入用戶配置"""
+    config_file = Path("config/user_setup.json")
+    if config_file.exists():
+        try:
+            import json
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def get_selected_platform():
+    """獲取用戶選擇的平台"""
+    user_config = load_user_config()
+    return user_config.get("platform", "huggingface")  # 默認 Hugging Face
+
+def detect_platform_from_model(model_name: str) -> str:
+    """根據模型名稱自動檢測平台"""
+    if model_name and ":" in model_name:
+        # Ollama 模型格式 (例如: llama3.2:3b, qwen2:0.5b-instruct)
+        return "ollama"
+    else:
+        # Hugging Face 模型格式 (例如: Qwen/Qwen2-0.5B-Instruct)
+        return "huggingface"
+
+def get_selected_models():
+    """獲取用戶選擇的模型"""
+    user_config = load_user_config()
+    return {
+        "language_model": user_config.get("language_model"),
+        "embedding_model": user_config.get("embedding_model")
+    }
+
+def is_setup_completed():
+    """檢查是否完成初始設置 - Web 應用模式總是返回 True"""
+    user_config = load_user_config()
+    return user_config.get("web_app_mode", True)  # Web 應用模式默認已完成設置
+
+# 動態獲取當前配置
+user_config = load_user_config()
+SELECTED_PLATFORM = get_selected_platform()
+
+# 模型配置（向後兼容）
+DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "Qwen/Qwen2-0.5B-Instruct")
+DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+
+# PyTorch 設置
+TORCH_DEVICE = os.getenv("TORCH_DEVICE", "auto")  # auto, cpu, cuda
+TORCH_DTYPE = os.getenv("TORCH_DTYPE", "float16")  # float16, float32
+
+# TensorFlow 設置
+TF_MEMORY_GROWTH = os.getenv("TF_MEMORY_GROWTH", "true").lower() == "true"
+TF_MIXED_PRECISION = os.getenv("TF_MIXED_PRECISION", "true").lower() == "true"
+
+# vLLM 設置
+def get_inference_engine():
+    """獲取用戶選擇的推理引擎"""
+    user_config = load_user_config()
+    return user_config.get("inference_engine", os.getenv("INFERENCE_ENGINE", "transformers"))
+
+INFERENCE_ENGINE = get_inference_engine()
+VLLM_GPU_MEMORY_UTILIZATION = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.9"))
+VLLM_MAX_MODEL_LEN = int(os.getenv("VLLM_MAX_MODEL_LEN", "4096"))
+VLLM_TENSOR_PARALLEL_SIZE = int(os.getenv("VLLM_TENSOR_PARALLEL_SIZE", "1"))
+VLLM_DTYPE = os.getenv("VLLM_DTYPE", "float16")  # float16, bfloat16, float32
 
 # 建立向量數據庫目錄（如果不存在）
 vector_db_path = Path(VECTOR_DB_PATH)

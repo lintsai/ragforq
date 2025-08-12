@@ -32,7 +32,7 @@ def test_model(model_folder, model_name):
 if __name__ == "__main__":
     models = [
         ('ollama@qwen2_0.5b-instruct@nomic-embed-text_latest#20250731', 'qwen2:0.5b-instruct'),
-        ('ollama@qwen2.5_0.5b-instruct@nomic-embed-text_latest#20250731', 'qwen2.5:0.5b-instruct')
+        ('ollama@qwen2_0.5b-instruct@nomic-embed-text_latest#20250731', 'qwen2:0.5b-instruct')
     ]
     
     for folder, name in models:

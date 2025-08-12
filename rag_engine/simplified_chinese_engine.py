@@ -8,13 +8,12 @@ from pathlib import Path
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import OLLAMA_HOST
 from rag_engine.interfaces import RAGEngineInterface
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_ollama import OllamaLLM
-
+from utils.hf_langchain_wrapper import HuggingFaceLLM, ChatHuggingFace
+from utils.ollama_utils import ollama_utils
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,15 +21,31 @@ logger = logging.getLogger(__name__)
 class SimplifiedChineseRAGEngine(RAGEngineInterface):
     """简体中文RAG引擎实现"""
     
-    def __init__(self, document_indexer, ollama_model: str = None):
+    def __init__(self, document_indexer, ollama_model: str = None, platform: str = None):
         super().__init__(document_indexer, ollama_model)
         
-        self.llm = OllamaLLM(
-            model=ollama_model,
-            base_url=OLLAMA_HOST,
-            temperature=0.4
-        )
-        logger.info(f"简体中文RAG引擎初始化完成，使用模型: {ollama_model}")
+        # 如果沒有指定平台，自動檢測
+        if platform is None:
+            from config.config import detect_platform_from_model
+            platform = detect_platform_from_model(ollama_model)
+        
+        # 根據傳入的平台參數初始化不同的 LLM
+        if platform == "ollama":
+            from langchain_ollama import OllamaLLM
+            from config.config import OLLAMA_HOST
+            self.llm = OllamaLLM(
+                model=ollama_model,
+                base_url=OLLAMA_HOST,
+                temperature=0.4
+            )
+            logger.info(f"简体中文RAG引擎初始化完成 (Ollama)，使用模型: {ollama_model}")
+        else:
+            # Hugging Face 平台
+            self.llm = ChatHuggingFace(
+                model_name=ollama_model,
+                temperature=0.4
+            )
+            logger.info(f"简体中文RAG引擎初始化完成 (Hugging Face)，使用模型: {ollama_model}")
     
     def get_language(self) -> str:
         return "简体中文"
@@ -41,17 +56,11 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
         """
         try:
             rewrite_prompt = PromptTemplate(
-                template="""将以下简体中文问题优化为适合文档检索的描述。请直接输出优化结果，不要包含任何说明文字。
+                template="""你是一个搜索优化专家。请将以下问题转换为更适合在知识库中检索的关键词或描述性语句。请严格使用简体中文输出。
 
-问题: {question}
+原始问题: {question}
 
-要求:
-- 保持简体中文
-- 转换为描述性语句
-- 扩展相关术语和同义词
-- 包含文档中可能的表达方式
-
-优化结果:""",
+优化后的检索查询:""",
                 input_variables=["question"]
             )
             
@@ -98,19 +107,18 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
     
     def _generate_answer(self, question: str, context: str) -> str:
         """生成简体中文回答"""
-        template = """请用简体中文回答问题。
+        template = """你是一个专业的AI文档问答助手。请严格根据以下“上下文信息”来回答“用户问题”。请使用与问题相同的语言（简体中文）来回答。
 
-上下文：{context}
+上下文信息:
+---
+{context}
+---
 
-问题：{question}
+用户问题: {question}
 
-指示：
-1. 仅使用简体中文回答
-2. 基于提供的上下文回答
-3. 如果上下文不足，请明确说明
-4. 保持回答简洁准确
+请提供一个准确、详细的回答。如果上下文中没有足够信息，请明确说明“根据提供的文件，我找不到相关信息”。
 
-简体中文回答："""
+回答:"""
 
         prompt = PromptTemplate(
             template=template,
@@ -148,17 +156,13 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
             trimmed_content = doc_content[:1000].strip()
             
             relevance_prompt = PromptTemplate(
-                template="""你是一个文档相关性评估专家。请简明扼要地解释为什么下面的文档内容与用户查询相关。
+                template="""你是一个文档相关性评估专家。请简明扼要地解释为什么下面的文档内容与用户查询相关。请严格使用简体中文回答。
 
 用户查询: {question}
-
 文档内容:
------------------
+---
 {doc_content}
------------------
-
-请提供1-2句简短的简体中文解释，说明这个文档为什么与查询相关。不要重复查询内容，直接解释关联性。
-
+---
 相关性理由：""",
                 input_variables=["question", "doc_content"]
             )

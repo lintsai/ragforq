@@ -8,13 +8,11 @@ from pathlib import Path
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import OLLAMA_HOST
 from rag_engine.interfaces import RAGEngineInterface
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_ollama import OllamaLLM
-
+from utils.hf_langchain_wrapper import HuggingFaceLLM, ChatHuggingFace
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,15 +20,31 @@ logger = logging.getLogger(__name__)
 class EnglishRAGEngine(RAGEngineInterface):
     """English RAG Engine Implementation"""
     
-    def __init__(self, document_indexer, ollama_model: str = None):
+    def __init__(self, document_indexer, ollama_model: str = None, platform: str = None):
         super().__init__(document_indexer, ollama_model)
         
-        self.llm = OllamaLLM(
-            model=ollama_model,
-            base_url=OLLAMA_HOST,
-            temperature=0.4
-        )
-        logger.info(f"English RAG engine initialized with model: {ollama_model}")
+        # 如果沒有指定平台，自動檢測
+        if platform is None:
+            from config.config import detect_platform_from_model
+            platform = detect_platform_from_model(ollama_model)
+        
+        # 根據傳入的平台參數初始化不同的 LLM
+        if platform == "ollama":
+            from langchain_ollama import OllamaLLM
+            from config.config import OLLAMA_HOST
+            self.llm = OllamaLLM(
+                model=ollama_model,
+                base_url=OLLAMA_HOST,
+                temperature=0.4
+            )
+            logger.info(f"English RAG engine initialized (Ollama) with model: {ollama_model}")
+        else:
+            # Hugging Face 平台
+            self.llm = ChatHuggingFace(
+                model_name=ollama_model,
+                temperature=0.4
+            )
+            logger.info(f"English RAG engine initialized (Hugging Face) with model: {ollama_model}")
     
     def get_language(self) -> str:
         return "English"
@@ -41,17 +55,11 @@ class EnglishRAGEngine(RAGEngineInterface):
         """
         try:
             rewrite_prompt = PromptTemplate(
-                template="""Optimize the following English question for document retrieval. Output only the optimized result without any explanatory text.
+                template="""You are a search optimization expert. Convert the following question into keywords or a descriptive phrase suitable for searching in a knowledge base. Please respond strictly in English.
 
-Question: {question}
+Original question: {question}
 
-Requirements:
-- Keep it in English
-- Convert to descriptive statements
-- Expand with relevant terms and synonyms
-- Include expressions that might appear in documents
-
-Optimized result:""",
+Optimized search query:""",
                 input_variables=["question"]
             )
             
@@ -98,19 +106,18 @@ Optimized result:""",
     
     def _generate_answer(self, question: str, context: str) -> str:
         """Generate English answer"""
-        template = """Answer the question in English only.
+        template = """You are a professional AI document assistant. Strictly answer the "User Question" based on the "Context Information" below. Please respond in the same language as the question (English).
 
-Context: {context}
+Context Information:
+---
+{context}
+---
 
-Question: {question}
+User Question: {question}
 
-Instructions:
-1. Answer only in English
-2. Base your answer on the provided context
-3. If context is insufficient, clearly state so
-4. Keep the answer concise and accurate
+Please provide an accurate and detailed answer. If there is not enough information in the context, please state clearly "Based on the provided documents, I could not find the relevant information."
 
-English answer:"""
+Answer:"""
 
         prompt = PromptTemplate(
             template=template,
@@ -148,18 +155,14 @@ English answer:"""
             trimmed_content = doc_content[:1000].strip()
             
             relevance_prompt = PromptTemplate(
-                template="""You are a document relevance assessment expert. Please briefly explain why the document content below is relevant to the user's query.
+                template="""You are a document relevance assessment expert. Briefly explain why the document content below is relevant to the user query. Please respond strictly in English.
 
-User query: {question}
-
-Document content:
------------------
+User Query: {question}
+Document Content:
+---
 {doc_content}
------------------
-
-Please provide 1-2 short sentences in English explaining why this document is relevant to the query. Don't repeat the query content, just explain the relevance directly.
-
-Relevance reason:""",
+---
+Relevance Reason:""",
                 input_variables=["question", "doc_content"]
             )
             

@@ -12,7 +12,10 @@ from rag_engine.traditional_chinese_engine import TraditionalChineseRAGEngine
 from rag_engine.simplified_chinese_engine import SimplifiedChineseRAGEngine
 from rag_engine.english_engine import EnglishRAGEngine
 from rag_engine.thai_engine import ThaiRAGEngine
-from rag_engine.dynamic_rag_engine import DynamicRAGEngine
+from rag_engine.dynamic_traditional_chinese_engine import DynamicTraditionalChineseRAGEngine
+from rag_engine.dynamic_simplified_chinese_engine import DynamicSimplifiedChineseRAGEngine
+from rag_engine.dynamic_english_engine import DynamicEnglishRAGEngine
+from rag_engine.dynamic_thai_engine import DynamicThaiRAGEngine
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +27,7 @@ class RAGEngineFactory:
     # 支持的語言映射
     LANGUAGE_MAPPING = {
         "繁體中文": "traditional_chinese",
-        "中文": "traditional_chinese",  # 默認為繁體中文
+        "中文": "traditional_chinese",
         "简体中文": "simplified_chinese",
         "簡體中文": "simplified_chinese",
         "English": "english",
@@ -32,8 +35,12 @@ class RAGEngineFactory:
         "泰文": "thai",
         "ไทย": "thai",
         "thai": "thai",
-        "Dynamic": "dynamic",  # 動態RAG
-        "動態": "dynamic"
+        "Thai": "thai",
+        # 動態鍵保留以兼容舊用法，但不再依賴於此固定映射
+        "Dynamic_繁體中文": "dynamic_traditional_chinese",
+        "Dynamic_简体中文": "dynamic_simplified_chinese",
+        "Dynamic_English": "dynamic_english",
+        "Dynamic_ไทย": "dynamic_thai",
     }
     
     # 引擎類映射
@@ -42,7 +49,10 @@ class RAGEngineFactory:
         "simplified_chinese": SimplifiedChineseRAGEngine,
         "english": EnglishRAGEngine,
         "thai": ThaiRAGEngine,
-        "dynamic": DynamicRAGEngine
+        "dynamic_traditional_chinese": DynamicTraditionalChineseRAGEngine,
+        "dynamic_simplified_chinese": DynamicSimplifiedChineseRAGEngine,
+        "dynamic_english": DynamicEnglishRAGEngine,
+        "dynamic_thai": DynamicThaiRAGEngine,
     }
     
     def __init__(self):
@@ -64,13 +74,22 @@ class RAGEngineFactory:
         Returns:
             標準化的語言標識符
         """
+        # 先處理動態前綴，將基礎語言先標準化後再映射到對應動態鍵
+        if isinstance(language, str) and language.startswith("Dynamic_"):
+            base_lang = language[len("Dynamic_"):]
+            base_normalized = self.LANGUAGE_MAPPING.get(base_lang)
+            if not base_normalized:
+                logger.warning(f"不支持的語言: {language}，默認使用dynamic_traditional_chinese")
+                return "dynamic_traditional_chinese"
+            return f"dynamic_{base_normalized}"
+        
         normalized = self.LANGUAGE_MAPPING.get(language)
         if not normalized:
             logger.warning(f"不支持的語言: {language}，默認使用繁體中文")
             return "traditional_chinese"
         return normalized
     
-    def create_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None) -> RAGEngineInterface:
+    def create_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None) -> RAGEngineInterface:
         """
         創建指定語言的RAG引擎
         
@@ -79,29 +98,36 @@ class RAGEngineFactory:
             document_indexer: 文檔索引器實例
             ollama_model: Ollama模型名稱
             ollama_embedding_model: Ollama嵌入模型名稱（Dynamic RAG需要）
+            platform: AI平台類型 (huggingface/ollama)，如果為None則自動檢測
             
         Returns:
             對應語言的RAG引擎實例
         """
+        # 如果沒有指定平台，自動檢測
+        if platform is None:
+            from config.config import detect_platform_from_model
+            platform = detect_platform_from_model(ollama_model)
+            
         normalized_lang = self.normalize_language(language)
         engine_class = self.ENGINE_CLASSES[normalized_lang]
         
-        logger.info(f"創建{language}({normalized_lang})RAG引擎，使用模型: {ollama_model}")
+        logger.info(f"創建{language}({normalized_lang})RAG引擎，使用模型: {ollama_model}，平台: {platform}")
         
         try:
-            if normalized_lang == "dynamic":
-                # Dynamic RAG需要特殊參數
-                engine = engine_class(ollama_model, ollama_embedding_model, language)
+            if normalized_lang.startswith("dynamic_"):
+                # 動態RAG引擎
+                engine = engine_class(ollama_model, ollama_embedding_model, platform=platform)
             else:
                 # 傳統RAG引擎
-                engine = engine_class(document_indexer, ollama_model)
+                engine = engine_class(document_indexer, ollama_model, platform)
+            
             logger.info(f"{language}RAG引擎創建成功")
             return engine
         except Exception as e:
             logger.error(f"創建{language}RAG引擎失敗: {str(e)}")
             raise
     
-    def get_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None) -> RAGEngineInterface:
+    def get_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None) -> RAGEngineInterface:
         """
         獲取或創建指定語言的RAG引擎（帶緩存）
         
@@ -110,17 +136,23 @@ class RAGEngineFactory:
             document_indexer: 文檔索引器實例
             ollama_model: Ollama模型名稱
             ollama_embedding_model: Ollama嵌入模型名稱（Dynamic RAG需要）
+            platform: AI平台類型 (huggingface/ollama)，如果為None則自動檢測
             
         Returns:
             對應語言的RAG引擎實例
         """
+        # 如果沒有指定平台，自動檢測
+        if platform is None:
+            from config.config import detect_platform_from_model
+            platform = detect_platform_from_model(ollama_model)
+            
         normalized_lang = self.normalize_language(language)
         
-        # 創建緩存鍵
-        if normalized_lang == "dynamic":
-            cache_key = f"{normalized_lang}_{ollama_model}_{ollama_embedding_model}"
+        # 創建緩存鍵，包含平台信息
+        if normalized_lang.startswith("dynamic_"):
+            cache_key = f"{normalized_lang}_{ollama_model}_{ollama_embedding_model}_{platform}"
         else:
-            cache_key = f"{normalized_lang}_{ollama_model}"
+            cache_key = f"{normalized_lang}_{ollama_model}_{platform}"
         
         # 檢查緩存
         if normalized_lang not in self._engines:
@@ -129,7 +161,7 @@ class RAGEngineFactory:
         if cache_key not in self._engines[normalized_lang]:
             # 創建新引擎
             self._engines[normalized_lang][cache_key] = self.create_engine(
-                language, document_indexer, ollama_model, ollama_embedding_model
+                language, document_indexer, ollama_model, ollama_embedding_model, platform
             )
         
         return self._engines[normalized_lang][cache_key]
@@ -187,7 +219,7 @@ class RAGEngineFactory:
 # 創建全局工廠實例
 rag_engine_factory = RAGEngineFactory()
 
-def get_rag_engine_for_language(language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None) -> RAGEngineInterface:
+def get_rag_engine_for_language(language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None) -> RAGEngineInterface:
     """
     便捷函數：獲取指定語言的RAG引擎
     
@@ -196,11 +228,17 @@ def get_rag_engine_for_language(language: str, document_indexer, ollama_model: s
         document_indexer: 文檔索引器實例
         ollama_model: Ollama模型名稱
         ollama_embedding_model: Ollama嵌入模型名稱（Dynamic RAG需要）
+        platform: AI平台類型 (huggingface/ollama)，如果為None則自動檢測
         
     Returns:
         對應語言的RAG引擎實例
     """
-    return rag_engine_factory.get_engine(language, document_indexer, ollama_model, ollama_embedding_model)
+    # 如果沒有指定平台，自動檢測
+    if platform is None:
+        from config.config import detect_platform_from_model
+        platform = detect_platform_from_model(ollama_model)
+    
+    return rag_engine_factory.get_engine(language, document_indexer, ollama_model, ollama_embedding_model, platform)
 
 def clear_rag_engine_cache(language: Optional[str] = None, ollama_model: Optional[str] = None):
     """

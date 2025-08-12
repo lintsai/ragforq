@@ -8,13 +8,11 @@ from pathlib import Path
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import OLLAMA_HOST
 from rag_engine.interfaces import RAGEngineInterface
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_ollama import OllamaLLM
-
+from utils.hf_langchain_wrapper import HuggingFaceLLM, ChatHuggingFace
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,15 +20,31 @@ logger = logging.getLogger(__name__)
 class ThaiRAGEngine(RAGEngineInterface):
     """Thai RAG Engine Implementation - เครื่องมือ RAG ภาษาไทย"""
     
-    def __init__(self, document_indexer, ollama_model: str = None):
+    def __init__(self, document_indexer, ollama_model: str = None, platform: str = None):
         super().__init__(document_indexer, ollama_model)
         
-        self.llm = OllamaLLM(
-            model=ollama_model,
-            base_url=OLLAMA_HOST,
-            temperature=0.4
-        )
-        logger.info(f"Thai RAG engine initialized with model: {ollama_model}")
+        # 如果沒有指定平台，自動檢測
+        if platform is None:
+            from config.config import detect_platform_from_model
+            platform = detect_platform_from_model(ollama_model)
+        
+        # 根據傳入的平台參數初始化不同的 LLM
+        if platform == "ollama":
+            from langchain_ollama import OllamaLLM
+            from config.config import OLLAMA_HOST
+            self.llm = OllamaLLM(
+                model=ollama_model,
+                base_url=OLLAMA_HOST,
+                temperature=0.4
+            )
+            logger.info(f"Thai RAG engine initialized (Ollama) with model: {ollama_model}")
+        else:
+            # Hugging Face 平台
+            self.llm = ChatHuggingFace(
+                model_name=ollama_model,
+                temperature=0.4
+            )
+            logger.info(f"Thai RAG engine initialized (Hugging Face) with model: {ollama_model}")
     
     def get_language(self) -> str:
         return "ไทย"
@@ -41,17 +55,11 @@ class ThaiRAGEngine(RAGEngineInterface):
         """
         try:
             rewrite_prompt = PromptTemplate(
-                template="""ปรับปรุงคำถามภาษาไทยต่อไปนี้สำหรับการค้นหาเอกสาร กรุณาส่งออกเฉพาะผลลัพธ์ที่ปรับปรุงแล้ว ไม่ต้องมีข้อความอธิบาย
+                template="""คุณเป็นผู้เชี่ยวชาญด้านการปรับแต่งการค้นหา กรุณาแปลงคำถามต่อไปนี้ให้เป็นคำสำคัญหรือวลีที่เหมาะสมสำหรับการค้นหาในฐานความรู้ กรุณาตอบเป็นภาษาไทยเท่านั้น
 
-คำถาม: {question}
+คำถามเดิม: {question}
 
-ข้อกำหนด:
-- คงภาษาไทยไว้
-- เปลี่ยนเป็นประโยคบอกเล่า
-- ขยายด้วยศัพท์ที่เกี่ยวข้องและคำพ้องความหมาย
-- รวมการแสดงออกที่อาจปรากฏในเอกสาร
-
-ผลลัพธ์ที่ปรับปรุง:""",
+คำค้นหาที่ปรับปรุงแล้ว:""",
                 input_variables=["question"]
             )
             
@@ -98,19 +106,18 @@ class ThaiRAGEngine(RAGEngineInterface):
     
     def _generate_answer(self, question: str, context: str) -> str:
         """สร้างคำตอบภาษาไทย"""
-        template = """คุณต้องตอบเป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาอื่น
+        template = """คุณเป็นผู้ช่วยเอกสาร AI มืออาชีพ โปรดตอบ "คำถามของผู้ใช้" โดยอิงจาก "ข้อมูลบริบท" ด้านล่างอย่างเคร่งครัด โปรดตอบกลับเป็นภาษาเดียวกับคำถาม (ภาษาไทย)
 
-บริบท: {context}
+ข้อมูลบริบท:
+---
+{context}
+---
 
-คำถาม: {question}
+คำถามของผู้ใช้: {question}
 
-คำแนะนำ:
-1. ตอบเป็นภาษาไทยเท่านั้น
-2. ใช้บริบทที่ให้มาในการตอบ
-3. หากบริบทไม่เพียงพอ ให้ระบุอย่างชัดเจน
-4. ให้คำตอบที่กระชับและถูกต้อง
+โปรดให้คำตอบที่ถูกต้องและละเอียด หากข้อมูลในบริบทไม่เพียงพอ โปรดระบุอย่างชัดเจนว่า "จากเอกสารที่ให้มา ไม่พบข้อมูลที่เกี่ยวข้อง"
 
-คำตอบภาษาไทย:"""
+คำตอบ:"""
 
         prompt = PromptTemplate(
             template=template,
@@ -183,17 +190,13 @@ class ThaiRAGEngine(RAGEngineInterface):
             trimmed_content = doc_content[:1000].strip()
             
             relevance_prompt = PromptTemplate(
-                template="""คุณเป็นผู้เชี่ยวชาญในการประเมินความเกี่ยวข้องของเอกสาร กรุณาอธิบายอย่างสั้นๆ ว่าทำไมเนื้อหาเอกสารด้านล่างจึงเกี่ยวข้องกับคำถามของผู้ใช้
+                template="""คุณเป็นผู้เชี่ยวชาญในการประเมินความเกี่ยวข้องของเอกสาร กรุณาอธิบายสั้นๆ ว่าทำไมเนื้อหาเอกสารด้านล่างจึงเกี่ยวข้องกับคำถามของผู้ใช้ กรุณาตอบเป็นภาษาไทยเท่านั้น
 
 คำถามของผู้ใช้: {question}
-
 เนื้อหาเอกสาร:
------------------
+---
 {doc_content}
------------------
-
-กรุณาให้คำอธิบายสั้นๆ 1-2 ประโยคเป็นภาษาไทย ว่าทำไมเอกสารนี้จึงเกี่ยวข้องกับคำถาม อย่าทำซ้ำเนื้อหาคำถาม แค่อธิบายความเกี่ยวข้องโดยตรง
-
+---
 เหตุผลความเกี่ยวข้อง:""",
                 input_variables=["question", "doc_content"]
             )

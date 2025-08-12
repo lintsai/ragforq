@@ -26,7 +26,7 @@ streamlit run frontend/streamlit_app.py
    - 系統會顯示提示：💡 Dynamic RAG 無需預先建立向量資料庫，查詢時即時檢索文件
 
 3. **配置模型**:
-   - **語言模型**: 選擇 `qwen2.5:0.5b-instruct` 或 `qwen2:0.5b-instruct`
+   - **語言模型**: 選擇 `qwen2:0.5b-instruct`（Ollama）或 `Qwen/Qwen2-0.5B-Instruct`（Hugging Face）
    - **嵌入模型**: 選擇 `nomic-embed-text:latest`
 
 4. **開始問答**:
@@ -39,7 +39,7 @@ streamlit run frontend/streamlit_app.py
 
 ### 語言模型 (用於生成回答)
 - `qwen2:0.5b-instruct` - 輕量級中文語言模型
-- `qwen2.5:0.5b-instruct` - 改進版中文語言模型 (推薦)
+- `qwen2:0.5b-instruct` - 中文/多語言表現佳（Ollama）
 
 ### 嵌入模型 (用於文本向量化)
 - `nomic-embed-text:latest` - 高質量嵌入模型
@@ -54,7 +54,7 @@ curl -X POST "http://localhost:8000/ask" \
   -d '{
     "question": "什麼是技術？",
     "use_dynamic_rag": true,
-    "selected_model": "qwen2.5:0.5b-instruct",
+    "selected_model": "qwen2:0.5b-instruct",
     "ollama_embedding_model": "nomic-embed-text:latest",
     "language": "繁體中文",
     "include_sources": true
@@ -68,7 +68,7 @@ from rag_engine.dynamic_rag_engine import DynamicRAGEngine
 
 # 創建Dynamic RAG引擎
 engine = DynamicRAGEngine(
-    ollama_model="qwen2.5:0.5b-instruct",
+    ollama_model="qwen2:0.5b-instruct",
     ollama_embedding_model="nomic-embed-text:latest",
     language="繁體中文"
 )
@@ -132,7 +132,7 @@ Dynamic RAG 的工作流程：
    - 嘗試使用更具體的關鍵詞
 
 3. **回答質量不佳**
-   - 嘗試使用 `qwen2.5:0.5b-instruct` 模型
+   - 嘗試使用 `qwen2:0.5b-instruct` 模型
    - 調整查詢關鍵詞
    - 檢查文件內容是否相關
 
@@ -152,7 +152,7 @@ python scripts/test_dynamic_rag_minimal.py
 ## 📈 使用建議
 
 ### 1. 模型選擇
-- **推薦語言模型**: `qwen2.5:0.5b-instruct` (更好的中文支持)
+- **推薦語言模型**: `qwen2:0.5b-instruct`（Ollama）或 `Qwen/Qwen2-0.5B-Instruct`（Hugging Face）
 - **推薦嵌入模型**: `nomic-embed-text:latest` (高質量向量化)
 
 ### 2. 查詢優化

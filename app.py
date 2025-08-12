@@ -10,6 +10,12 @@ import argparse
 import uvicorn
 from pathlib import Path
 
+# 修復 OpenMP 衝突問題
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# TensorFlow 已移除，使用 PyTorch 作為主要深度學習框架
+print("✅ 使用 PyTorch 作為主要深度學習框架")
+
 # 設置項目根目錄
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(project_root)
@@ -17,15 +23,20 @@ sys.path.append(project_root)
 from config.config import APP_HOST, APP_PORT, is_q_drive_accessible
 from indexer.file_crawler import FileCrawler
 from indexer.document_indexer import DocumentIndexer
+from utils.ml_optimization import initialize_ml_frameworks
 
 # 設置日誌
+logs_dir = os.path.join(project_root, 'logs')
+os.makedirs(logs_dir, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(project_root, 'logs', 'app.log'), mode='a'),
+        logging.FileHandler(os.path.join(logs_dir, 'app.log'), mode='a', encoding='utf-8'),
         logging.StreamHandler()
-    ]
+    ],
+    force=True  # 強制重新配置日誌
 )
 logger = logging.getLogger(__name__)
 
@@ -35,6 +46,18 @@ def check_environment():
     # 確保logs目錄存在
     logs_dir = os.path.join(project_root, 'logs')
     os.makedirs(logs_dir, exist_ok=True)
+    
+    # 確保模型緩存目錄存在
+    models_dir = os.path.join(project_root, 'models', 'cache')
+    os.makedirs(models_dir, exist_ok=True)
+    
+    # 初始化機器學習框架
+    logger.info("初始化機器學習框架...")
+    try:
+        ml_info = initialize_ml_frameworks()
+        logger.info(f"機器學習框架初始化完成: {ml_info}")
+    except Exception as e:
+        logger.warning(f"機器學習框架初始化失敗: {str(e)}")
     
     # 檢查Q槽是否可訪問
     logger.info("檢查Q槽訪問權限...")

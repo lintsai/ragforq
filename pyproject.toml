@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A RAG application with Streamlit and FastAPI."
 authors = ["Lin.Tsai <lin.tsai@qsitw.com>"]
 readme = "README.md"
-packages = [{include = "ragforq"}]
+package-mode = false
 
 [tool.poetry.dependencies]
 python = ">=3.10, <3.11"  # 明確指定 Python 3.10.x 版本
@@ -12,15 +12,20 @@ streamlit = "^1.47.0"
 fastapi = "^0.111.0"
 uvicorn = {extras = ["standard"], version = "^0.29.0"}
 sentence-transformers = "^2.7.0"
-faiss-cpu = "^1.8.0"
-unstructured = {extras = ["pdf", "docx"], version = "^0.14.4"} # 增加了對 docx 的支持
+faiss-cpu = "^1.8.0"  # 使用 CPU 版本，Windows 兼容性更好
+unstructured = {extras = ["pdf", "docx"], version = "^0.14.4"}
 python-dotenv = "^1.0.1"
-pypdf = "^4.2.0" # 您的倉庫中用到了，需要加上
+pypdf = "^4.2.0"
 pymupdf = "^1.26.3"
 openpyxl = "^3.1.5"
 python-docx = "^1.2.0"
 langchain = "^0.3.26"
-langchain-ollama = "^0.3.5"
+langchain-huggingface = "^0.1.0"
+langchain-text-splitters = "^0.3.8"
+transformers = "^4.35.0"
+torch = "^2.0.0"
+accelerate = "^0.20.0"
+datasets = "^2.14.0"
 langchain-community = "^0.3.27"
 annotated-types = "^0.7.0"
 streamlit-autorefresh = "^1.0.1"
@@ -28,11 +33,15 @@ xlrd = "^2.0.2"
 olefile = "^0.47"
 pytz = "^2025.2"
 psutil = "^7.0.0"
-# 新增的依賴
-requests = "^2.31.0"  # HTTP請求庫
-numpy = "^1.24.0"     # 數值計算庫
-pydantic = "^2.0.0"   # 數據驗證庫
-tqdm = "^4.66.0"      # 進度條庫
+requests = "^2.31.0"
+numpy = "^1.24.0"
+pydantic = "^2.0.0"
+tqdm = "^4.66.0"
+pytesseract = "^0.3.10"
+pdf2image = "^1.16.3"
+watchdog = "^3.0.0"
+aiohttp = "^3.9.1"
+pillow = "^10.0.0"
 
 [build-system]
 requires = ["poetry-core"]

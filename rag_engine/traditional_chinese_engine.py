@@ -8,13 +8,11 @@ from pathlib import Path
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import OLLAMA_HOST
 from rag_engine.interfaces import RAGEngineInterface
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_ollama import OllamaLLM
-
+from utils.hf_langchain_wrapper import HuggingFaceLLM, ChatHuggingFace
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,15 +20,31 @@ logger = logging.getLogger(__name__)
 class TraditionalChineseRAGEngine(RAGEngineInterface):
     """繁體中文RAG引擎實現"""
     
-    def __init__(self, document_indexer, ollama_model: str = None):
+    def __init__(self, document_indexer, ollama_model: str = None, platform: str = None):
         super().__init__(document_indexer, ollama_model)
         
-        self.llm = OllamaLLM(
-            model=ollama_model,
-            base_url=OLLAMA_HOST,
-            temperature=0.4
-        )
-        logger.info(f"繁體中文RAG引擎初始化完成，使用模型: {ollama_model}")
+        # 如果沒有指定平台，自動檢測
+        if platform is None:
+            from config.config import detect_platform_from_model
+            platform = detect_platform_from_model(ollama_model)
+        
+        # 根據傳入的平台參數初始化不同的 LLM
+        if platform == "ollama":
+            from langchain_ollama import OllamaLLM
+            from config.config import OLLAMA_HOST
+            self.llm = OllamaLLM(
+                model=ollama_model,
+                base_url=OLLAMA_HOST,
+                temperature=0.4
+            )
+            logger.info(f"繁體中文RAG引擎初始化完成 (Ollama)，使用模型: {ollama_model}")
+        else:
+            # Hugging Face 平台
+            self.llm = ChatHuggingFace(
+                model_name=ollama_model,
+                temperature=0.4
+            )
+            logger.info(f"繁體中文RAG引擎初始化完成 (Hugging Face)，使用模型: {ollama_model}")
     
     def get_language(self) -> str:
         return "繁體中文"
@@ -41,24 +55,22 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
         """
         try:
             rewrite_prompt = PromptTemplate(
-                template="""將以下繁體中文問題優化為適合文檔檢索的描述。請直接輸出優化結果，不要包含任何說明文字。
+                template="""你是一個搜尋優化專家。請將以下問題轉換為更適合在知識庫中檢索的關鍵詞或描述性語句。請嚴格使用繁體中文輸出。
 
-問題: {question}
+原始問題: {question}
 
-要求:
-- 保持繁體中文
-- 轉換為描述性語句
-- 擴展相關術語和同義詞
-- 包含文檔中可能的表達方式
-
-優化結果:""",
+優化後的檢索查詢:""",
                 input_variables=["question"]
             )
             
-            rewrite_chain = rewrite_prompt | self.llm | StrOutputParser()
-            
             def _invoke_rewrite():
-                return rewrite_chain.invoke({"question": original_query})
+                # 直接調用而不使用鏈式操作
+                prompt_text = rewrite_prompt.format(question=original_query)
+                response = self.llm.invoke(prompt_text)
+                if hasattr(response, 'content'):
+                    return response.content
+                else:
+                    return str(response)
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_invoke_rewrite)
@@ -98,29 +110,32 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
     
     def _generate_answer(self, question: str, context: str) -> str:
         """生成繁體中文回答"""
-        template = """請用繁體中文回答問題。
+        template = """你是一個專業的AI文檔問答助手。請嚴格根據以下「上下文信息」來回答「用戶問題」。請使用與問題相同的語言（繁體中文）來回答。
 
-上下文：{context}
+上下文信息:
+---
+{context}
+---
 
-問題：{question}
+用戶問題: {question}
 
-指示：
-1. 僅使用繁體中文回答
-2. 基於提供的上下文回答
-3. 如果上下文不足，請明確說明
-4. 保持回答簡潔準確
+請提供一個準確、詳細的回答。如果上下文中沒有足夠信息，請明確說明「根據提供的文件，我找不到相關資訊」。
 
-繁體中文回答："""
+回答:"""
 
         prompt = PromptTemplate(
             template=template,
             input_variables=["context", "question"]
         )
         
-        chain = prompt | self.llm | StrOutputParser()
-        
         def _invoke():
-            return chain.invoke({"context": context, "question": question})
+            # 直接調用而不使用鏈式操作
+            prompt_text = prompt.format(context=context, question=question)
+            response = self.llm.invoke(prompt_text)
+            if hasattr(response, 'content'):
+                return response.content
+            else:
+                return str(response)
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_invoke)
@@ -148,17 +163,13 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
             trimmed_content = doc_content[:1000].strip()
             
             relevance_prompt = PromptTemplate(
-                template="""你是一個文檔相關性評估專家。請簡明扼要地解釋為什麼下面的文檔內容與用戶查詢相關。
+                template="""你是一個文檔相關性評估專家。請簡明扼要地解釋為什麼下面的文檔內容與用戶查詢相關。請嚴格使用繁體中文回答。
 
 用戶查詢: {question}
-
 文檔內容:
------------------
+---
 {doc_content}
------------------
-
-請提供1-2句簡短的繁體中文解釋，說明這個文檔為什麼與查詢相關。不要重複查詢內容，直接解釋關聯性。
-
+---
 相關性理由：""",
                 input_variables=["question", "doc_content"]
             )

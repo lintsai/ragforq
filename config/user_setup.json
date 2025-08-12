@@ -1,0 +1,12 @@
+{
+  "note": "Web 應用默認配置 - 用戶可在界面直接選擇模型",
+  "default_platform": "huggingface",
+  "default_language_model": "Qwen/Qwen2-0.5B-Instruct",
+  "default_embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "web_app_mode": true,
+  "platform": "huggingface",
+  "language_model": "Qwen/Qwen2-0.5B-Instruct",
+  "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "inference_engine": "transformers",
+  "setup_completed": true
+}

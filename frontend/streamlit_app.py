@@ -20,6 +20,8 @@ project_root = os.path.dirname(frontend_dir)
 sys.path.append(project_root)
 
 from config.config import APP_HOST, APP_PORT, STREAMLIT_PORT, API_BASE_URL, is_q_drive_accessible, Q_DRIVE_PATH, DISPLAY_DRIVE_NAME
+from frontend.help_system import render_help_sidebar, show_help_modal
+from frontend.model_selector import render_model_selector, is_setup_completed
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -42,37 +44,12 @@ st.set_page_config(
 # 自定義CSS
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1E88E5;
-        margin-bottom: 0;
-    }
-    .sub-header {
-        font-size: 1.2rem;
-        color: #424242;
-        margin-top: 0;
-    }
-    .source-title {
-        font-size: 1.2rem;
-        font-weight: bold;
-        color: #1E88E5;
-        margin-top: 1rem;
-    }
-    .source-item {
-        background-color: #f0f2f6;
-        border-radius: 5px;
-        padding: 10px;
-        margin-bottom: 5px;
-    }
-    .footer {
-        text-align: center;
-        color: #9e9e9e;
-        font-size: 0.8rem;
-        margin-top: 3rem;
-    }
-    .stTextInput>div>div>input {
-        font-size: 1.1rem;
-    }
+    .main-header { font-size: 2.5rem; color: #1E88E5; margin-bottom: 0; }
+    .sub-header { font-size: 1.2rem; color: #424242; margin-top: 0; }
+    .source-title { font-size: 1.2rem; font-weight: bold; color: #1E88E5; margin-top: 1rem; }
+    .source-item { background-color: #f0f2f6; border-radius: 5px; padding: 10px; margin-bottom: 5px; }
+    .footer { text-align: center; color: #9e9e9e; font-size: 0.8rem; margin-top: 3rem; }
+    .stTextInput>div>div>input { font-size: 1.1rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -121,7 +98,7 @@ def retry_with_backoff(func, max_retries=3, initial_delay=1):
             time.sleep(delay)
             delay *= 2
 
-def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None, language: str = "繁體中文", use_dynamic_rag: bool = False, dynamic_ollama_model: Optional[str] = None, dynamic_embedding_model: Optional[str] = None) -> Dict[str, Any]:
+def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None, language: str = "繁體中文", use_dynamic_rag: bool = False, dynamic_ollama_model: Optional[str] = None, dynamic_embedding_model: Optional[str] = None, platform: Optional[str] = None) -> Dict[str, Any]:
     """獲取問題答案"""
     try:
         payload = {
@@ -135,13 +112,16 @@ def get_answer(question: str, include_sources: bool = True, max_sources: Optiona
             "ollama_embedding_model": dynamic_embedding_model
         }
         
+        if platform:
+            payload["platform"] = platform
+        
         if use_dynamic_rag and dynamic_ollama_model:
-            payload["selected_model"] = dynamic_ollama_model
+            payload["ollama_model"] = dynamic_ollama_model  # 修復：使用正確的參數名
         elif selected_model:
             payload["selected_model"] = selected_model
         
         response = requests.post(
-            f"{API_BASE_URL}/ask",
+            f"{API_URL}/ask",
             json=payload
         )
         response.raise_for_status()
@@ -197,10 +177,6 @@ def handle_text_input_change():
 def main():
     """主應用函數"""
     
-    # 標題
-    st.markdown('<p class="main-header">Q槽文件智能助手</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">讓您的文檔知識觸手可及</p>', unsafe_allow_html=True)
-    
     # 檢查API狀態
     api_status = check_api_status()
     
@@ -209,8 +185,45 @@ def main():
         st.info("提示: 您可以通過運行 `python app.py` 啟動API服務")
         return
     
+    # Web 應用直接可用，無需複雜設置
+    
+    # 標題
+    st.markdown('<p class="main-header">Q槽文件智能助手</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">讓您的文檔知識觸手可及</p>', unsafe_allow_html=True)
+    
+    # 首先在 sidebar 中設置基本結構
+    with st.sidebar:
+        # 首先顯示幫助中心和系統狀態
+        render_help_sidebar()
+        
+        st.markdown("---")
+        
+        # 顯示系統狀態
+        st.markdown("### 📊 系統狀態")
+        status = st.session_state.api_status
+        if status:
+            st.success(f"✅ API 服務: {status.get('status', '未知')}")
+            st.info(f"🗄️ Q槽訪問: {'✅ 可訪問' if status.get('q_drive_accessible') else '❌ 不可訪問'}")
+            st.info(f"🔖 API 版本: {status.get('version', '未知')}")
+        
+        st.markdown("---")
+        
+        # RAG 模式選擇
+        st.markdown("### 🔧 RAG 模式")
+        rag_mode_main = st.radio(
+            "選擇 RAG 模式：",
+            options=["傳統RAG", "Dynamic RAG"],
+            index=0,
+            help="傳統RAG使用預建向量資料庫，Dynamic RAG即時檢索文件",
+            key="main_rag_mode_selector"
+        )
+    
     # --- 分頁設計 ---
-    tab_names = ["💬 智能問答", "🛠️ 管理員後台", "🗄️ 向量資料庫維護"]
+    if rag_mode_main == "傳統RAG":
+        tab_names = ["💬 智能問答", "🛠️ 管理員後台", "🗄️ 向量資料庫維護"]
+    else:
+        # Dynamic RAG 模式下隱藏管理員功能
+        tab_names = ["💬 智能問答"]
     tabs = st.tabs(tab_names)
 
     # --- sidebar 保留管理入口 ---
@@ -223,6 +236,270 @@ def main():
 
     with st.sidebar:
         st.markdown("---")
+        
+        # 簡化的線上模型選擇
+        st.markdown("### 🤖 AI 模型選擇")
+        
+        if rag_mode_main == "傳統RAG":
+            st.info("💡 傳統RAG 使用預建向量資料庫，響應更快")
+            # 傳統RAG的模型選擇保持原有邏輯
+        else:
+            st.info("💡 Dynamic RAG 即時檢索文件，無需預建資料庫")
+            
+            # 簡化的平台選擇
+            platform_choice = st.selectbox(
+                "🏠 AI 平台:",
+                options=["Hugging Face", "Ollama"],
+                index=0,  # 默認 Hugging Face
+                help="選擇 AI 推理平台",
+                key="simple_platform_choice"
+            )
+            
+            if platform_choice == "Hugging Face":
+                # 預設輕量級模型組合
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    language_model_options = {
+                        "Qwen/Qwen2-0.5B-Instruct": "🇨🇳 Qwen2 0.5B Instruct (多語言/中文佳)",
+                        "openai/gpt-oss-20b": "🏭 GPT-OSS 20B (40GB) - 生產環境推薦"
+                    }
+                    
+                    selected_language_model = st.selectbox(
+                        "🧠 語言模型:",
+                        options=list(language_model_options.keys()),
+                        format_func=lambda x: language_model_options[x],
+                        help="用於生成回答的模型（建議優先選 Qwen 或 mT5 以獲得更佳中文/多語言輸出）",
+                        key="simple_language_model"
+                    )
+                
+                with col2:
+                    embedding_model_options = {
+                        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": "🌍 Multilingual MiniLM (278MB) - 多語言推薦",
+                        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": "Multilingual MPNet (1.1GB)"
+                    }
+                    
+                    selected_embedding_model = st.selectbox(
+                        "🔤 嵌入模型:",
+                        options=list(embedding_model_options.keys()),
+                        format_func=lambda x: embedding_model_options[x],
+                        help="用於文本向量化的模型",
+                        key="simple_embedding_model"
+                    )
+                
+                # 推理引擎選擇
+                st.markdown("#### ⚙️ 推理引擎")
+                inference_engine_options = {
+                    "transformers": "🔧 Transformers (穩定，兼容性好)",
+                    "vllm": "⚡ vLLM (高性能，需要更多 GPU 記憶體)"
+                }
+                
+                selected_inference_engine = st.selectbox(
+                    "選擇推理引擎:",
+                    options=list(inference_engine_options.keys()),
+                    format_func=lambda x: inference_engine_options[x],
+                    help="選擇推理引擎，vLLM 更快但需要更多 GPU 記憶體",
+                    key="simple_inference_engine"
+                )
+                
+                # 添加 API 連接測試按鈕
+                if st.button("🔍 測試 API 連接", key="test_api_connection"):
+                    try:
+                        health_response = requests.get(f"{API_URL}/health", timeout=5)
+                        if health_response.status_code == 200:
+                            st.success(f"✅ API 連接正常: {health_response.json()}")
+                        else:
+                            st.error(f"❌ API 連接異常，狀態碼: {health_response.status_code}")
+                    except Exception as e:
+                        st.error(f"❌ API 連接失敗: {str(e)}")
+                
+                # 自動檢測模型狀態並顯示
+                if selected_language_model and selected_embedding_model:
+                    with st.expander("📊 模型狀態", expanded=False):
+                        try:
+                            status_response = requests.get(f"{API_URL}/api/model-status", 
+                                                         params={
+                                                             "language_model": selected_language_model,
+                                                             "embedding_model": selected_embedding_model
+                                                         }, timeout=3)
+                            if status_response.status_code == 200:
+                                status = status_response.json()
+                                if status.get("ready", False):
+                                    st.success("✅ 模型已就緒，可以開始使用")
+                                    # 顯示模型詳細狀態
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        if status.get("language_model_ready", False):
+                                            st.info("🧠 語言模型: ✅")
+                                        else:
+                                            st.warning("🧠 語言模型: ❌")
+                                    with col2:
+                                        if status.get("embedding_model_ready", False):
+                                            st.info("🔤 嵌入模型: ✅")
+                                        else:
+                                            st.warning("🔤 嵌入模型: ❌")
+                                elif status.get("downloading", False):
+                                    st.warning(f"🔄 下載中... {status.get('progress', '')}")
+                                    st.info("⏳ 模型下載中，請稍候...")
+                                else:
+                                    # 檢查部分模型是否已下載
+                                    language_ready = status.get("language_model_ready", False)
+                                    embedding_ready = status.get("embedding_model_ready", False)
+                                    
+                                    if language_ready and embedding_ready:
+                                        st.success("✅ 模型已就緒")
+                                    elif language_ready or embedding_ready:
+                                        st.info("⚡ 部分模型已下載")
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.info(f"🧠 語言模型: {'✅' if language_ready else '⏳'}")
+                                        with col2:
+                                            st.info(f"🔤 嵌入模型: {'✅' if embedding_ready else '⏳'}")
+                                        
+                                        # 只下載缺失的模型
+                                        if st.button("🚀 下載缺失模型", key="download_missing_models"):
+                                            with st.spinner("正在下載缺失的模型..."):
+                                                try:
+                                                    download_response = requests.post(f"{API_URL}/api/download-models", 
+                                                                                    json={
+                                                                                        "language_model": selected_language_model,
+                                                                                        "embedding_model": selected_embedding_model,
+                                                                                        "inference_engine": selected_inference_engine if platform_choice == "Hugging Face" else "transformers"
+                                                                                    }, timeout=300)
+                                                    if download_response.status_code == 200:
+                                                        st.success("✅ 模型下載完成！")
+                                                        st.rerun()
+                                                    else:
+                                                        st.error("❌ 模型下載失敗")
+                                                except Exception as e:
+                                                    st.error(f"❌ 下載錯誤: {str(e)}")
+                                    else:
+                                        st.info("💡 首次使用需要下載模型")
+                                        # 顯示模型大小信息
+                                        model_info = language_model_options.get(selected_language_model, "")
+                                        embedding_info = embedding_model_options.get(selected_embedding_model, "")
+                                        st.caption(f"語言模型: {model_info}")
+                                        st.caption(f"嵌入模型: {embedding_info}")
+                                        
+                                        if st.button("🚀 預先下載模型", key="download_all_models"):
+                                            with st.spinner("正在下載模型..."):
+                                                try:
+                                                    st.info(f"🔄 正在向 {API_URL}/api/download-models 發送請求...")
+                                                    download_response = requests.post(f"{API_URL}/api/download-models", 
+                                                                                    json={
+                                                                                        "language_model": selected_language_model,
+                                                                                        "embedding_model": selected_embedding_model
+                                                                                    }, timeout=300)
+                                                    
+                                                    st.info(f"📡 收到響應，狀態碼: {download_response.status_code}")
+                                                    
+                                                    if download_response.status_code == 200:
+                                                        result = download_response.json()
+                                                        st.success("✅ 模型下載完成！")
+                                                        st.json(result)  # 顯示詳細結果
+                                                        st.rerun()
+                                                    else:
+                                                        error_detail = download_response.text
+                                                        st.error(f"❌ 模型下載失敗 (狀態碼: {download_response.status_code})")
+                                                        st.error(f"錯誤詳情: {error_detail}")
+                                                except requests.exceptions.Timeout:
+                                                    st.error("❌ 下載超時 (5分鐘)")
+                                                except requests.exceptions.ConnectionError:
+                                                    st.error("❌ 無法連接到 API 服務")
+                                                except Exception as e:
+                                                    st.error(f"❌ 下載錯誤: {str(e)}")
+                                                    import traceback
+                                                    st.error(f"詳細錯誤: {traceback.format_exc()}")
+                            else:
+                                st.info("💡 首次使用將自動下載模型")
+                        except:
+                            st.info("💡 首次使用將自動下載模型")
+            
+            else:  # Ollama
+                st.info("🏠 使用本地 Ollama 服務")
+                
+                # 從 API 獲取 Ollama 模型
+                try:
+                    ollama_models_response = requests.get(f"{API_URL}/api/ollama/models/categorized", timeout=5)
+                    if ollama_models_response.status_code == 200:
+                        ollama_models = ollama_models_response.json()
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # 語言模型選擇
+                            if ollama_models.get('language_models') and len(ollama_models['language_models']) > 0:
+                                selected_language_model = st.selectbox(
+                                    "🧠 語言模型:",
+                                    options=ollama_models['language_models'],
+                                    help="用於回答生成的語言模型",
+                                    key="ollama_language_model"
+                                )
+                            else:
+                                st.warning("⚠️ 沒有找到可用的語言模型")
+                                st.info("💡 請確保 Ollama 服務正在運行並已下載模型")
+                                # 提供常見模型選項
+                                common_models = ["llama3.2:3b", "llama3.1:8b", "qwen2:7b", "gemma2:9b"]
+                                selected_language_model = st.selectbox(
+                                    "選擇常見模型:",
+                                    options=common_models,
+                                    help="這些是常見的 Ollama 模型，需要先下載",
+                                    key="ollama_common_language_model"
+                                )
+                        
+                        with col2:
+                            # 嵌入模型選擇
+                            if ollama_models.get('embedding_models') and len(ollama_models['embedding_models']) > 0:
+                                selected_embedding_model = st.selectbox(
+                                    "🔤 嵌入模型:",
+                                    options=ollama_models['embedding_models'],
+                                    help="用於文本向量化的嵌入模型",
+                                    key="ollama_embedding_model"
+                                )
+                            else:
+                                st.warning("⚠️ 沒有找到可用的嵌入模型")
+                                st.info("💡 請確保 Ollama 服務正在運行並已下載嵌入模型")
+                                # 提供常見嵌入模型選項
+                                common_embed_models = ["nomic-embed-text", "mxbai-embed-large"]
+                                selected_embedding_model = st.selectbox(
+                                    "選擇常見嵌入模型:",
+                                    options=common_embed_models,
+                                    help="這些是常見的 Ollama 嵌入模型，需要先下載",
+                                    key="ollama_common_embedding_model"
+                                )
+                        
+                        # 顯示 Ollama 連接狀態
+                        if not ollama_models.get('language_models') and not ollama_models.get('embedding_models'):
+                            st.error("🔌 無法連接到 Ollama 服務或沒有可用模型")
+                            st.markdown("""
+                            **解決方案:**
+                            1. 確保 Ollama 服務正在運行
+                            2. 下載所需模型: `ollama pull llama3.2:3b`
+                            3. 下載嵌入模型: `ollama pull nomic-embed-text`
+                            """)
+                    else:
+                        st.error(f"❌ 無法獲取 Ollama 模型列表，狀態碼: {ollama_models_response.status_code}")
+                        # 使用默認值
+                        selected_language_model = "llama3.2:3b"
+                        selected_embedding_model = "nomic-embed-text"
+                        st.info("使用默認模型配置")
+                except Exception as e:
+                    st.error(f"❌ 獲取 Ollama 模型時出錯: {str(e)}")
+                    # 使用默認值
+                    selected_language_model = "llama3.2:3b"
+                    selected_embedding_model = "nomic-embed-text"
+                    st.info("使用默認模型配置")
+            
+            # 保存到 session state
+            st.session_state.dynamic_platform = platform_choice.lower().replace(" ", "")
+            st.session_state.dynamic_language_model = selected_language_model
+            st.session_state.dynamic_embedding_model = selected_embedding_model
+            if platform_choice == "Hugging Face":
+                st.session_state.dynamic_inference_engine = selected_inference_engine
+            else:
+                st.session_state.dynamic_inference_engine = "ollama"
+        
+
 
     # --- 問答主頁 ---
     with tabs[0]:
@@ -234,156 +511,60 @@ def main():
         
         # 創建側邊欄
         with st.sidebar:
-            st.markdown("### 關於")
-            st.write("Q槽文件智能助手可以幫助您快速查找和了解公司內部文檔中的信息。")
-            st.write("只需輸入您的問題，系統將自動搜索最相關的文檔並提供回答。")
+            st.markdown("### 💡 關於")
+            st.write("Q槽文件智能助手，輸入問題即可開始對話。")
             
             st.markdown("---")
 
-            # 模型選擇 - 移到最上面
-            st.markdown("### 🤖 模型設置")
-            try:
-                usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
-                if usable_models_response.status_code == 200:
-                    usable_models = usable_models_response.json()
-                    if usable_models:
-                        # 模型已經按時間降冪排序，第一個就是最新的（默認模型）
-                        default_model = usable_models[0]['display_name']
-                        
-                        # 構建選項列表，第一個模型標記為最新
-                        model_options = [f"🌟 {default_model} (最新)"]
-                        
-                        # 添加其他模型
-                        for model in usable_models[1:]:
-                            model_options.append(model['display_name'])
-                        
-                        model_folder_map = {model['display_name']: model['folder_name'] for model in usable_models}
-                        
-                        selected_display_name = st.selectbox(
-                            "選擇問答模型：",
-                            options=model_options,
-                            help="選擇用於問答的向量模型，帶🌟的是最新訓練的默認模型",
-                            key="main_model_selector"
-                        )
-                        
-                        # 獲取實際的文件夾名稱
-                        if selected_display_name.startswith("🌟"):
-                            # 移除星號和 "(最新)" 標記
-                            actual_name = selected_display_name.replace("🌟 ", "").replace(" (最新)", "")
-                            selected_model_folder = model_folder_map.get(actual_name)
-                        else:
-                            selected_model_folder = model_folder_map.get(selected_display_name)
-                        
-                        # 顯示當前選擇的模型狀態
-                        current_model_info = None
-                        for model in usable_models:
-                            model_name = model['display_name']
-                            if (selected_display_name.startswith("🌟") and model_name in selected_display_name) or model_name == selected_display_name:
-                                current_model_info = model
-                                break
-                        
-                        if current_model_info:
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if current_model_info.get('has_data', False):
-                                    st.success("✅ 有數據")
-                                else:
-                                    st.warning("⚠️ 無數據")
-                            with col2:
-                                if current_model_info.get('is_training', False):
-                                    st.warning("⏳ 訓練中")
-                                else:
-                                    st.success("✅ 可用")
-                    else:
-                        st.warning("沒有可用的向量模型，將使用系統默認配置")
-                        selected_model_folder = None
-                else:
-                    st.error("無法獲取可用模型列表，將使用系統默認配置")
-                    selected_model_folder = None
-            except Exception as e:
-                st.error(f"獲取模型列表時出錯: {str(e)}，將使用系統默認配置")
-                selected_model_folder = None
-            
-            st.markdown("---")
-            
-            # 顯示系統狀態
-            st.markdown("### 系統狀態")
-            status = st.session_state.api_status
-            if status:
-                st.success(f"API 服務狀態: {status.get('status', '未知')}")
-                st.info(f"Q槽訪問狀態: {'可訪問' if status.get('q_drive_accessible') else '不可訪問'}")
-                st.info(f"API 版本: {status.get('version', '未知')}")
-
-            st.markdown("---")
-            
-            # 添加設置選項
-            st.markdown("### 設置")
-            
-            # RAG模式選擇
-            rag_mode = st.radio(
-                "🔧 RAG模式：",
-                options=["傳統RAG", "Dynamic RAG"],
-                index=0,
-                help="傳統RAG使用預建向量資料庫，Dynamic RAG即時檢索文件",
-                key="rag_mode_selector"
-            )
-            
-            # Dynamic RAG 特殊設置
-            dynamic_ollama_model = None
-            dynamic_embedding_model = None
-            
-            if rag_mode == "Dynamic RAG":
-                st.info("💡 Dynamic RAG 無需預先建立向量資料庫，查詢時即時檢索文件")
-                
-                # 獲取可用的Ollama模型
+            # 根據 RAG 模式顯示相應的設置
+            if rag_mode_main == "傳統RAG":
+                # 傳統RAG模型選擇
+                st.markdown("### 🤖 向量模型")
                 try:
-                    ollama_models_response = requests.get(f"{API_URL}/api/ollama/models/categorized", timeout=5)
-                    if ollama_models_response.status_code == 200:
-                        ollama_models = ollama_models_response.json()
-                        
-                        # 語言模型選擇
-                        if ollama_models.get('language_models') and len(ollama_models['language_models']) > 0:
-                            dynamic_ollama_model = st.selectbox(
-                                "🤖 語言模型：",
-                                options=ollama_models['language_models'],
-                                help="選擇用於回答生成的語言模型",
-                                key="dynamic_language_model_selector"
+                    usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
+                    if usable_models_response.status_code == 200:
+                        usable_models = usable_models_response.json()
+                        if usable_models:
+                            # 簡化顯示
+                            model_options = [model['display_name'] for model in usable_models]
+                            model_folder_map = {model['display_name']: model['folder_name'] for model in usable_models}
+                            
+                            selected_display_name = st.selectbox(
+                                "選擇向量模型：",
+                                options=model_options,
+                                help="選擇預建的向量模型",
+                                key="main_model_selector"
                             )
+                            
+                            selected_model_folder = model_folder_map.get(selected_display_name)
+                            
+                            # 簡化狀態顯示
+                            current_model = next((m for m in usable_models if m['display_name'] == selected_display_name), None)
+                            if current_model:
+                                status_text = "✅ 可用" if current_model.get('has_data') and not current_model.get('is_training') else "⚠️ 不可用"
+                                st.info(f"狀態: {status_text}")
                         else:
-                            st.warning("沒有找到可用的語言模型")
-                            dynamic_ollama_model = None
-                        
-                        # 嵌入模型選擇
-                        if ollama_models.get('embedding_models') and len(ollama_models['embedding_models']) > 0:
-                            dynamic_embedding_model = st.selectbox(
-                                "🔤 嵌入模型：",
-                                options=ollama_models['embedding_models'],
-                                help="選擇用於文本向量化的嵌入模型",
-                                key="dynamic_embedding_model_selector"
-                            )
-                        else:
-                            st.warning("沒有找到可用的嵌入模型")
-                            dynamic_embedding_model = None
+                            st.warning("沒有可用的向量模型")
+                            selected_model_folder = None
                     else:
-                        st.error(f"無法獲取Ollama模型列表，狀態碼: {ollama_models_response.status_code}")
-                        dynamic_ollama_model = None
-                        dynamic_embedding_model = None
+                        st.warning("無法獲取模型列表")
+                        selected_model_folder = None
                 except Exception as e:
-                    st.error(f"獲取Ollama模型時出錯: {str(e)}")
-                    dynamic_ollama_model = None
-                    dynamic_embedding_model = None
+                    st.warning(f"獲取模型列表失敗: {str(e)}")
+                    selected_model_folder = None
+            
+            st.markdown("---")
             
             # 語言選擇
+            st.markdown("### 🌐 語言設置")
             language_options = ["繁體中文", "简体中文", "English", "ไทย"]
-            if rag_mode == "Dynamic RAG":
-                language_options.append("Dynamic")  # Dynamic RAG支援動態語言
             
             selected_language = st.selectbox(
                 "🌐 回答語言：",
                 options=language_options,
                 index=language_options.index(st.session_state.selected_language) if st.session_state.selected_language in language_options else 0,
                 help="選擇AI回答時使用的語言",
-                key="language_selector"
+                key="main_language_selector"
             )
             st.session_state.selected_language = selected_language
             
@@ -393,8 +574,8 @@ def main():
             show_relevance = st.checkbox("顯示相關性理由", value=True, help="顯示為什麼這些文件與查詢相關", key="show_relevance_checkbox")
             use_query_rewrite = st.checkbox("使用查詢優化", value=True, help="自動改寫查詢以獲得更準確的結果", key="use_query_rewrite_checkbox")
 
-            # 添加清除歷史按鈕
-            if st.button("清除歷史記錄", key="clear_history"):
+            # 操作按鈕
+            if st.button("🗑️ 清除歷史", key="clear_history"):
                 st.session_state.chat_history = []
                 st.session_state.current_answer = None
                 st.rerun()
@@ -490,9 +671,10 @@ def main():
                         show_relevance,
                         selected_model_folder,
                         selected_language,
-                        use_dynamic_rag=(rag_mode == "Dynamic RAG"),
-                        dynamic_ollama_model=dynamic_ollama_model,
-                        dynamic_embedding_model=dynamic_embedding_model
+                        use_dynamic_rag=(rag_mode_main == "Dynamic RAG"),
+                        dynamic_ollama_model=st.session_state.get('dynamic_language_model'),
+                        dynamic_embedding_model=st.session_state.get('dynamic_embedding_model'),
+                        platform=st.session_state.get('dynamic_platform') if rag_mode_main == "Dynamic RAG" else None
                     )
 
                     answer_text = result.get("answer", "無法獲取答案")
@@ -506,7 +688,15 @@ def main():
                     st.rerun()
 
                 except Exception as e:
-                    error_msg = f"處理問題時發生錯誤: {str(e)}"
+                    error_msg = f"生成過程中發生錯誤，請稍後再試。"
+                    
+                    # 檢查是否是模型相關錯誤
+                    error_str = str(e)
+                    if "模型" in error_str or "model" in error_str.lower():
+                        error_msg += "\n\n💡 這可能是因為模型尚未完全下載或初始化。如果您是首次使用，請等待模型下載完成後再試。"
+                        error_msg += "\n\n建議：\n- 檢查網路連接\n- 選擇較小的模型進行測試\n- 查看系統狀態確認模型是否就緒"
+                    
+                    logger.error(f"處理問題時發生錯誤: {error_str}")
                     update_chat_history(question, error_msg, [])
                     st.rerun()
         
@@ -516,658 +706,657 @@ def main():
             unsafe_allow_html=True
         )
 
-    # --- 管理員後台分頁 ---
-    with tabs[1]:
-        st.session_state.admin_tab = 1
-        st.header("🛠️ 管理員後台")
-        admin_token = st.text_input("管理員Token", type="password", key="admin_token_tab")
-        if admin_token:
-            st.success("已輸入Token，可操作管理功能")
+    # --- 管理員後台分頁（僅在傳統RAG模式下顯示） ---
+    if len(tabs) > 1:
+        with tabs[1]:
+            st.header("🛠️ 管理員後台")
+            admin_token = st.text_input("請輸入管理員Token", type="password", key="admin_token_tab")
             
-            # 模型訓練管理
-            st.subheader("📚 模型訓練管理")
-            
-            # 獲取 Ollama 模型列表
-            try:
-                ollama_models_resp = requests.get(f"{API_URL}/api/ollama/models", timeout=10)
-                if ollama_models_resp.status_code == 200:
-                    ollama_models = ollama_models_resp.json()
-                    model_names = [model['name'] for model in ollama_models]
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        selected_ollama_model = st.selectbox(
-                            "選擇 Ollama 語言模型：",
-                            options=model_names,
-                            help="用於問答的語言模型",
-                            key="admin_ollama_model_selector"
-                        )
-                    with col2:
-                        selected_embedding_model = st.selectbox(
-                            "選擇 Ollama 嵌入模型：",
-                            options=model_names,
-                            help="用於文本嵌入的模型",
-                            key="admin_embedding_model_selector"
-                        )
-                    
-                    # 版本選擇
-                    st.markdown("### 版本管理")
-                    version_options = ["✨ 建立新版本"]
-                    existing_versions = []
-                    try:
-                        versions_resp = requests.get(
-                            f"{API_URL}/api/model-versions",
-                            params={
-                                "ollama_model": selected_ollama_model,
-                                "ollama_embedding_model": selected_embedding_model
-                            },
-                            timeout=5
-                        )
-                        if versions_resp.status_code == 200:
-                            existing_versions = [v['version'] for v in versions_resp.json() if v.get('version')]
-                            version_options.extend(sorted(existing_versions, reverse=True))
-                    except Exception as e:
-                        st.warning(f"無法獲取版本列表: {e}")
-
-                    selected_version_option = st.selectbox(
-                        "選擇訓練版本:",
-                        options=version_options,
-                        help="選擇一個現有版本進行增量訓練，或建立一個帶有今天日期的新版本。",
-                        key="admin_version_selector"
-                    )
-
-                    # 確定最終要發送到API的版本號
-                    final_version = None
-                    if selected_version_option == "✨ 建立新版本":
-                        from datetime import datetime
-                        import pytz
-                        final_version = datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y%m%d')
-                        st.info(f"將建立新版本: **{final_version}**")
-                    else:
-                        final_version = selected_version_option
-
-                    # 檢查向量數據是否存在
-                    try:
-                        vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=5)
-                        if vector_models_resp.status_code == 200:
-                            vector_models = vector_models_resp.json()
-                            
-                            # 查找匹配的模型
-                            current_model_exists = False
-                            current_model_has_data = False
-                            current_model_training = False
-                            
-                            # 構建目標資料夾名稱以進行精確匹配
-                            # 注意：此處的前端邏輯無法完美複製後端的 folder_name 生成，但可以模擬
-                            target_folder_part = f"{selected_ollama_model.replace(':', '_')}@{selected_embedding_model.replace(':', '_')}"
-                            if final_version:
-                                target_folder_part += f"#{final_version}"
-
-                            for model in vector_models:
-                                if target_folder_part in model['folder_name']:
-                                    current_model_exists = True
-                                    current_model_has_data = model['has_data']
-                                    current_model_training = model['is_training']
-                                    break
-                            
-                            # 顯示狀態
-                            st.markdown("### 當前選擇模型狀態")
-                            if current_model_exists:
-                                if current_model_training:
-                                    st.warning("⏳ 該模型版本正在訓練中...")
-                                elif current_model_has_data:
-                                    st.success("✅ 該模型版本已有向量數據，可進行增量訓練或重新索引")
-                                else:
-                                    st.info("📝 該模型版本已創建但無數據，可進行初始訓練")
-                            else:
-                                st.info("🆕 該模型版本尚未創建，將創建新的向量資料夾進行初始訓練")
-                    except:
-                        pass
-                    
-                    # 訓練按鈕
-                    st.markdown("### 訓練操作")
-                    btn_cols = st.columns(3)
-                    
-                    with btn_cols[0]:
-                        if st.button("🚀 初始訓練", key="new_initial_training", 
-                                   disabled=current_model_training or (current_model_exists and current_model_has_data)):
-                            try:
-                                resp = requests.post(
-                                    f"{API_URL}/admin/training/initial",
-                                    headers={"admin_token": admin_token},
-                                    json={
-                                        "ollama_model": selected_ollama_model,
-                                        "ollama_embedding_model": selected_embedding_model,
-                                        "version": final_version
-                                    }
-                                )
-                                if resp.status_code == 200:
-                                    st.success(f"✅ 初始訓練已開始 (PID: {resp.json().get('pid')})")
-                                else:
-                                    st.error(f"❌ 訓練失敗: {resp.text}")
-                            except Exception as e:
-                                st.error(f"❌ API調用失敗: {e}")
-                    
-                    with btn_cols[1]:
-                        if st.button("📈 增量訓練", key="new_incremental_training",
-                                   disabled=current_model_training or not (current_model_exists and current_model_has_data)):
-                            try:
-                                resp = requests.post(
-                                    f"{API_URL}/admin/training/incremental",
-                                    headers={"admin_token": admin_token},
-                                    json={
-                                        "ollama_model": selected_ollama_model,
-                                        "ollama_embedding_model": selected_embedding_model,
-                                        "version": final_version
-                                    }
-                                )
-                                if resp.status_code == 200:
-                                    st.success(f"✅ 增量訓練已開始 (PID: {resp.json().get('pid')})")
-                                else:
-                                    st.error(f"❌ 訓練失敗: {resp.text}")
-                            except Exception as e:
-                                st.error(f"❌ API調用失敗: {e}")
-                    
-                    with btn_cols[2]:
-                        if st.button("🔄 重新索引", key="new_reindex_training",
-                                   disabled=current_model_training or not (current_model_exists and current_model_has_data)):
-                            try:
-                                resp = requests.post(
-                                    f"{API_URL}/admin/training/reindex",
-                                    headers={"admin_token": admin_token},
-                                    json={
-                                        "ollama_model": selected_ollama_model,
-                                        "ollama_embedding_model": selected_embedding_model,
-                                        "version": final_version
-                                    }
-                                )
-                                if resp.status_code == 200:
-                                    st.success(f"✅ 重新索引已開始 (PID: {resp.json().get('pid')})")
-                                else:
-                                    st.error(f"❌ 重新索引失敗: {resp.text}")
-                            except Exception as e:
-                                st.error(f"❌ API調用失敗: {e}")
-                    
-                else:
-                    st.error("無法獲取 Ollama 模型列表")
-            except Exception as e:
-                st.error(f"獲取模型列表失敗: {e}")
-            
-            # 向量模型狀態
-            st.markdown("---")
-            st.subheader("📊 向量模型狀態")
-            
-            try:
-                vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=10)
-                if vector_models_resp.status_code == 200:
-                    vector_models = vector_models_resp.json()
-                    
-                    if vector_models:
-                        for model in vector_models:
-                            with st.expander(f"📁 {model['display_name']}", expanded=False):
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    if model['has_data']:
-                                        st.success("✅ 有數據")
-                                    else:
-                                        st.warning("⚠️ 無數據")
-                                
-                                with col2:
-                                    if model['is_training']:
-                                        st.warning("⏳ 訓練中")
-                                    else:
-                                        st.success("✅ 可用")
-                                
-                                with col3:
-                                    if model['has_data'] and not model['is_training']:
-                                        st.success("🟢 可問答")
-                                    else:
-                                        st.error("🔴 不可問答")
-                                
-                                if model['model_info']:
-                                    st.write(f"**語言模型:** {model['model_info'].get('OLLAMA_MODEL', '未知')}")
-                                    st.write(f"**嵌入模型:** {model['model_info'].get('OLLAMA_EMBEDDING_MODEL', '未知')}")
-                                
-                                st.write(f"**文件夾:** {model['folder_name']}")
-                    else:
-                        st.info("尚無向量模型")
-                else:
-                    st.error("無法獲取向量模型狀態")
-            except Exception as e:
-                st.error(f"獲取向量模型狀態失敗: {e}")
-            
-
-            
-            # 鎖定狀態管理
-            st.markdown("---")
-            st.subheader("🔒 鎖定狀態管理")
-            
-            try:
-                lock_status_resp = requests.get(f"{API_URL}/admin/lock-status", headers={"admin_token": admin_token}, timeout=10)
-                if lock_status_resp.status_code == 200:
-                    lock_status_list = lock_status_resp.json()
-                    
-                    if lock_status_list:
-                        for status in lock_status_list:
-                            with st.expander(f"🔐 {status['model_name']}", expanded=False):
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    if status['is_locked']:
-                                        if status['is_lock_valid']:
-                                            st.warning("🔒 已鎖定 (有效)")
-                                        else:
-                                            st.error("🔒 已鎖定 (無效)")
-                                    else:
-                                        st.success("🔓 未鎖定")
-                                
-                                with col2:
-                                    if status['has_data']:
-                                        st.success("✅ 有數據")
-                                    else:
-                                        st.warning("⚠️ 無數據")
-                                
-                                with col3:
-                                    if status['can_use']:
-                                        st.success("🟢 可使用")
-                                    else:
-                                        st.error("🔴 不可使用")
-                                
-                                st.write(f"**狀態說明:** {status['lock_reason']}")
-                                
-                                if status['lock_info']:
-                                    st.write("**鎖定詳情:**")
-                                    lock_info = status['lock_info']
-                                    if 'created_at' in lock_info:
-                                        st.write(f"- 鎖定時間: {lock_info['created_at']}")
-                                    if 'pid' in lock_info:
-                                        st.write(f"- 進程ID: {lock_info['pid']}")
-                                    if 'process_name' in lock_info:
-                                        st.write(f"- 進程名稱: {lock_info['process_name']}")
-                                
-                                # 解鎖按鈕
-                                if status['is_locked']:
-                                    unlock_reason = st.text_input(
-                                        "解鎖原因:", 
-                                        value="管理員手動解鎖", 
-                                        key=f"unlock_reason_{status['folder_name']}"
-                                    )
-                                    
-                                    if st.button(f"🔓 強制解鎖", key=f"unlock_{status['folder_name']}"):
-                                        try:
-                                            unlock_resp = requests.post(
-                                                f"{API_URL}/admin/force-unlock",
-                                                headers={"admin_token": admin_token},
-                                                json={
-                                                    "folder_name": status['folder_name'],
-                                                    "reason": unlock_reason
-                                                }
-                                            )
-                                            if unlock_resp.status_code == 200:
-                                                result = unlock_resp.json()
-                                                st.success(f"✅ {result['message']}")
-                                                st.rerun()
-                                            else:
-                                                st.error(f"❌ 解鎖失敗: {unlock_resp.text}")
-                                        except Exception as e:
-                                            st.error(f"❌ 解鎖操作失敗: {e}")
-                        
-                        # 批量清理無效鎖定
-                        st.markdown("### 批量操作")
-                        if st.button("🧹 清理所有無效鎖定", key="cleanup_locks"):
-                            try:
-                                cleanup_resp = requests.post(
-                                    f"{API_URL}/admin/cleanup-invalid-locks",
-                                    headers={"admin_token": admin_token}
-                                )
-                                if cleanup_resp.status_code == 200:
-                                    result = cleanup_resp.json()
-                                    st.success("✅ 清理完成")
-                                    for model_name, message in result['results'].items():
-                                        st.info(f"- {model_name}: {message}")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ 清理失敗: {cleanup_resp.text}")
-                            except Exception as e:
-                                st.error(f"❌ 清理操作失敗: {e}")
-                    else:
-                        st.info("沒有找到任何模型")
-                else:
-                    st.error("無法獲取鎖定狀態")
-            except Exception as e:
-                st.error(f"獲取鎖定狀態失敗: {e}")
-
-            # log下載鈕
-            st.markdown("---")
-            with st.expander("📥 Log 下載 (根據上方選擇的模型)"):
-                try:
-                    # 獲取所有日誌文件列表
-                    log_list_resp = requests.get(f"{API_URL}/admin/logs", headers={"admin_token": admin_token}, timeout=10)
-                    if log_list_resp.status_code == 200:
-                        all_log_files = log_list_resp.json()
-                        
-                        # 根據當前選擇的模型進行篩選
-                        # 清理模型名稱以匹配日誌文件名中的格式
-                        clean_model = selected_ollama_model.replace(':', '_').replace('/', '_').replace('\\', '_')
-                        clean_embedding = selected_embedding_model.replace(':', '_').replace('/', '_').replace('\\', '_')
-                        
-                        relevant_logs = [
-                            log for log in all_log_files 
-                            if clean_model in log and clean_embedding in log
-                        ]
-
-                        if relevant_logs:
-                            selected_log = st.selectbox("選擇要下載的日誌文件:", options=relevant_logs, key="log_selector")
-                            
-                            if selected_log:
-                                # 準備下載按鈕
-                                log_content_resp = requests.get(
-                                    f"{API_URL}/admin/download_log",
-                                    params={"filename": selected_log},
-                                    headers={"admin_token": admin_token},
-                                    timeout=20
-                                )
-                                if log_content_resp.status_code == 200:
-                                    st.download_button(
-                                        label=f"下載 {selected_log}",
-                                        data=log_content_resp.content,
-                                        file_name=selected_log,
-                                        mime="text/plain",
-                                        key=f"download_{selected_log}"
-                                    )
-                                else:
-                                    st.error(f"無法獲取日誌 '{selected_log}' 的內容")
-                        else:
-                            st.info("找不到與當前所選模型相關的日誌文件。")
-                    else:
-                        st.error("無法獲取日誌文件列表。")
-                except Exception as e:
-                    st.error(f"獲取日誌時發生錯誤: {e}")
-            
-            # --- 監控當前狀態 ---
-            st.markdown("---")
-            st.subheader("📈 監控當前狀態")
-            st_autorefresh(interval=60000, key="monitor_all_autorefresh")
-            
-            # 獲取當前選擇模型的 folder_name
-            model_folder_name = None
-            try:
-                folder_name_resp = requests.get(
-                    f"{API_URL}/api/internal/get-model-folder-name",
-                    params={
-                        "ollama_model": selected_ollama_model,
-                        "ollama_embedding_model": selected_embedding_model,
-                        "version": final_version
-                    },
-                    timeout=5
-                )
-                if folder_name_resp.status_code == 200:
-                    model_folder_name = folder_name_resp.json().get("folder_name")
-            except Exception as e:
-                st.warning(f"無法獲取模型文件夾名稱: {e}")
-
-            try:
-                params = {}
-                if model_folder_name:
-                    params["model_folder_name"] = model_folder_name
-
-                resp = requests.get(f"{API_URL}/admin/monitor_all", headers={"admin_token": admin_token}, params=params, timeout=10)
+            if admin_token:
+                # 模型訓練管理（僅 Ollama 平台）
+                st.subheader("📚 模型訓練管理 (Ollama)")
                 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    status_text = data.get('status', '')
-                    progress_text = data.get('progress', '')
-                    realtime_text = data.get('realtime', '')
-                else:
-                    status_text = progress_text = realtime_text = f"(監控API回應異常: {resp.status_code})"
-            except Exception as e:
-                status_text = progress_text = realtime_text = f"監控API錯誤: {e}"
+                # 獲取 Ollama 模型列表
+                try:
+                    ollama_models_resp = requests.get(f"{API_URL}/api/ollama/models", timeout=10)
+                    if ollama_models_resp.status_code == 200:
+                        ollama_models = ollama_models_resp.json()
+                        model_names = [model['name'] for model in ollama_models]
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            selected_ollama_model = st.selectbox(
+                                "選擇 Ollama 語言模型：",
+                                options=model_names,
+                                help="用於問答的語言模型",
+                                key="admin_ollama_model_selector"
+                            )
+                        with col2:
+                            selected_embedding_model = st.selectbox(
+                                "選擇 Ollama 嵌入模型：",
+                                options=model_names,
+                                help="用於文本嵌入的模型",
+                                key="admin_embedding_model_selector"
+                            )
+                        
+                        # 版本選擇
+                        st.markdown("### 版本管理")
+                        version_options = ["✨ 建立新版本"]
+                        existing_versions = []
+                        try:
+                            versions_resp = requests.get(
+                                f"{API_URL}/api/model-versions",
+                                params={
+                                    "ollama_model": selected_ollama_model,
+                                    "ollama_embedding_model": selected_embedding_model
+                                },
+                                timeout=5
+                            )
+                            if versions_resp.status_code == 200:
+                                existing_versions = [v['version'] for v in versions_resp.json() if v.get('version')]
+                                version_options.extend(sorted(existing_versions, reverse=True))
+                        except Exception as e:
+                            st.warning(f"無法獲取版本列表: {e}")
 
-            st.markdown("#### 狀態 Console")
-            st.code(status_text, language="bash")
-            st.markdown("#### 進度 Console")
-            st.code(progress_text, language="bash")
-            st.markdown("#### 實時監控 Console")
-            st.code(realtime_text, language="bash")
-        else:
-            st.warning("請輸入管理員Token以使用管理功能")
-
-    # --- 向量資料庫維護分頁 ---
-    with tabs[2]:
-        st.header("🗄️ 向量資料庫內容維護")
-        admin_token_db = st.text_input("管理員Token", type="password", key="admin_token_db")
-        
-        if admin_token_db:
-            st.success("已輸入Token，可操作向量資料庫內容維護功能")
-            
-            # 模型選擇
-            st.subheader("� 選擇庫要維護的模型")
-            
-            try:
-                vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=10)
-                if vector_models_resp.status_code == 200:
-                    vector_models = vector_models_resp.json()
-                    
-                    # 只顯示有數據且未在訓練的模型
-                    available_models = [m for m in vector_models if m['has_data'] and not m['is_training']]
-                    
-                    if available_models:
-                        model_options = {m['display_name']: m['folder_name'] for m in available_models}
-                        selected_model_name = st.selectbox(
-                            "選擇模型:",
-                            options=list(model_options.keys()),
-                            key="selected_model_for_content"
+                        selected_version_option = st.selectbox(
+                            "選擇訓練版本:",
+                            options=version_options,
+                            help="選擇一個現有版本進行增量訓練，或建立一個帶有今天日期的新版本。",
+                            key="admin_version_selector"
                         )
-                        selected_model_folder = model_options[selected_model_name]
-                        
-                        st.markdown("---")
-                        
-                        # 內容管理選項
-                        content_tabs = st.tabs(["📄 瀏覽文檔", "✏️ 編輯文檔", "➕ 新增文檔"])
-                        
-                        # 瀏覽文檔
-                        with content_tabs[0]:
-                            st.subheader("📄 瀏覽向量資料庫中的文檔")
-                            
-                            # 分頁控制
-                            col1, col2, col3 = st.columns([1, 2, 1])
-                            with col1:
-                                page = st.number_input("頁碼", min_value=1, value=1, key="doc_page")
-                            with col2:
-                                page_size = st.selectbox("每頁顯示", [10, 20, 50], index=1, key="doc_page_size")
-                            
-                            # 獲取文檔列表
-                            try:
-                                docs_resp = requests.get(
-                                    f"{API_URL}/admin/vector-db/documents",
-                                    headers={"admin_token": admin_token_db},
-                                    params={
-                                        "folder_name": selected_model_folder,
-                                        "page": page,
-                                        "page_size": page_size
-                                    }
-                                )
+
+                        # 確定最終要發送到API的版本號
+                        final_version = None
+                        if selected_version_option == "✨ 建立新版本":
+                            from datetime import datetime
+                            import pytz
+                            final_version = datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y%m%d')
+                            st.info(f"將建立新版本: **{final_version}**")
+                        else:
+                            final_version = selected_version_option
+
+                        # 檢查向量數據是否存在
+                        try:
+                            vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=5)
+                            if vector_models_resp.status_code == 200:
+                                vector_models = vector_models_resp.json()
                                 
-                                if docs_resp.status_code == 200:
-                                    docs_data = docs_resp.json()
-                                    documents = docs_data.get('documents', [])
-                                    total = docs_data.get('total', 0)
-                                    total_pages = docs_data.get('total_pages', 1)
+                                # 查找匹配的模型
+                                current_model_exists = False
+                                current_model_has_data = False
+                                current_model_training = False
+                                
+                                # 構建目標資料夾名稱以進行精確匹配
+                                # 注意：此處的前端邏輯無法完美複製後端的 folder_name 生成，但可以模擬
+                                target_folder_part = f"{selected_ollama_model.replace(':', '_')}@{selected_embedding_model.replace(':', '_')}"
+                                if final_version:
+                                    target_folder_part += f"#{final_version}"
+
+                                for model in vector_models:
+                                    if target_folder_part in model['folder_name']:
+                                        current_model_exists = True
+                                        current_model_has_data = model['has_data']
+                                        current_model_training = model['is_training']
+                                        break
+                                
+                                # 顯示狀態
+                                st.markdown("### 當前選擇模型狀態")
+                                if current_model_exists:
+                                    if current_model_training:
+                                        st.warning("⏳ 該模型版本正在訓練中...")
+                                    elif current_model_has_data:
+                                        st.success("✅ 該模型版本已有向量數據，可進行增量訓練或重新索引")
+                                    else:
+                                        st.info("📝 該模型版本已創建但無數據，可進行初始訓練")
+                                else:
+                                    st.info("🆕 該模型版本尚未創建，將創建新的向量資料夾進行初始訓練")
+                        except:
+                            pass
+                        
+                        # 訓練按鈕
+                        st.markdown("### 訓練操作")
+                        btn_cols = st.columns(3)
+                        
+                        with btn_cols[0]:
+                            if st.button("🚀 初始訓練", key="new_initial_training", 
+                                       disabled=current_model_training or (current_model_exists and current_model_has_data)):
+                                try:
+                                    resp = requests.post(
+                                        f"{API_URL}/admin/training/initial",
+                                        headers={"admin_token": admin_token},
+                                        json={
+                                            "ollama_model": selected_ollama_model,
+                                            "ollama_embedding_model": selected_embedding_model,
+                                            "version": final_version
+                                        }
+                                    )
+                                    if resp.status_code == 200:
+                                        st.success(f"✅ 初始訓練已開始 (PID: {resp.json().get('pid')})")
+                                    else:
+                                        st.error(f"❌ 訓練失敗: {resp.text}")
+                                except Exception as e:
+                                    st.error(f"❌ API調用失敗: {e}")
+                        
+                        with btn_cols[1]:
+                            if st.button("📈 增量訓練", key="new_incremental_training",
+                                       disabled=current_model_training or not (current_model_exists and current_model_has_data)):
+                                try:
+                                    resp = requests.post(
+                                        f"{API_URL}/admin/training/incremental",
+                                        headers={"admin_token": admin_token},
+                                        json={
+                                            "ollama_model": selected_ollama_model,
+                                            "ollama_embedding_model": selected_embedding_model,
+                                            "version": final_version
+                                        }
+                                    )
+                                    if resp.status_code == 200:
+                                        st.success(f"✅ 增量訓練已開始 (PID: {resp.json().get('pid')})")
+                                    else:
+                                        st.error(f"❌ 訓練失敗: {resp.text}")
+                                except Exception as e:
+                                    st.error(f"❌ API調用失敗: {e}")
+                        
+                        with btn_cols[2]:
+                            if st.button("🔄 重新索引", key="new_reindex_training",
+                                       disabled=current_model_training or not (current_model_exists and current_model_has_data)):
+                                try:
+                                    resp = requests.post(
+                                        f"{API_URL}/admin/training/reindex",
+                                        headers={"admin_token": admin_token},
+                                        json={
+                                            "ollama_model": selected_ollama_model,
+                                            "ollama_embedding_model": selected_embedding_model,
+                                            "version": final_version
+                                        }
+                                    )
+                                    if resp.status_code == 200:
+                                        st.success(f"✅ 重新索引已開始 (PID: {resp.json().get('pid')})")
+                                    else:
+                                        st.error(f"❌ 重新索引失敗: {resp.text}")
+                                except Exception as e:
+                                    st.error(f"❌ API調用失敗: {e}")
+                        
+                    else:
+                        st.error("無法獲取 Ollama 模型列表")
+                except Exception as e:
+                    st.error(f"獲取模型列表失敗: {e}")
+            
+                # 向量模型狀態
+                st.markdown("---")
+                st.subheader("📊 向量模型狀態")
+                
+                try:
+                    vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=10)
+                    if vector_models_resp.status_code == 200:
+                        vector_models = vector_models_resp.json()
+                        
+                        if vector_models:
+                            for model in vector_models:
+                                with st.expander(f"📁 {model['display_name']}", expanded=False):
+                                    col1, col2, col3 = st.columns(3)
                                     
-                                    st.info(f"共找到 {total} 個文檔，第 {page}/{total_pages} 頁")
+                                    with col1:
+                                        if model['has_data']:
+                                            st.success("✅ 有數據")
+                                        else:
+                                            st.warning("⚠️ 無數據")
                                     
-                                    for doc in documents:
-                                        with st.expander(f"📄 {doc['file_name']} (chunk {doc['chunk_index']})", expanded=False):
-                                            st.write(f"**文件路徑:** {doc['file_path']}")
-                                            st.write(f"**文檔ID:** {doc['id']}")
-                                            st.write("**內容預覽:**")
-                                            st.text_area("內容預覽", value=doc['content'], height=100, disabled=True, key=f"preview_{doc['id']}", label_visibility="hidden")
+                                    with col2:
+                                        if model['is_training']:
+                                            st.warning("⏳ 訓練中")
+                                        else:
+                                            st.success("✅ 可用")
+                                    
+                                    with col3:
+                                        if model['has_data'] and not model['is_training']:
+                                            st.success("🟢 可問答")
+                                        else:
+                                            st.error("🔴 不可問答")
+                                    
+                                    if model['model_info']:
+                                        st.write(f"**語言模型:** {model['model_info'].get('OLLAMA_MODEL', '未知')}")
+                                        st.write(f"**嵌入模型:** {model['model_info'].get('OLLAMA_EMBEDDING_MODEL', '未知')}")
+                                    
+                                    st.write(f"**文件夾:** {model['folder_name']}")
+                        else:
+                            st.info("尚無向量模型")
+                    else:
+                        st.error("無法獲取向量模型狀態")
+                except Exception as e:
+                    st.error(f"獲取向量模型狀態失敗: {e}")
+                
+
+                
+                # 鎖定狀態管理
+                st.markdown("---")
+                st.subheader("🔒 鎖定狀態管理")
+                
+                try:
+                    lock_status_resp = requests.get(f"{API_URL}/admin/lock-status", headers={"admin_token": admin_token}, timeout=10)
+                    if lock_status_resp.status_code == 200:
+                        lock_status_list = lock_status_resp.json()
+                        
+                        if lock_status_list:
+                            for status in lock_status_list:
+                                with st.expander(f"🔐 {status['model_name']}", expanded=False):
+                                    col1, col2, col3 = st.columns(3)
+                                    
+                                    with col1:
+                                        if status['is_locked']:
+                                            if status['is_lock_valid']:
+                                                st.warning("🔒 已鎖定 (有效)")
+                                            else:
+                                                st.error("🔒 已鎖定 (無效)")
+                                        else:
+                                            st.success("🔓 未鎖定")
+                                    
+                                    with col2:
+                                        if status['has_data']:
+                                            st.success("✅ 有數據")
+                                        else:
+                                            st.warning("⚠️ 無數據")
+                                    
+                                    with col3:
+                                        if status['can_use']:
+                                            st.success("🟢 可使用")
+                                        else:
+                                            st.error("🔴 不可使用")
+                                    
+                                    st.write(f"**狀態說明:** {status['lock_reason']}")
+                                    
+                                    if status['lock_info']:
+                                        st.write("**鎖定詳情:**")
+                                        lock_info = status['lock_info']
+                                        if 'created_at' in lock_info:
+                                            st.write(f"- 鎖定時間: {lock_info['created_at']}")
+                                        if 'pid' in lock_info:
+                                            st.write(f"- 進程ID: {lock_info['pid']}")
+                                        if 'process_name' in lock_info:
+                                            st.write(f"- 進程名稱: {lock_info['process_name']}")
+                                    
+                                    # 解鎖按鈕
+                                    if status['is_locked']:
+                                        unlock_reason = st.text_input(
+                                            "解鎖原因:", 
+                                            value="管理員手動解鎖", 
+                                            key=f"unlock_reason_{status['folder_name']}"
+                                        )
+                                        
+                                        if st.button(f"🔓 強制解鎖", key=f"unlock_{status['folder_name']}"):
+                                            try:
+                                                unlock_resp = requests.post(
+                                                    f"{API_URL}/admin/force-unlock",
+                                                    headers={"admin_token": admin_token},
+                                                    json={
+                                                        "folder_name": status['folder_name'],
+                                                        "reason": unlock_reason
+                                                    }
+                                                )
+                                                if unlock_resp.status_code == 200:
+                                                    result = unlock_resp.json()
+                                                    st.success(f"✅ {result['message']}")
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"❌ 解鎖失敗: {unlock_resp.text}")
+                                            except Exception as e:
+                                                st.error(f"❌ 解鎖操作失敗: {e}")
+                            
+                            # 批量清理無效鎖定
+                            st.markdown("### 批量操作")
+                            if st.button("🧹 清理所有無效鎖定", key="cleanup_locks"):
+                                try:
+                                    cleanup_resp = requests.post(
+                                        f"{API_URL}/admin/cleanup-invalid-locks",
+                                        headers={"admin_token": admin_token}
+                                    )
+                                    if cleanup_resp.status_code == 200:
+                                        result = cleanup_resp.json()
+                                        st.success("✅ 清理完成")
+                                        for model_name, message in result['results'].items():
+                                            st.info(f"- {model_name}: {message}")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ 清理失敗: {cleanup_resp.text}")
+                                except Exception as e:
+                                    st.error(f"❌ 清理操作失敗: {e}")
+                        else:
+                            st.info("沒有找到任何模型")
+                    else:
+                        st.error("無法獲取鎖定狀態")
+                except Exception as e:
+                    st.error(f"獲取鎖定狀態失敗: {e}")
+
+                # log下載鈕
+                st.markdown("---")
+                with st.expander("📥 Log 下載 (根據上方選擇的模型)"):
+                    try:
+                        # 獲取所有日誌文件列表
+                        log_list_resp = requests.get(f"{API_URL}/admin/logs", headers={"admin_token": admin_token}, timeout=10)
+                        if log_list_resp.status_code == 200:
+                            all_log_files = log_list_resp.json()
+                            
+                            # 根據當前選擇的模型進行篩選
+                            # 清理模型名稱以匹配日誌文件名中的格式
+                            clean_model = selected_ollama_model.replace(':', '_').replace('/', '_').replace('\\', '_')
+                            clean_embedding = selected_embedding_model.replace(':', '_').replace('/', '_').replace('\\', '_')
+                            
+                            relevant_logs = [
+                                log for log in all_log_files 
+                                if clean_model in log and clean_embedding in log
+                            ]
+
+                            if relevant_logs:
+                                selected_log = st.selectbox("選擇要下載的日誌文件:", options=relevant_logs, key="log_selector")
+                                
+                                if selected_log:
+                                    # 準備下載按鈕
+                                    log_content_resp = requests.get(
+                                        f"{API_URL}/admin/download_log",
+                                        params={"filename": selected_log},
+                                        headers={"admin_token": admin_token},
+                                        timeout=20
+                                    )
+                                    if log_content_resp.status_code == 200:
+                                        st.download_button(
+                                            label=f"下載 {selected_log}",
+                                            data=log_content_resp.content,
+                                            file_name=selected_log,
+                                            mime="text/plain",
+                                            key=f"download_{selected_log}"
+                                        )
+                                    else:
+                                        st.error(f"無法獲取日誌 '{selected_log}' 的內容")
+                            else:
+                                st.info("找不到與當前所選模型相關的日誌文件。")
+                        else:
+                            st.error("無法獲取日誌文件列表。")
+                    except Exception as e:
+                        st.error(f"獲取日誌時發生錯誤: {e}")
+                
+                # --- 監控當前狀態 ---
+                st.markdown("---")
+                st.subheader("📈 監控當前狀態")
+                st_autorefresh(interval=60000, key="monitor_all_autorefresh")
+                
+                # 獲取當前選擇模型的 folder_name
+                model_folder_name = None
+                try:
+                    folder_name_resp = requests.get(
+                        f"{API_URL}/api/internal/get-model-folder-name",
+                        params={
+                            "ollama_model": selected_ollama_model,
+                            "ollama_embedding_model": selected_embedding_model,
+                            "version": final_version
+                        },
+                        timeout=5
+                    )
+                    if folder_name_resp.status_code == 200:
+                        model_folder_name = folder_name_resp.json().get("folder_name")
+                except Exception as e:
+                    st.warning(f"無法獲取模型文件夾名稱: {e}")
+
+                try:
+                    params = {}
+                    if model_folder_name:
+                        params["model_folder_name"] = model_folder_name
+
+                    resp = requests.get(f"{API_URL}/admin/monitor_all", headers={"admin_token": admin_token}, params=params, timeout=10)
+                    
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        status_text = data.get('status', '')
+                        progress_text = data.get('progress', '')
+                        realtime_text = data.get('realtime', '')
+                    else:
+                        status_text = progress_text = realtime_text = f"(監控API回應異常: {resp.status_code})"
+                except Exception as e:
+                    status_text = progress_text = realtime_text = f"監控API錯誤: {e}"
+
+                st.markdown("#### 狀態 Console")
+                st.code(status_text, language="bash")
+                st.markdown("#### 進度 Console")
+                st.code(progress_text, language="bash")
+                st.markdown("#### 實時監控 Console")
+                st.code(realtime_text, language="bash")
+            else:
+                st.info("請輸入Token以查看管理功能。")
+
+    # --- 向量資料庫維護分頁（僅在傳統RAG模式下顯示） ---
+    if len(tabs) > 2:
+        with tabs[2]:
+            st.header("🗄️ 向量資料庫內容維護")
+            admin_token_db = st.text_input("請輸入管理員Token", type="password", key="admin_token_db")
+            
+            if admin_token_db:
+                # 模型選擇
+                st.subheader("📋 選擇要維護的模型")
+            
+                try:
+                    vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=10)
+                    if vector_models_resp.status_code == 200:
+                        vector_models = vector_models_resp.json()
+                        
+                        # 只顯示有數據且未在訓練的模型
+                        available_models = [m for m in vector_models if m['has_data'] and not m['is_training']]
+                        
+                        if available_models:
+                            model_options = {m['display_name']: m['folder_name'] for m in available_models}
+                            selected_model_name = st.selectbox(
+                                "選擇模型:",
+                                options=list(model_options.keys()),
+                                key="selected_model_for_content"
+                            )
+                            selected_model_folder = model_options[selected_model_name]
+                            
+                            st.markdown("---")
+                            
+                            # 內容管理選項
+                            content_tabs = st.tabs(["📄 瀏覽文檔", "✏️ 編輯文檔", "➕ 新增文檔"])
+                            
+                            # 瀏覽文檔
+                            with content_tabs[0]:
+                                st.subheader("📄 瀏覽向量資料庫中的文檔")
+                                
+                                # 分頁控制
+                                col1, col2, col3 = st.columns([1, 2, 1])
+                                with col1:
+                                    page = st.number_input("頁碼", min_value=1, value=1, key="doc_page")
+                                with col2:
+                                    page_size = st.selectbox("每頁顯示", [10, 20, 50], index=1, key="doc_page_size")
+                                
+                                # 獲取文檔列表
+                                try:
+                                    docs_resp = requests.get(
+                                        f"{API_URL}/admin/vector-db/documents",
+                                        headers={"admin_token": admin_token_db},
+                                        params={
+                                            "folder_name": selected_model_folder,
+                                            "page": page,
+                                            "page_size": page_size
+                                        }
+                                    )
+                                    
+                                    if docs_resp.status_code == 200:
+                                        docs_data = docs_resp.json()
+                                        documents = docs_data.get('documents', [])
+                                        total = docs_data.get('total', 0)
+                                        total_pages = docs_data.get('total_pages', 1)
+                                        
+                                        st.info(f"共找到 {total} 個文檔，第 {page}/{total_pages} 頁")
+                                        
+                                        for doc in documents:
+                                            with st.expander(f"📄 {doc['file_name']} (chunk {doc['chunk_index']})", expanded=False):
+                                                st.write(f"**文件路徑:** {doc['file_path']}")
+                                                st.write(f"**文檔ID:** {doc['id']}")
+                                                st.write("**內容預覽:**")
+                                                st.text_area("內容預覽", value=doc['content'], height=100, disabled=True, key=f"preview_{doc['id']}", label_visibility="hidden")
+                                                
+                                                col1, col2 = st.columns(2)
+                                                with col1:
+                                                    if st.button("📝 編輯此文檔", key=f"edit_btn_{doc['id']}"):
+                                                        st.session_state[f"editing_doc_{doc['id']}"] = True
+                                                        st.session_state["edit_doc_id"] = doc['id']
+                                                        st.rerun()
+                                                
+                                                with col2:
+                                                    if st.button("🗑️ 刪除此文檔", key=f"del_btn_{doc['id']}", type="secondary"):
+                                                        if st.session_state.get(f"confirm_del_{doc['id']}", False):
+                                                            try:
+                                                                del_resp = requests.delete(
+                                                                    f"{API_URL}/admin/vector-db/document/{doc['id']}",
+                                                                    headers={"admin_token": admin_token_db},
+                                                                    params={"folder_name": selected_model_folder}
+                                                                )
+                                                                if del_resp.status_code == 200:
+                                                                    st.success("✅ 文檔已刪除")
+                                                                    st.session_state[f"confirm_del_{doc['id']}"] = False
+                                                                    st.rerun()
+                                                                else:
+                                                                    st.error(f"刪除失敗: {del_resp.text}")
+                                                            except Exception as e:
+                                                                st.error(f"刪除失敗: {e}")
+                                                        else:
+                                                            st.warning("⚠️ 確定要刪除此文檔嗎？")
+                                                            if st.button("確認刪除", key=f"confirm_del_btn_{doc['id']}", type="primary"):
+                                                                st.session_state[f"confirm_del_{doc['id']}"] = True
+                                                                st.rerun()
+                                    else:
+                                        st.error(f"獲取文檔列表失敗: {docs_resp.text}")
+                                except Exception as e:
+                                    st.error(f"獲取文檔列表失敗: {e}")
+                            
+                            # 編輯文檔
+                            with content_tabs[1]:
+                                st.subheader("✏️ 編輯文檔內容")
+                                
+                                # 檢查是否有要編輯的文檔
+                                edit_doc_id = st.session_state.get("edit_doc_id")
+                                if edit_doc_id:
+                                    try:
+                                        # 獲取文檔詳情
+                                        doc_resp = requests.get(
+                                            f"{API_URL}/admin/vector-db/document/{edit_doc_id}",
+                                            headers={"admin_token": admin_token_db},
+                                            params={"folder_name": selected_model_folder}
+                                        )
+                                        
+                                        if doc_resp.status_code == 200:
+                                            doc_data = doc_resp.json()
+                                            
+                                            st.write(f"**編輯文檔:** {doc_data['file_name']}")
+                                            st.write(f"**文檔ID:** {doc_data['id']}")
+                                            
+                                            # 編輯內容
+                                            new_content = st.text_area(
+                                                "文檔內容:",
+                                                value=doc_data['content'],
+                                                height=300,
+                                                key=f"edit_content_{edit_doc_id}"
+                                            )
                                             
                                             col1, col2 = st.columns(2)
                                             with col1:
-                                                if st.button("📝 編輯此文檔", key=f"edit_btn_{doc['id']}"):
-                                                    st.session_state[f"editing_doc_{doc['id']}"] = True
-                                                    st.session_state["edit_doc_id"] = doc['id']
-                                                    st.rerun()
+                                                if st.button("💾 保存修改", key="save_edit", type="primary"):
+                                                    try:
+                                                        update_resp = requests.put(
+                                                            f"{API_URL}/admin/vector-db/document/{edit_doc_id}",
+                                                            headers={"admin_token": admin_token_db},
+                                                            params={"folder_name": selected_model_folder},
+                                                            json={"content": new_content}
+                                                        )
+                                                        
+                                                        if update_resp.status_code == 200:
+                                                            st.success("✅ 文檔已更新")
+                                                            st.session_state["edit_doc_id"] = None
+                                                            st.rerun()
+                                                        else:
+                                                            st.error(f"更新失敗: {update_resp.text}")
+                                                    except Exception as e:
+                                                        st.error(f"更新失敗: {e}")
                                             
                                             with col2:
-                                                if st.button("🗑️ 刪除此文檔", key=f"del_btn_{doc['id']}", type="secondary"):
-                                                    if st.session_state.get(f"confirm_del_{doc['id']}", False):
-                                                        try:
-                                                            del_resp = requests.delete(
-                                                                f"{API_URL}/admin/vector-db/document/{doc['id']}",
-                                                                headers={"admin_token": admin_token_db},
-                                                                params={"folder_name": selected_model_folder}
-                                                            )
-                                                            if del_resp.status_code == 200:
-                                                                st.success("✅ 文檔已刪除")
-                                                                st.session_state[f"confirm_del_{doc['id']}"] = False
-                                                                st.rerun()
-                                                            else:
-                                                                st.error(f"刪除失敗: {del_resp.text}")
-                                                        except Exception as e:
-                                                            st.error(f"刪除失敗: {e}")
-                                                    else:
-                                                        st.warning("⚠️ 確定要刪除此文檔嗎？")
-                                                        if st.button("確認刪除", key=f"confirm_del_btn_{doc['id']}", type="primary"):
-                                                            st.session_state[f"confirm_del_{doc['id']}"] = True
-                                                            st.rerun()
-                                else:
-                                    st.error(f"獲取文檔列表失敗: {docs_resp.text}")
-                            except Exception as e:
-                                st.error(f"獲取文檔列表失敗: {e}")
-                        
-                        # 編輯文檔
-                        with content_tabs[1]:
-                            st.subheader("✏️ 編輯文檔內容")
-                            
-                            # 檢查是否有要編輯的文檔
-                            edit_doc_id = st.session_state.get("edit_doc_id")
-                            if edit_doc_id:
-                                try:
-                                    # 獲取文檔詳情
-                                    doc_resp = requests.get(
-                                        f"{API_URL}/admin/vector-db/document/{edit_doc_id}",
-                                        headers={"admin_token": admin_token_db},
-                                        params={"folder_name": selected_model_folder}
-                                    )
-                                    
-                                    if doc_resp.status_code == 200:
-                                        doc_data = doc_resp.json()
-                                        
-                                        st.write(f"**編輯文檔:** {doc_data['file_name']}")
-                                        st.write(f"**文檔ID:** {doc_data['id']}")
-                                        
-                                        # 編輯內容
-                                        new_content = st.text_area(
-                                            "文檔內容:",
-                                            value=doc_data['content'],
-                                            height=300,
-                                            key=f"edit_content_{edit_doc_id}"
-                                        )
-                                        
-                                        col1, col2 = st.columns(2)
-                                        with col1:
-                                            if st.button("💾 保存修改", key="save_edit", type="primary"):
-                                                try:
-                                                    update_resp = requests.put(
-                                                        f"{API_URL}/admin/vector-db/document/{edit_doc_id}",
-                                                        headers={"admin_token": admin_token_db},
-                                                        params={"folder_name": selected_model_folder},
-                                                        json={"content": new_content}
-                                                    )
-                                                    
-                                                    if update_resp.status_code == 200:
-                                                        st.success("✅ 文檔已更新")
-                                                        st.session_state["edit_doc_id"] = None
-                                                        st.rerun()
-                                                    else:
-                                                        st.error(f"更新失敗: {update_resp.text}")
-                                                except Exception as e:
-                                                    st.error(f"更新失敗: {e}")
-                                        
-                                        with col2:
-                                            if st.button("❌ 取消編輯", key="cancel_edit"):
-                                                st.session_state["edit_doc_id"] = None
-                                                st.rerun()
-                                    else:
-                                        st.error(f"獲取文檔詳情失敗: {doc_resp.text}")
+                                                if st.button("❌ 取消編輯", key="cancel_edit"):
+                                                    st.session_state["edit_doc_id"] = None
+                                                    st.rerun()
+                                        else:
+                                            st.error(f"獲取文檔詳情失敗: {doc_resp.text}")
+                                            st.session_state["edit_doc_id"] = None
+                                    except Exception as e:
+                                        st.error(f"獲取文檔詳情失敗: {e}")
                                         st.session_state["edit_doc_id"] = None
-                                except Exception as e:
-                                    st.error(f"獲取文檔詳情失敗: {e}")
-                                    st.session_state["edit_doc_id"] = None
-                            else:
-                                st.info("請從「瀏覽文檔」頁面選擇要編輯的文檔")
-                        
-                        # 新增文檔
-                        with content_tabs[2]:
-                            st.subheader("➕ 新增文檔到向量資料庫")
-                            
-                            with st.form("add_document_form"):
-                                file_name = st.text_input("文件名稱", placeholder="例如: 手動添加的文檔.txt", key="add_doc_filename")
-                                content = st.text_area("文檔內容", height=300, placeholder="請輸入要添加到向量資料庫的內容...", key="add_doc_content")
+                                else:
+                                    st.info("請從「瀏覽文檔」頁面選擇要編輯的文檔")
+                            # 新增文檔
+                            with content_tabs[2]:
+                                st.subheader("➕ 新增文檔到向量資料庫")
                                 
-                                # 可選的元數據
-                                st.write("**可選元數據:**")
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    file_path = st.text_input("文件路徑", placeholder="例如: /manual/custom_doc.txt", key="add_doc_filepath")
-                                with col2:
-                                    chunk_index = st.number_input("塊索引", min_value=0, value=0, key="add_doc_chunk_index")
-                                
-                                submitted = st.form_submit_button("➕ 添加文檔", type="primary")
-                                
-                                if submitted:
-                                    if not content.strip():
-                                        st.error("請輸入文檔內容")
-                                    else:
-                                        try:
-                                            metadata = {
-                                                "file_name": file_name or "手動添加的文檔",
-                                                "file_path": file_path or "manual_add",
-                                                "chunk_index": chunk_index
-                                            }
-                                            
-                                            add_resp = requests.post(
-                                                f"{API_URL}/admin/vector-db/document",
-                                                headers={"admin_token": admin_token_db},
-                                                params={"folder_name": selected_model_folder},
-                                                json={
-                                                    "content": content.strip(),
-                                                    "metadata": metadata
+                                with st.form("add_document_form"):
+                                    file_name = st.text_input("文件名稱", placeholder="例如: 手動添加的文檔.txt", key="add_doc_filename")
+                                    content = st.text_area("文檔內容", height=300, placeholder="請輸入要添加到向量資料庫的內容...", key="add_doc_content")
+                                    
+                                    # 可選的元數據
+                                    st.write("**可選元數據:**")
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        file_path = st.text_input("文件路徑", placeholder="例如: /manual/custom_doc.txt", key="add_doc_filepath")
+                                    with col2:
+                                        chunk_index = st.number_input("塊索引", min_value=0, value=0, key="add_doc_chunk_index")
+                                    
+                                    submitted = st.form_submit_button("➕ 添加文檔", type="primary")
+                                    
+                                    if submitted:
+                                        if not content.strip():
+                                            st.error("請輸入文檔內容")
+                                        else:
+                                            try:
+                                                metadata = {
+                                                    "file_name": file_name or "手動添加的文檔",
+                                                    "file_path": file_path or "manual_add",
+                                                    "chunk_index": chunk_index
                                                 }
-                                            )
+                                                
+                                                add_resp = requests.post(
+                                                    f"{API_URL}/admin/vector-db/document",
+                                                    headers={"admin_token": admin_token_db},
+                                                    params={"folder_name": selected_model_folder},
+                                                    json={
+                                                        "content": content.strip(),
+                                                        "metadata": metadata
+                                                    }
+                                                )
+                                                
+                                                if add_resp.status_code == 200:
+                                                    st.success("✅ 文檔已成功添加到向量資料庫")
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"添加失敗: {add_resp.text}")
+                                            except Exception as e:
+                                                st.error(f"添加失敗: {e}")
+                        else:
+                                    st.warning("沒有可用於內容維護的模型（需要有數據且未在訓練中）")
+                                    
+                                    # 顯示所有模型的狀態
+                                    if vector_models:
+                                        st.subheader("📊 所有模型狀態")
+                                        for model in vector_models:
+                                            status_text = []
+                                            if not model['has_data']:
+                                                status_text.append("無數據")
+                                            if model['is_training']:
+                                                status_text.append("訓練中")
                                             
-                                            if add_resp.status_code == 200:
-                                                st.success("✅ 文檔已成功添加到向量資料庫")
-                                                st.rerun()
-                                            else:
-                                                st.error(f"添加失敗: {add_resp.text}")
-                                        except Exception as e:
-                                            st.error(f"添加失敗: {e}")
+                                            status_str = f" ({', '.join(status_text)})" if status_text else " (可用)"
+                                            st.write(f"- {model['display_name']}{status_str}")
                     else:
-                        st.warning("沒有可用於內容維護的模型（需要有數據且未在訓練中）")
-                        
-                        # 顯示所有模型的狀態
-                        if vector_models:
-                            st.subheader("📊 所有模型狀態")
-                            for model in vector_models:
-                                status_text = []
-                                if not model['has_data']:
-                                    status_text.append("無數據")
-                                if model['is_training']:
-                                    status_text.append("訓練中")
-                                
-                                status_str = f" ({', '.join(status_text)})" if status_text else " (可用)"
-                                st.write(f"- {model['display_name']}{status_str}")
-                else:
-                    st.error("無法獲取向量模型列表")
-            except Exception as e:
-                st.error(f"獲取向量模型列表失敗: {e}")
-                        
-        else:
-            st.warning("請輸入管理員Token以使用向量資料庫內容維護功能")
+                        st.error("無法獲取向量模型列表")
+                except Exception as e:
+                    st.error(f"獲取向量模型列表失敗: {e}")
+            else:
+                st.info("請輸入Token以查看向量資料庫維護功能。")
+    
+    # 顯示幫助模態框（如果需要）
+    show_help_modal()
 
 
 if __name__ == "__main__":

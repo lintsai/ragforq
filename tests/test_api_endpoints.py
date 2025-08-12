@@ -71,7 +71,7 @@ def test_dynamic_rag_api():
     payload = {
         "question": "What is technology?",
         "use_dynamic_rag": True,
-        "selected_model": "qwen2.5:0.5b-instruct",
+        "selected_model": "qwen2:0.5b-instruct",
         "ollama_embedding_model": "nomic-embed-text:latest",
         "language": "English",
         "include_sources": True

@@ -130,6 +130,7 @@ jobs:
               -v ~/rag_data/documents:/app/documents \
               -v ~/.cache/huggingface:/root/.cache/huggingface \
               -v /mnt/winshare/MIC:/mnt/winshare/MIC \
+              -e ENVIRONMENT=production \
               "${IMAGE_TO_RUN}"
 
             echo "-> Cleaning up..."

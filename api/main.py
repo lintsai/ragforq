@@ -15,12 +15,14 @@ from scripts.monitor_indexing import get_status_text, get_progress_text, get_mon
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import APP_HOST, APP_PORT, is_q_drive_accessible, ADMIN_TOKEN
+from config.config import APP_HOST, APP_PORT, is_q_drive_accessible, ADMIN_TOKEN, SELECTED_PLATFORM
 from rag_engine.rag_engine_factory import get_rag_engine_for_language, get_supported_languages, validate_language
 from indexer.document_indexer import DocumentIndexer
 from langchain_core.documents import Document
 from utils.ollama_utils import ollama_utils
 from utils.vector_db_manager import vector_db_manager
+from utils.platform_manager import get_platform_manager
+from utils.setup_flow_manager import get_setup_flow_manager
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -51,8 +53,10 @@ class QuestionRequest(BaseModel):
     language: str = "繁體中文"  # 回答語言
     selected_model: Optional[str] = None  # 選擇的模型文件夾名稱（支援版本）
     use_dynamic_rag: bool = False  # 是否使用Dynamic RAG
+    ollama_model: Optional[str] = None  # Dynamic RAG需要的語言模型
     ollama_embedding_model: Optional[str] = None  # Dynamic RAG需要的嵌入模型
     show_relevance: bool = True
+    platform: Optional[str] = None # 新增：動態RAG使用的平台
 
 class SourceInfo(BaseModel):
     file_name: str
@@ -65,6 +69,7 @@ class QuestionResponse(BaseModel):
     answer: str
     sources: List[SourceInfo] = []
     rewritten_query: Optional[str] = None
+    language: Optional[str] = None # 新增語言欄位
 
 class StatusResponse(BaseModel):
     status: str
@@ -95,12 +100,23 @@ class TrainingRequest(BaseModel):
     ollama_embedding_model: str
     version: Optional[str] = None  # 版本標識，如日期 "20250722"
 
+class PlatformSelectionRequest(BaseModel):
+    platform_type: str
+
+class ModelSelectionRequest(BaseModel):
+    language_model: str
+    embedding_model: str
+    inference_engine: str = "transformers"
+
+class RAGModeSelectionRequest(BaseModel):
+    rag_mode: str
+
 # 初始化RAG引擎緩存
 rag_engines = {}
 
 def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體中文", 
                    use_dynamic_rag: bool = False, ollama_model: str = None, 
-                   ollama_embedding_model: str = None):
+                   ollama_embedding_model: str = None, platform: Optional[str] = None):
     """
     獲取或初始化指定語言的RAG引擎，支持智能模型選擇和訓練狀態檢查
     
@@ -118,11 +134,19 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
         logger.warning(f"不支持的語言: {language}，默認使用繁體中文")
         language = "繁體中文"
     
-    # 創建緩存鍵，包含語言信息
+    # 創建緩存鍵，包含語言和平台信息
     if use_dynamic_rag:
-        cache_key = f"dynamic_{ollama_model}_{ollama_embedding_model}_{language}"
+        # Dynamic RAG 引擎需要根據平台和語言進行緩存
+        current_platform = platform or "ollama" # 如果未提供平台，默認為ollama
+        cache_key = f"dynamic_{current_platform}_{language}_{ollama_model}_{ollama_embedding_model}"
     else:
-        cache_key = f"{selected_model or 'auto_selected'}_{language}"
+        # 對於非動態RAG，需要檢測平台來生成正確的緩存鍵
+        if selected_model:
+            from config.config import detect_platform_from_model
+            # 這裡需要獲取實際的模型名稱來檢測平台
+            cache_key = f"{selected_model}_{language}"
+        else:
+            cache_key = f"auto_selected_{language}"
     
     try:
         if cache_key not in rag_engines:
@@ -133,9 +157,13 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
                 if not ollama_model or not ollama_embedding_model:
                     raise HTTPException(status_code=400, detail="Dynamic RAG需要指定ollama_model和ollama_embedding_model")
                 
-                # 使用工廠創建Dynamic RAG引擎
+                # 使用工廠創建Dynamic RAG引擎，傳入正確的用戶語言
+                # 我們需要告訴工廠這是 Dynamic RAG，但同時傳入用戶的實際語言
+                # 使用特殊的語言標識符來表示 Dynamic RAG + 用戶語言
+                dynamic_language_key = f"Dynamic_{language}"
+                current_platform = platform or "ollama"
                 rag_engines[cache_key] = get_rag_engine_for_language(
-                    "Dynamic", None, ollama_model, ollama_embedding_model
+                    dynamic_language_key, None, ollama_model, ollama_embedding_model, current_platform
                 )
                 
             elif selected_model:
@@ -175,11 +203,16 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
                     ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL']
                 )
                 
+                # 智能檢測平台
+                from config.config import detect_platform_from_model
+                platform = detect_platform_from_model(model_info['OLLAMA_MODEL'])
+                
                 # 使用工廠創建對應語言的RAG引擎
                 rag_engines[cache_key] = get_rag_engine_for_language(
                     language=language,
                     document_indexer=document_indexer,
-                    ollama_model=model_info['OLLAMA_MODEL']
+                    ollama_model=model_info['OLLAMA_MODEL'],
+                    platform=platform
                 )
             else:
                 # 自動選擇最佳可用模型
@@ -202,11 +235,16 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
                         ollama_embedding_model=model_info['OLLAMA_EMBEDDING_MODEL']
                     )
                     
+                    # 智能檢測平台
+                    from config.config import detect_platform_from_model
+                    platform = detect_platform_from_model(model_info['OLLAMA_MODEL'])
+                    
                     # 使用工廠創建對應語言的RAG引擎
                     rag_engines[cache_key] = get_rag_engine_for_language(
                         language=language,
                         document_indexer=document_indexer,
-                        ollama_model=model_info['OLLAMA_MODEL']
+                        ollama_model=model_info['OLLAMA_MODEL'],
+                        platform=platform
                     )
                 else:
                     # 回退到默認配置
@@ -244,11 +282,12 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
                     # 使用默認模型創建文檔索引器
                     document_indexer = DocumentIndexer(ollama_embedding_model=default_embedding_model)
                     
-                    # 使用工廠創建對應語言的RAG引擎
+                    # 使用工廠創建對應語言的RAG引擎（默認使用 Ollama）
                     rag_engines[cache_key] = get_rag_engine_for_language(
                         language=language,
                         document_indexer=document_indexer,
-                        ollama_model=default_language_model
+                        ollama_model=default_language_model,
+                        platform="ollama"
                     )
         
         return rag_engines[cache_key]
@@ -289,13 +328,25 @@ async def ask_question(request: QuestionRequest):
         raise HTTPException(status_code=400, detail="問題不能為空")
     
     try:
+        # 確保問題文本正確編碼
+        question = request.question
+        if isinstance(question, bytes):
+            question = question.decode('utf-8')
+        
+        # 記錄接收到的問題以便調試
+        logger.info(f"接收到問題: {repr(question)}")
+        
+        # 調試：記錄請求參數
+        logger.info(f"請求參數調試 - use_dynamic_rag: {request.use_dynamic_rag}, ollama_model: {request.ollama_model}, ollama_embedding_model: {request.ollama_embedding_model}")
+        
         # 獲取RAG引擎
         engine = get_rag_engine(
-            selected_model=request.selected_model, 
+            selected_model=request.selected_model,
             language=request.language,
             use_dynamic_rag=request.use_dynamic_rag,
-            ollama_model=request.selected_model if request.use_dynamic_rag else None,
-            ollama_embedding_model=request.ollama_embedding_model
+            ollama_model=request.ollama_model if request.use_dynamic_rag else None,
+            ollama_embedding_model=request.ollama_embedding_model if request.use_dynamic_rag else None,
+            platform=request.platform if request.use_dynamic_rag else None
         )
         
         # 根據是否使用查詢改寫選擇函數
@@ -361,14 +412,10 @@ async def ask_question(request: QuestionRequest):
             # 批量生成相關性理由，提高效能
             if request.show_relevance and source_info_list:
                 try:
-                    # 收集所有需要生成理由的文檔內容
+                    # 收集所有需要生成理由的文檔對象
                     docs_for_relevance = []
                     for file_path, file_info in sorted_files[:max_sources]:
-                        doc = file_info['doc']
-                        if hasattr(doc, "page_content") and doc.page_content and doc.page_content.strip():
-                            docs_for_relevance.append(doc.page_content[:500])  # 限制長度
-                        else:
-                            docs_for_relevance.append("")
+                        docs_for_relevance.append(file_info['doc'])
                     
                     # 批量生成相關性理由
                     if docs_for_relevance:
@@ -399,7 +446,8 @@ async def ask_question(request: QuestionRequest):
         
         response = {
             "answer": answer,
-            "sources": source_info_list
+            "sources": source_info_list,
+            "language": engine.get_language()  # 從引擎獲取正確的語言
         }
         
         # 如果有改寫的查詢，添加到回應中
@@ -601,9 +649,9 @@ async def start_initial_training(request: Request, training_request: TrainingReq
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 然後使用 supervisorctl 啟動訓練程序
+        # 然後使用 Python 直接啟動訓練程序
         cmd = [
-            "supervisorctl", "start", "initial_indexing"
+            sys.executable, "scripts/model_training_manager.py", "initial"
         ]
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = process.communicate()
@@ -632,9 +680,9 @@ async def start_incremental_training(request: Request, training_request: Trainin
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 然後使用 supervisorctl 啟動訓練程序
+        # 然後使用 Python 直接啟動訓練程序
         cmd = [
-            "supervisorctl", "start", "incremental_indexing"
+            sys.executable, "scripts/model_training_manager.py", "incremental"
         ]
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = process.communicate()
@@ -663,9 +711,9 @@ async def start_reindex_training(request: Request, training_request: TrainingReq
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 然後使用 supervisorctl 啟動訓練程序
+        # 然後使用 Python 直接啟動訓練程序
         cmd = [
-            "supervisorctl", "start", "reindex_indexing"
+            sys.executable, "scripts/model_training_manager.py", "reindex"
         ]
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = process.communicate()
@@ -768,7 +816,76 @@ async def cleanup_invalid_locks(request: Request):
         return {"status": "success", "results": results}
     except Exception as e:
         logger.error(f"清理無效鎖定失敗: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"清理無效鎖定失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"清理失敗: {str(e)}")
+
+# === 新的設置流程 API ===
+
+@app.get("/api/setup/status")
+async def get_setup_status():
+    """獲取設置狀態"""
+    setup_manager = get_setup_flow_manager()
+    return {
+        "setup_completed": setup_manager.is_setup_completed(),
+        "current_step": setup_manager.get_current_step(),
+        "progress": setup_manager.get_setup_progress(),
+        "configuration": setup_manager.get_current_configuration()
+    }
+
+@app.get("/api/setup/platforms")
+async def get_available_platforms():
+    """獲取可用平台列表"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.get_platform_selection_data()
+
+@app.post("/api/setup/platform")
+async def set_platform(request: PlatformSelectionRequest):
+    """設置平台選擇"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.set_platform(request.platform_type)
+
+@app.get("/api/setup/models")
+async def get_available_models():
+    """獲取可用模型列表"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.get_model_selection_data()
+
+@app.post("/api/setup/models")
+async def set_models(request: ModelSelectionRequest):
+    """設置模型選擇"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.set_models(request.language_model, request.embedding_model, request.inference_engine)
+
+@app.get("/api/setup/rag-modes")
+async def get_rag_modes():
+    """獲取 RAG 模式選項"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.get_rag_mode_selection_data()
+
+@app.post("/api/setup/rag-mode")
+async def set_rag_mode(request: RAGModeSelectionRequest):
+    """設置 RAG 模式"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.set_rag_mode(request.rag_mode)
+
+@app.get("/api/setup/review")
+async def get_configuration_review():
+    """獲取配置審查數據"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.get_configuration_review_data()
+
+@app.post("/api/setup/complete")
+async def complete_setup():
+    """完成設置"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.complete_setup()
+
+@app.post("/api/setup/reset")
+async def reset_setup():
+    """重置設置"""
+    setup_manager = get_setup_flow_manager()
+    return setup_manager.reset_setup()
+
+# 重複的路由定義已移除 - 原始定義在第780行
 
 # 向量資料庫維護 API
 @app.get("/admin/vector-db/info")
@@ -1474,7 +1591,204 @@ async def add_vector_document(request: Request, folder_name: str = Query(...), d
 @app.get("/health")
 async def health_check():
     """健康檢查端點"""
-    return {"status": "healthy"}
+    return {"status": "healthy", "timestamp": "2025-08-12", "api_version": "1.0.0"}
+
+@app.get("/api/model-status")
+async def get_model_status(language_model: str, embedding_model: str):
+    """檢查指定模型的狀態 - Web 應用即時檢查"""
+    try:
+        from config.config import HF_MODEL_CACHE_DIR
+        from pathlib import Path
+        
+        # 檢查模型緩存目錄
+        cache_dir = Path(HF_MODEL_CACHE_DIR)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 檢查語言模型 - 使用正確的 Hugging Face 緩存格式
+        language_model_path = cache_dir / f"models--{language_model.replace('/', '--')}"
+        language_model_ready = False
+        if language_model_path.exists():
+            snapshots_dir = language_model_path / "snapshots"
+            if snapshots_dir.exists():
+                # 檢查是否有完整的快照目錄
+                snapshot_dirs = [d for d in snapshots_dir.iterdir() if d.is_dir()]
+                if snapshot_dirs:
+                    # 檢查最新快照是否包含必要文件
+                    latest_snapshot = snapshot_dirs[0]
+                    # 檢查 config.json 和模型權重文件
+                    has_config = (latest_snapshot / "config.json").exists()
+                    has_weights = (latest_snapshot / "model.safetensors").exists() or \
+                                  (latest_snapshot / "pytorch_model.bin").exists()
+                    language_model_ready = has_config and has_weights
+        
+        # 檢查嵌入模型 - 使用正確的 Hugging Face 緩存格式
+        embedding_model_path = cache_dir / f"models--{embedding_model.replace('/', '--')}"
+        embedding_model_ready = False
+        if embedding_model_path.exists():
+            snapshots_dir = embedding_model_path / "snapshots"
+            if snapshots_dir.exists():
+                # 檢查是否有完整的快照目錄
+                snapshot_dirs = [d for d in snapshots_dir.iterdir() if d.is_dir()]
+                if snapshot_dirs:
+                    # 檢查最新快照是否包含必要文件
+                    latest_snapshot = snapshot_dirs[0]
+                    required_files = ["config.json", "model.safetensors"]  # 嵌入模型必要文件
+                    embedding_model_ready = all((latest_snapshot / f).exists() for f in required_files)
+        
+        # 檢查是否有下載進程
+        downloading = False
+        try:
+            import psutil
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                if proc.info['cmdline'] and any('transformers' in str(cmd) or 'sentence-transformers' in str(cmd) for cmd in proc.info['cmdline']):
+                    downloading = True
+                    break
+        except:
+            pass
+        
+        models_ready = language_model_ready and embedding_model_ready
+        
+        return {
+            "ready": models_ready,
+            "downloading": downloading,
+            "language_model_ready": language_model_ready,
+            "embedding_model_ready": embedding_model_ready,
+            "progress": "下載中..." if downloading else "就緒" if models_ready else "待下載"
+        }
+        
+    except Exception as e:
+        logger.error(f"檢查模型狀態失敗: {str(e)}")
+        return {
+            "ready": False,
+            "downloading": False,
+            "error": str(e)
+        }
+
+class ModelDownloadRequest(BaseModel):
+    language_model: str
+    embedding_model: str
+    inference_engine: Optional[str] = "transformers"
+
+@app.post("/api/download-models")
+async def download_models(request: ModelDownloadRequest):
+    """預先下載指定的模型"""
+    try:
+        from utils.model_manager import get_model_manager
+        
+        logger.info(f"開始下載模型: 語言模型={request.language_model}, 嵌入模型={request.embedding_model}, 推理引擎={request.inference_engine}")
+        
+        model_manager = get_model_manager()
+        
+        # 下載結果追蹤
+        language_model_success = False
+        embedding_model_success = False
+        errors = []
+        
+        # 下載語言模型
+        logger.info(f"下載語言模型: {request.language_model}")
+        try:
+            # 清理模型緩存以確保使用最新的模型管理器
+            model_manager.clear_cache("llm")
+            llm_model = model_manager.get_llm_model(request.language_model)
+            logger.info(f"語言模型下載完成: {request.language_model}")
+            language_model_success = True
+        except Exception as e:
+            error_msg = f"語言模型下載失敗: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+        
+        # 下載嵌入模型
+        logger.info(f"下載嵌入模型: {request.embedding_model}")
+        try:
+            embedding_model = model_manager.get_embedding_model(request.embedding_model)
+            logger.info(f"嵌入模型下載完成: {request.embedding_model}")
+            embedding_model_success = True
+        except Exception as e:
+            error_msg = f"嵌入模型下載失敗: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+        
+        # 檢查下載結果
+        if not language_model_success and not embedding_model_success:
+            raise HTTPException(status_code=500, detail=f"所有模型下載失敗: {'; '.join(errors)}")
+        elif not embedding_model_success:
+            raise HTTPException(status_code=500, detail=f"嵌入模型下載失敗: {errors[-1]}")
+        elif not language_model_success:
+            # 嵌入模型成功，語言模型失敗 - 部分成功
+            logger.warning(f"語言模型下載失敗，但嵌入模型成功: {errors[0]}")
+            return {
+                "success": True,
+                "message": "嵌入模型下載完成，語言模型下載失敗",
+                "language_model": request.language_model,
+                "embedding_model": request.embedding_model,
+                "warnings": errors
+            }
+        
+        return {
+            "success": True,
+            "message": "模型下載完成",
+            "language_model": request.language_model,
+            "embedding_model": request.embedding_model
+        }
+        
+    except Exception as e:
+        logger.error(f"模型下載失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"模型下載失敗: {str(e)}")
+
+@app.post("/api/reload-model-manager")
+async def reload_model_manager():
+    """重新載入模型管理器 - 清理緩存"""
+    try:
+        from utils.model_manager import get_model_manager
+        
+        model_manager = get_model_manager()
+        model_manager.reload_model_manager()
+        
+        return {
+            "success": True,
+            "message": "模型管理器已重新載入"
+        }
+        
+    except Exception as e:
+        logger.error(f"重新載入模型管理器失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"重新載入失敗: {str(e)}")
+
+@app.post("/api/simple-download")
+async def simple_download():
+    """簡化的模型下載端點 - 測試用"""
+    try:
+        logger.info("簡化下載端點被調用")
+        return {
+            "success": True,
+            "message": "簡化下載端點正常工作"
+        }
+    except Exception as e:
+        logger.error(f"簡化下載失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"下載失敗: {str(e)}")
+
+@app.get("/api/test-model-download")
+async def test_model_download():
+    """測試模型下載功能 - 使用最小的模型"""
+    try:
+        from utils.model_manager import get_model_manager
+        
+        model_manager = get_model_manager()
+        
+        # 測試下載多語言嵌入模型
+        test_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        logger.info(f"測試下載模型: {test_model}")
+        
+        embedding_model = model_manager.get_embedding_model(test_model)
+        
+        return {
+            "success": True,
+            "message": f"測試模型 {test_model} 下載成功",
+            "model": test_model
+        }
+        
+    except Exception as e:
+        logger.error(f"測試模型下載失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"測試下載失敗: {str(e)}")
 
 @app.get("/api/supported-languages")
 async def get_supported_languages_endpoint():
@@ -1504,6 +1818,70 @@ async def list_files():
     except Exception as e:
         logger.error(f"獲取文件列表時出錯: {str(e)}")
         raise HTTPException(status_code=500, detail=f"獲取文件列表時出錯: {str(e)}")
+
+# 配置更新端點
+class ConfigUpdateRequest(BaseModel):
+    platform: str
+    language_model: Optional[str] = None
+    embedding_model: Optional[str] = None
+    inference_engine: Optional[str] = "transformers"
+    rag_mode: Optional[str] = "traditional"
+    language: Optional[str] = "dynamic"
+    setup_completed: bool = True
+
+@app.post("/api/config/update")
+async def update_config(config: ConfigUpdateRequest):
+    """更新系統配置"""
+    try:
+        # 保存配置到文件
+        config_file = Path("config/user_setup.json")
+        config_file.parent.mkdir(exist_ok=True)
+        
+        config_data = config.dict()
+        
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config_data, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"配置已更新: {config_data}")
+        
+        return {
+            "success": True,
+            "message": "配置更新成功",
+            "config": config_data
+        }
+        
+    except Exception as e:
+        logger.error(f"更新配置失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"更新配置失敗: {str(e)}")
+
+@app.get("/api/config/current")
+async def get_current_config():
+    """獲取當前配置"""
+    try:
+        config_file = Path("config/user_setup.json")
+        
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        else:
+            config = {
+                "platform": "huggingface",
+                "language_model": None,
+                "embedding_model": None,
+                "inference_engine": "transformers",
+                "rag_mode": "traditional",
+                "language": "dynamic",
+                "setup_completed": False
+            }
+        
+        return {
+            "success": True,
+            "config": config
+        }
+        
+    except Exception as e:
+        logger.error(f"獲取配置失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取配置失敗: {str(e)}")
 
 # 啟動應用
 if __name__ == "__main__":

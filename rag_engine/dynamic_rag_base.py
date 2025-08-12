@@ -1,6 +1,5 @@
 """
-Dynamic RAG Engine - 動態檢索增強生成引擎
-無需預先建立向量資料庫，查詢時即時檢索和處理文件
+Dynamic RAG Engine Base - 動態檢索增強生成引擎的基底類別
 """
 
 import os
@@ -12,14 +11,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 
 from langchain_core.documents import Document
-from langchain_ollama import OllamaEmbeddings, ChatOllama
+from utils.hf_langchain_wrapper import HuggingFaceEmbeddings, ChatHuggingFace
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import numpy as np
 
 from .interfaces import RAGEngineInterface
 from utils.file_parsers import FileParser
 from config.config import (
-    OLLAMA_HOST, MAX_TOKENS_CHUNK, CHUNK_OVERLAP,
+    MAX_TOKENS_CHUNK, CHUNK_OVERLAP,
     SUPPORTED_FILE_TYPES, Q_DRIVE_PATH
 )
 
@@ -47,6 +46,11 @@ class SmartFileRetriever:
         """
         # 更新文件緩存
         self._update_file_cache()
+
+        # 如果緩存中的文件總數很少，則直接返回所有文件
+        if len(self.file_cache) <= 50:
+            logger.info(f"Found only {len(self.file_cache)} files, processing all of them.")
+            return list(self.file_cache.keys())
         
         # 1. 關鍵詞匹配
         keyword_matches = self._match_by_keywords(query)
@@ -366,11 +370,16 @@ class DynamicContentProcessor:
 class RealTimeVectorizer:
     """即時向量化引擎"""
     
-    def __init__(self, embedding_model: str):
-        self.embeddings = OllamaEmbeddings(
-            base_url=OLLAMA_HOST,
-            model=embedding_model
-        )
+    def __init__(self, embedding_model: str, platform: str = "ollama"):
+        # 根據平台選擇嵌入模型
+        if platform == "ollama":
+            from utils.ollama_embeddings import OllamaEmbeddings
+            self.embeddings = OllamaEmbeddings(model_name=embedding_model)
+            logger.info(f"使用 Ollama 嵌入模型: {embedding_model}")
+        else: # 默認為 huggingface
+            self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
+            logger.info(f"使用 Hugging Face 嵌入模型: {embedding_model}")
+        
         self.query_cache = {}  # 查詢向量緩存
         self.cache_duration = 1800  # 30分鐘緩存
     
@@ -473,51 +482,85 @@ class RealTimeVectorizer:
             return 0.0
 
 
-class DynamicRAGEngine(RAGEngineInterface):
-    """動態RAG引擎 - 無需預先建立向量資料庫"""
+class DynamicRAGEngineBase(RAGEngineInterface):
+    """動態RAG引擎基底類別 - 包含共通邏輯"""
+
+    REWRITE_PROMPT_TEMPLATE = ""
+    ANSWER_PROMPT_TEMPLATE = ""
+    RELEVANCE_PROMPT_TEMPLATE = ""
     
-    def __init__(self, ollama_model: str, ollama_embedding_model: str, language: str = "繁體中文"):
-        # 注意：不需要document_indexer參數
+    def __init__(self, ollama_model: str, ollama_embedding_model: str, platform: str = "ollama"):
         self.ollama_model = ollama_model
         self.ollama_embedding_model = ollama_embedding_model
-        self.language = language
+        self.platform = platform
         
         # 初始化組件
         self.file_retriever = SmartFileRetriever()
         self.content_processor = DynamicContentProcessor()
-        self.vectorizer = RealTimeVectorizer(ollama_embedding_model)
+        self.vectorizer = RealTimeVectorizer(ollama_embedding_model, platform=self.platform)
         
         # 初始化語言模型
-        self.llm = ChatOllama(
-            base_url=OLLAMA_HOST,
-            model=ollama_model,
-            temperature=0.1
-        )
+        try:
+            if self.platform == "ollama":
+                from langchain_ollama import OllamaLLM
+                from config.config import OLLAMA_HOST
+                self.llm = OllamaLLM(
+                    model=ollama_model,
+                    base_url=OLLAMA_HOST,
+                    temperature=0.1
+                )
+                logger.info(f"使用 Ollama 語言模型: {ollama_model}")
+            else: # 默認為 huggingface
+                self.llm = ChatHuggingFace(
+                    model_name=ollama_model,
+                    temperature=0.1
+                )
+                logger.info(f"使用 Hugging Face 語言模型 (透過 ModelManager): {ollama_model}")
+        except ImportError:
+            logger.warning("langchain_ollama 未安裝，Ollama 模型將透過 Hugging Face 包裝器處理")
+            self.llm = ChatHuggingFace(
+                model_name=ollama_model,
+                temperature=0.1
+            )
+        except Exception as e:
+            logger.error(f"語言模型初始化失敗: {str(e)}")
+            logger.info("回退到使用 ChatHuggingFace 作為最終方案")
+            self.llm = ChatHuggingFace(
+                model_name=ollama_model,
+                temperature=0.1
+            )
+
+        # 顯式記錄最終語言與子類，避免誤解為直接使用 base
+        try:
+            logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}，語言: {self.get_language()}，引擎: {self.__class__.__name__}")
+        except Exception:
+            logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}")
         
-        logger.info(f"Dynamic RAG Engine 初始化完成 - 語言: {language}, 模型: {ollama_model}")
-    
-    def get_language(self) -> str:
-        return self.language
+        logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}")
     
     def rewrite_query(self, original_query: str) -> str:
         """查詢重寫 - 針對動態檢索優化"""
-        # 對於動態RAG，查詢重寫更注重關鍵詞提取
         try:
-            prompt = f"""
-請將以下用戶問題轉換為更適合文件檢索的關鍵詞組合。
-保持原語言，提取核心概念和相關術語。
-
-原問題: {original_query}
-
-請提供：
-1. 核心關鍵詞（2-3個）
-2. 相關術語或同義詞
-3. 可能的文件類型或分類
-
-優化後的檢索查詢:"""
+            if len(original_query.strip()) <= 3:
+                return original_query
             
+            prompt = self.REWRITE_PROMPT_TEMPLATE.format(original_query=original_query)
             response = self.llm.invoke(prompt)
-            return response.content.strip()
+            
+            rewritten_query = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+
+            if not rewritten_query or len(rewritten_query) < 2:
+                return original_query
+            
+            punctuation_count = sum(1 for char in rewritten_query if char in '，,。.！!？?；;：:')
+            if punctuation_count > len(rewritten_query) * 0.3:
+                return original_query
+            
+            if len(rewritten_query) > len(original_query) * 2:
+                return original_query
+
+            logger.info(f"優化後查詢: {rewritten_query}")
+            return rewritten_query
             
         except Exception as e:
             logger.error(f"查詢重寫失敗: {str(e)}")
@@ -526,35 +569,26 @@ class DynamicRAGEngine(RAGEngineInterface):
     def answer_question(self, question: str) -> str:
         """回答問題 - 動態RAG流程"""
         try:
-            # 1. 智能文件檢索
             logger.info(f"開始動態RAG處理: {question}")
             relevant_files = self.file_retriever.retrieve_relevant_files(question, max_files=8)
             
             if not relevant_files:
                 return self._generate_general_knowledge_answer(question)
             
-            logger.info(f"檢索到 {len(relevant_files)} 個相關文件")
-            
-            # 2. 動態內容處理
             documents = self.content_processor.process_files(relevant_files)
             
             if not documents:
                 return self._generate_general_knowledge_answer(question)
             
-            logger.info(f"處理得到 {len(documents)} 個文檔段落")
-            
-            # 3. 即時向量化和相似度計算
             query_vector = self.vectorizer.vectorize_query(question)
             doc_vectors = self.vectorizer.vectorize_documents(documents)
             similarities = self.vectorizer.calculate_similarities(query_vector, doc_vectors)
             
-            # 4. 選擇最相關的內容
             top_docs = [doc for doc, score in similarities[:5] if score > 0.3]
             
             if not top_docs:
                 return self._generate_general_knowledge_answer(question)
             
-            # 5. 生成回答
             context = self._format_context(top_docs)
             answer = self._generate_answer(question, context)
             
@@ -577,22 +611,18 @@ class DynamicRAGEngine(RAGEngineInterface):
     def _generate_answer(self, question: str, context: str) -> str:
         """生成回答"""
         try:
-            prompt = f"""你是一個專業的文檔問答助手。請根據提供的上下文信息回答用戶的問題。
-
-上下文信息:
-{context}
-
-用戶問題: {question}
-
-請提供準確、詳細的回答。如果上下文中沒有足夠信息，請明確說明。
-
-回答:"""
+            if self.llm is None:
+                return f"根據文檔內容，關於「{question}」的信息如下：\n\n{context[:500]}...\n\n注意：Dynamic RAG 語言模型暫時禁用，這是基於檢索內容的簡化回答。"
+            
+            prompt = self.ANSWER_PROMPT_TEMPLATE.format(context=context, question=question)
             
             response = self.llm.invoke(prompt)
-            return response.content.strip()
+            result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            # 嘗試確保輸出符合目標語言
+            return self._ensure_language(result)
             
         except Exception as e:
-            logger.error(f"生成回答失敗: {str(e)}")
+            logger.error(f"生成回答過程中發生錯誤: {str(e)}")
             return self._get_error_message()
     
     def _generate_general_knowledge_answer(self, question: str) -> str:
@@ -601,36 +631,101 @@ class DynamicRAGEngine(RAGEngineInterface):
     
     def generate_relevance_reason(self, question: str, doc_content: str) -> str:
         """生成相關性理由"""
-        return "基於動態檢索的相似度計算"
+        if not question or not question.strip() or not doc_content or not doc_content.strip():
+            return "無法生成相關性理由：查詢或文檔為空"
+
+        try:
+            trimmed_content = doc_content[:1000].strip()
+            prompt = self.RELEVANCE_PROMPT_TEMPLATE.format(question=question, trimmed_content=trimmed_content)
+            response = self.llm.invoke(prompt)
+            reason = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            return reason if reason else "無法確定相關性理由"
+        except Exception as e:
+            logger.error(f"生成相關性理由時出錯: {str(e)}")
+            return "生成相關性理由失敗"
+
+    def generate_batch_relevance_reasons(self, question: str, documents: List[Document]) -> List[str]:
+        """批量生成相關性理由"""
+        reasons = []
+        for doc in documents:
+            reasons.append(self.generate_relevance_reason(question, doc.page_content))
+        return reasons
     
     def _get_no_docs_message(self) -> str:
         return "未找到相關文檔"
     
     def _get_error_message(self) -> str:
-        return "處理過程中發生錯誤，請稍後再試"
+        return "生成過程中發生錯誤，請稍後再試。\n\n💡 這可能是因為模型尚未完全下載或初始化。如果您是首次使用，請等待模型下載完成後再試。\n\n建議：\n- 檢查網路連接\n- 選擇較小的模型進行測試\n- 查看系統狀態確認模型是否就緒"
     
     def _get_timeout_message(self) -> str:
         return "處理超時，請稍後再試"
     
-    # 重寫基類方法以適應動態RAG
     def retrieve_documents(self, query: str, top_k: int = 5) -> List[Document]:
         """動態檢索文檔"""
         try:
-            # 使用動態RAG流程
             relevant_files = self.file_retriever.retrieve_relevant_files(query, max_files=top_k * 2)
             documents = self.content_processor.process_files(relevant_files)
             
             if not documents:
                 return []
             
-            # 向量化和相似度計算
             query_vector = self.vectorizer.vectorize_query(query)
             doc_vectors = self.vectorizer.vectorize_documents(documents)
             similarities = self.vectorizer.calculate_similarities(query_vector, doc_vectors)
             
-            # 返回最相關的文檔
             return [doc for doc, score in similarities[:top_k] if score > 0.2]
             
         except Exception as e:
             logger.error(f"動態檢索文檔失敗: {str(e)}")
             return []
+
+    def _ensure_language(self, text: str) -> str:
+        """在必要時將輸出轉換為目標語言，確保最終回答語言一致"""
+        try:
+            target_lang = None
+            try:
+                target_lang = self.get_language()
+            except Exception:
+                target_lang = None
+
+            if not target_lang or not text or len(text) < 5:
+                return text
+
+            # 簡單語言特徵統計
+            total_len = max(1, len(text))
+            ascii_letters = sum(1 for c in text if c.isascii() and c.isalpha())
+            chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+            thai_chars = sum(1 for c in text if '\u0e00' <= c <= '\u0e7f')
+
+            ascii_ratio = ascii_letters / total_len
+            zh_ratio = chinese_chars / total_len
+            th_ratio = thai_chars / total_len
+
+            def translate(to_lang_prompt: str) -> str:
+                try:
+                    translate_prompt = f"{to_lang_prompt}\n\n———\n{text}\n———\n只輸出翻譯結果。"
+                    resp = self.llm.invoke(translate_prompt)
+                    return resp.content.strip() if hasattr(resp, 'content') else str(resp).strip()
+                except Exception:
+                    return text
+
+            if target_lang in ("繁體中文", "简体中文"):
+                # 主要為中文，若中文比例過低且英文比例高，嘗試翻譯
+                if zh_ratio < 0.20 and ascii_ratio > 0.50:
+                    return translate("請將以下內容翻譯為繁體中文") if target_lang == "繁體中文" else translate("请将以下内容翻译为简体中文")
+                return text
+
+            if target_lang == "English":
+                # 主要為英文，若英文比例過低但中文或泰文比例較高，嘗試翻譯
+                if ascii_ratio < 0.40 and (zh_ratio > 0.20 or th_ratio > 0.20):
+                    return translate("Please translate the following content into English")
+                return text
+
+            if target_lang == "ไทย":
+                if th_ratio < 0.10 and (ascii_ratio > 0.50 or zh_ratio > 0.20):
+                    return translate("โปรดแปลเนื้อหาต่อไปนี้เป็นภาษาไทย")
+                return text
+
+            return text
+        except Exception:
+            return text
