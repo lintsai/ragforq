@@ -19,7 +19,8 @@ from .interfaces import RAGEngineInterface
 from utils.file_parsers import FileParser
 from config.config import (
     MAX_TOKENS_CHUNK, CHUNK_OVERLAP,
-    SUPPORTED_FILE_TYPES, Q_DRIVE_PATH
+    SUPPORTED_FILE_TYPES, Q_DRIVE_PATH,
+    OLLAMA_REQUEST_TIMEOUT
 )
 
 logger = logging.getLogger(__name__)
@@ -507,7 +508,9 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                 self.llm = OllamaLLM(
                     model=ollama_model,
                     base_url=OLLAMA_HOST,
-                    temperature=0.1
+                    temperature=0.1,
+                    timeout=OLLAMA_REQUEST_TIMEOUT,
+                    request_timeout=OLLAMA_REQUEST_TIMEOUT
                 )
                 logger.info(f"使用 Ollama 語言模型: {ollama_model}")
             else: # 默認為 huggingface
@@ -618,8 +621,12 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             
             response = self.llm.invoke(prompt)
             result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            
+            # 檢測並修復重複內容
+            cleaned_result = self._clean_repetitive_content(result)
+            
             # 嘗試確保輸出符合目標語言
-            return self._ensure_language(result)
+            return self._ensure_language(cleaned_result)
             
         except Exception as e:
             logger.error(f"生成回答過程中發生錯誤: {str(e)}")
@@ -729,3 +736,77 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             return text
         except Exception:
             return text
+    
+    def _clean_repetitive_content(self, text: str) -> str:
+        """清理重複內容 - 通用版本"""
+        if not text:
+            return text
+        
+        # 分割成段落
+        paragraphs = text.split('\n\n')
+        cleaned_paragraphs = []
+        seen_content = set()
+        
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            
+            # 檢查是否是重複段落（使用前100個字符作為指紋）
+            fingerprint = paragraph[:100].strip()
+            if fingerprint not in seen_content:
+                seen_content.add(fingerprint)
+                cleaned_paragraphs.append(paragraph)
+            else:
+                logger.warning(f"檢測到重複段落，已移除: {fingerprint[:50]}...")
+        
+        # 重新組合
+        cleaned_text = '\n\n'.join(cleaned_paragraphs)
+        
+        # 檢查是否有句子級別的重複（根據語言選擇分隔符）
+        try:
+            target_lang = self.get_language()
+            if target_lang in ("繁體中文", "简体中文"):
+                sentences = cleaned_text.split('。')
+                separator = '。'
+            elif target_lang == "ไทย":
+                sentences = cleaned_text.split(' ')
+                separator = ' '
+            else:  # English
+                sentences = cleaned_text.split('. ')
+                separator = '. '
+        except:
+            # 如果無法獲取語言，使用通用分隔符
+            sentences = cleaned_text.split('. ')
+            separator = '. '
+        
+        cleaned_sentences = []
+        seen_sentences = set()
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            # 檢查是否是重複句子（使用前50個字符作為指紋）
+            sentence_fingerprint = sentence[:50].strip()
+            if sentence_fingerprint not in seen_sentences:
+                seen_sentences.add(sentence_fingerprint)
+                cleaned_sentences.append(sentence)
+            else:
+                logger.warning(f"檢測到重複句子，已移除: {sentence_fingerprint[:30]}...")
+        
+        final_text = separator.join(cleaned_sentences)
+        
+        # 根據語言添加適當的結尾
+        if separator == '。' and final_text and not final_text.endswith('。'):
+            final_text += '。'
+        elif separator == '. ' and final_text and not final_text.endswith('.'):
+            final_text += '.'
+        
+        # 如果清理後內容太短，返回原始內容的前500字符
+        if len(final_text.strip()) < 50:
+            logger.warning("清理後內容過短，返回原始內容的截取版本")
+            return text[:500] + "..." if len(text) > 500 else text
+        
+        return final_text

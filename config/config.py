@@ -129,6 +129,14 @@ EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "8").split("#")[0].
 # 文件索引批處理大小 - 降低以提高穩定性
 FILE_BATCH_SIZE = int(os.getenv("FILE_BATCH_SIZE", "20").split("#")[0].strip())
 
+# Ollama 超時設定
+OLLAMA_REQUEST_TIMEOUT = int(os.getenv("OLLAMA_REQUEST_TIMEOUT", "180"))  # 請求超時（秒）
+OLLAMA_EMBEDDING_TIMEOUT = int(os.getenv("OLLAMA_EMBEDDING_TIMEOUT", "120"))  # 嵌入超時（秒）
+OLLAMA_QUERY_OPTIMIZATION_TIMEOUT = int(os.getenv("OLLAMA_QUERY_OPTIMIZATION_TIMEOUT", "60"))  # 查詢優化超時（秒）
+OLLAMA_ANSWER_GENERATION_TIMEOUT = int(os.getenv("OLLAMA_ANSWER_GENERATION_TIMEOUT", "180"))  # 回答生成超時（秒）
+OLLAMA_RELEVANCE_TIMEOUT = int(os.getenv("OLLAMA_RELEVANCE_TIMEOUT", "90"))  # 相關性分析超時（秒）
+OLLAMA_CONNECTION_TIMEOUT = int(os.getenv("OLLAMA_CONNECTION_TIMEOUT", "30"))  # 連接超時（秒）
+
 # 檢查Q槽是否可訪問
 def is_q_drive_accessible() -> bool:
     """檢查Q槽是否可訪問"""

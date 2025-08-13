@@ -137,7 +137,9 @@ Answer:"""
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)
                 
-                return answer.strip()
+                # Detect and fix repetitive content
+                cleaned_answer = self._clean_repetitive_content(answer.strip())
+                return cleaned_answer
                 
             except concurrent.futures.TimeoutError:
                 logger.error("English answer generation timeout")
@@ -304,3 +306,58 @@ Relevance reasons:""",
     
     def _get_general_fallback(self, query: str) -> str:
         return f"Based on general IT knowledge, information about '{query}' may require consulting additional QSI internal documentation."
+    
+    def _clean_repetitive_content(self, text: str) -> str:
+        """Clean repetitive content"""
+        if not text:
+            return text
+        
+        # Split into paragraphs
+        paragraphs = text.split('\n\n')
+        cleaned_paragraphs = []
+        seen_content = set()
+        
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            
+            # Check for duplicate paragraphs (using first 100 characters as fingerprint)
+            fingerprint = paragraph[:100].strip()
+            if fingerprint not in seen_content:
+                seen_content.add(fingerprint)
+                cleaned_paragraphs.append(paragraph)
+            else:
+                logger.warning(f"Detected duplicate paragraph, removed: {fingerprint[:50]}...")
+        
+        # Recombine
+        cleaned_text = '\n\n'.join(cleaned_paragraphs)
+        
+        # Check for sentence-level repetition
+        sentences = cleaned_text.split('. ')
+        cleaned_sentences = []
+        seen_sentences = set()
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            # Check for duplicate sentences (using first 50 characters as fingerprint)
+            sentence_fingerprint = sentence[:50].strip()
+            if sentence_fingerprint not in seen_sentences:
+                seen_sentences.add(sentence_fingerprint)
+                cleaned_sentences.append(sentence)
+            else:
+                logger.warning(f"Detected duplicate sentence, removed: {sentence_fingerprint[:30]}...")
+        
+        final_text = '. '.join(cleaned_sentences)
+        if final_text and not final_text.endswith('.'):
+            final_text += '.'
+        
+        # If cleaned content is too short, return truncated original content
+        if len(final_text.strip()) < 50:
+            logger.warning("Cleaned content too short, returning truncated original")
+            return text[:500] + "..." if len(text) > 500 else text
+        
+        return final_text

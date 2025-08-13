@@ -57,7 +57,7 @@ def render_model_selector(api_url: str):
     
     # 根據平台顯示不同的模型選項
     if selected_platform == "huggingface":
-        render_huggingface_models(current_config)
+        render_huggingface_models(current_config, api_url)
     else:
         render_ollama_models(current_config)
     
@@ -126,42 +126,92 @@ def render_model_selector(api_url: str):
         else:
             st.sidebar.error("❌ 配置保存失敗")
 
-def render_huggingface_models(current_config: Dict[str, Any]):
+def render_huggingface_models(current_config: Dict[str, Any], api_url: str = "http://localhost:8000"):
     """渲染 Hugging Face 模型選項"""
     
-    # 語言模型
+    try:
+        # 從 API 獲取可用模型
+        response = requests.get(f"{api_url}/api/setup/models", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            models = data.get("models", {})
+            
+            # 語言模型
+            st.sidebar.markdown("#### 🤖 語言模型")
+            language_models = models.get("language_models", [])
+            
+            if language_models:
+                # 創建選項字典
+                hf_language_models = {}
+                for model in language_models:
+                    display_name = f"{model['name']} ({model['size']})"
+                    hf_language_models[model["id"]] = display_name
+                
+                selected_language_model = st.sidebar.selectbox(
+                    "選擇語言模型:",
+                    options=list(hf_language_models.keys()),
+                    format_func=lambda x: hf_language_models[x],
+                    index=0,
+                    key="hf_language_model"
+                )
+                
+                st.session_state.selected_language_model = selected_language_model
+            else:
+                st.sidebar.error("沒有找到本地語言模型")
+                st.sidebar.info("請先下載模型")
+                st.sidebar.code("hf download Qwen/Qwen2-0.5B-Instruct --cache-dir ./models/cache")
+            
+            # 嵌入模型
+            st.sidebar.markdown("#### 🔤 嵌入模型")
+            embedding_models = models.get("embedding_models", [])
+            
+            if embedding_models:
+                # 創建選項字典
+                hf_embedding_models = {}
+                for model in embedding_models:
+                    display_name = f"{model['name']} ({model['size']})"
+                    hf_embedding_models[model["id"]] = display_name
+                
+                selected_embedding_model = st.sidebar.selectbox(
+                    "選擇嵌入模型:",
+                    options=list(hf_embedding_models.keys()),
+                    format_func=lambda x: hf_embedding_models[x],
+                    index=0,
+                    key="hf_embedding_model"
+                )
+                
+                st.session_state.selected_embedding_model = selected_embedding_model
+            else:
+                st.sidebar.error("沒有找到本地嵌入模型")
+                st.sidebar.info("請先下載模型")
+                st.sidebar.code("hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
+        
+        else:
+            st.sidebar.error("無法獲取模型列表")
+            # 使用備用的硬編碼列表
+            _render_fallback_huggingface_models()
+    
+    except Exception as e:
+        st.sidebar.error(f"獲取模型列表時出錯: {str(e)}")
+        # 使用備用的硬編碼列表
+        _render_fallback_huggingface_models()
+
+def _render_fallback_huggingface_models():
+    """渲染備用的 Hugging Face 模型選項（API 失敗時）"""
     st.sidebar.markdown("#### 🤖 語言模型")
-    hf_language_models = {
-        "Qwen/Qwen2-0.5B-Instruct": "🇨🇳 Qwen2 0.5B Instruct (多語言/中文佳)",
-        "openai/gpt-oss-20b": "🏭 GPT-OSS 20B (生產環境)"
-    }
-    
-    selected_language_model = st.sidebar.selectbox(
-        "選擇語言模型:",
-        options=list(hf_language_models.keys()),
-        format_func=lambda x: hf_language_models[x],
-        index=0,
-        key="hf_language_model"
-    )
-    
-    st.session_state.selected_language_model = selected_language_model
+    st.sidebar.error("無法獲取模型列表")
+    st.sidebar.info("請先下載模型：")
+    st.sidebar.code("hf download Qwen/Qwen2-0.5B-Instruct --cache-dir ./models/cache")
     
     # 嵌入模型
     st.sidebar.markdown("#### 🔤 嵌入模型")
-    hf_embedding_models = {
-        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": "🌍 Multilingual MiniLM (278MB) - 多語言推薦",
-        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": "🚀 Multilingual MPNet (1.1GB) - 高精度多語言"
-    }
+    st.sidebar.error("無法獲取模型列表")
+    st.sidebar.info("請先下載模型：")
+    st.sidebar.code("hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
     
-    selected_embedding_model = st.sidebar.selectbox(
-        "選擇嵌入模型:",
-        options=list(hf_embedding_models.keys()),
-        format_func=lambda x: hf_embedding_models[x],
-        index=0,
-        key="hf_embedding_model"
-    )
-    
-    st.session_state.selected_embedding_model = selected_embedding_model
+    # 設置空的選擇狀態
+    st.session_state.selected_language_model = None
+    st.session_state.selected_embedding_model = None
     
     # 推理引擎
     st.sidebar.markdown("#### ⚙️ 推理引擎")

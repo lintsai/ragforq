@@ -257,35 +257,70 @@ def main():
             
             if platform_choice == "Hugging Face":
                 # 預設輕量級模型組合
-                col1, col2 = st.columns(2)
+                # 從 API 獲取可用模型
+                try:
+                    models_response = requests.get(f"{API_URL}/api/setup/models", timeout=10)
+                    if models_response.status_code == 200:
+                        models_data = models_response.json()
+                        if "error" not in models_data:
+                            models = models_data.get("models", {})
+                            language_models = models.get("language_models", [])
+                            embedding_models = models.get("embedding_models", [])
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                if language_models:
+                                    language_model_options = {}
+                                    for model in language_models:
+                                        display_name = f"{model['name']} ({model['size']})"
+                                        language_model_options[model["id"]] = display_name
+                                    
+                                    selected_language_model = st.selectbox(
+                                        "🧠 語言模型:",
+                                        options=list(language_model_options.keys()),
+                                        format_func=lambda x: language_model_options[x],
+                                        help="用於生成回答的模型",
+                                        key="simple_language_model"
+                                    )
+                                else:
+                                    st.error("沒有找到本地語言模型")
+                                    st.info("請先下載模型：")
+                                    st.code("hf download Qwen/Qwen2-0.5B-Instruct --cache-dir ./models/cache")
+                                    selected_language_model = None
+                            
+                            with col2:
+                                if embedding_models:
+                                    embedding_model_options = {}
+                                    for model in embedding_models:
+                                        display_name = f"{model['name']} ({model['size']})"
+                                        embedding_model_options[model["id"]] = display_name
+                                    
+                                    selected_embedding_model = st.selectbox(
+                                        "🔤 嵌入模型:",
+                                        options=list(embedding_model_options.keys()),
+                                        format_func=lambda x: embedding_model_options[x],
+                                        help="用於文本向量化的模型",
+                                        key="simple_embedding_model"
+                                    )
+                                else:
+                                    st.error("沒有找到本地嵌入模型")
+                                    st.info("請先下載模型：")
+                                    st.code("hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
+                                    selected_embedding_model = None
+                        else:
+                            st.error(f"獲取模型列表失敗: {models_data['error']}")
+                            selected_language_model = None
+                            selected_embedding_model = None
+                    else:
+                        st.error("無法連接到 API 服務")
+                        selected_language_model = None
+                        selected_embedding_model = None
                 
-                with col1:
-                    language_model_options = {
-                        "Qwen/Qwen2-0.5B-Instruct": "🇨🇳 Qwen2 0.5B Instruct (多語言/中文佳)",
-                        "openai/gpt-oss-20b": "🏭 GPT-OSS 20B (40GB) - 生產環境推薦"
-                    }
-                    
-                    selected_language_model = st.selectbox(
-                        "🧠 語言模型:",
-                        options=list(language_model_options.keys()),
-                        format_func=lambda x: language_model_options[x],
-                        help="用於生成回答的模型（建議優先選 Qwen 或 mT5 以獲得更佳中文/多語言輸出）",
-                        key="simple_language_model"
-                    )
-                
-                with col2:
-                    embedding_model_options = {
-                        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": "🌍 Multilingual MiniLM (278MB) - 多語言推薦",
-                        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": "Multilingual MPNet (1.1GB)"
-                    }
-                    
-                    selected_embedding_model = st.selectbox(
-                        "🔤 嵌入模型:",
-                        options=list(embedding_model_options.keys()),
-                        format_func=lambda x: embedding_model_options[x],
-                        help="用於文本向量化的模型",
-                        key="simple_embedding_model"
-                    )
+                except Exception as e:
+                    st.error(f"獲取模型列表時出錯: {str(e)}")
+                    selected_language_model = None
+                    selected_embedding_model = None
                 
                 # 推理引擎選擇
                 st.markdown("#### ⚙️ 推理引擎")
@@ -302,118 +337,9 @@ def main():
                     key="simple_inference_engine"
                 )
                 
-                # 添加 API 連接測試按鈕
-                if st.button("🔍 測試 API 連接", key="test_api_connection"):
-                    try:
-                        health_response = requests.get(f"{API_URL}/health", timeout=5)
-                        if health_response.status_code == 200:
-                            st.success(f"✅ API 連接正常: {health_response.json()}")
-                        else:
-                            st.error(f"❌ API 連接異常，狀態碼: {health_response.status_code}")
-                    except Exception as e:
-                        st.error(f"❌ API 連接失敗: {str(e)}")
-                
-                # 自動檢測模型狀態並顯示
+                # 模型選擇完成
                 if selected_language_model and selected_embedding_model:
-                    with st.expander("📊 模型狀態", expanded=False):
-                        try:
-                            status_response = requests.get(f"{API_URL}/api/model-status", 
-                                                         params={
-                                                             "language_model": selected_language_model,
-                                                             "embedding_model": selected_embedding_model
-                                                         }, timeout=3)
-                            if status_response.status_code == 200:
-                                status = status_response.json()
-                                if status.get("ready", False):
-                                    st.success("✅ 模型已就緒，可以開始使用")
-                                    # 顯示模型詳細狀態
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        if status.get("language_model_ready", False):
-                                            st.info("🧠 語言模型: ✅")
-                                        else:
-                                            st.warning("🧠 語言模型: ❌")
-                                    with col2:
-                                        if status.get("embedding_model_ready", False):
-                                            st.info("🔤 嵌入模型: ✅")
-                                        else:
-                                            st.warning("🔤 嵌入模型: ❌")
-                                elif status.get("downloading", False):
-                                    st.warning(f"🔄 下載中... {status.get('progress', '')}")
-                                    st.info("⏳ 模型下載中，請稍候...")
-                                else:
-                                    # 檢查部分模型是否已下載
-                                    language_ready = status.get("language_model_ready", False)
-                                    embedding_ready = status.get("embedding_model_ready", False)
-                                    
-                                    if language_ready and embedding_ready:
-                                        st.success("✅ 模型已就緒")
-                                    elif language_ready or embedding_ready:
-                                        st.info("⚡ 部分模型已下載")
-                                        col1, col2 = st.columns(2)
-                                        with col1:
-                                            st.info(f"🧠 語言模型: {'✅' if language_ready else '⏳'}")
-                                        with col2:
-                                            st.info(f"🔤 嵌入模型: {'✅' if embedding_ready else '⏳'}")
-                                        
-                                        # 只下載缺失的模型
-                                        if st.button("🚀 下載缺失模型", key="download_missing_models"):
-                                            with st.spinner("正在下載缺失的模型..."):
-                                                try:
-                                                    download_response = requests.post(f"{API_URL}/api/download-models", 
-                                                                                    json={
-                                                                                        "language_model": selected_language_model,
-                                                                                        "embedding_model": selected_embedding_model,
-                                                                                        "inference_engine": selected_inference_engine if platform_choice == "Hugging Face" else "transformers"
-                                                                                    }, timeout=300)
-                                                    if download_response.status_code == 200:
-                                                        st.success("✅ 模型下載完成！")
-                                                        st.rerun()
-                                                    else:
-                                                        st.error("❌ 模型下載失敗")
-                                                except Exception as e:
-                                                    st.error(f"❌ 下載錯誤: {str(e)}")
-                                    else:
-                                        st.info("💡 首次使用需要下載模型")
-                                        # 顯示模型大小信息
-                                        model_info = language_model_options.get(selected_language_model, "")
-                                        embedding_info = embedding_model_options.get(selected_embedding_model, "")
-                                        st.caption(f"語言模型: {model_info}")
-                                        st.caption(f"嵌入模型: {embedding_info}")
-                                        
-                                        if st.button("🚀 預先下載模型", key="download_all_models"):
-                                            with st.spinner("正在下載模型..."):
-                                                try:
-                                                    st.info(f"🔄 正在向 {API_URL}/api/download-models 發送請求...")
-                                                    download_response = requests.post(f"{API_URL}/api/download-models", 
-                                                                                    json={
-                                                                                        "language_model": selected_language_model,
-                                                                                        "embedding_model": selected_embedding_model
-                                                                                    }, timeout=300)
-                                                    
-                                                    st.info(f"📡 收到響應，狀態碼: {download_response.status_code}")
-                                                    
-                                                    if download_response.status_code == 200:
-                                                        result = download_response.json()
-                                                        st.success("✅ 模型下載完成！")
-                                                        st.json(result)  # 顯示詳細結果
-                                                        st.rerun()
-                                                    else:
-                                                        error_detail = download_response.text
-                                                        st.error(f"❌ 模型下載失敗 (狀態碼: {download_response.status_code})")
-                                                        st.error(f"錯誤詳情: {error_detail}")
-                                                except requests.exceptions.Timeout:
-                                                    st.error("❌ 下載超時 (5分鐘)")
-                                                except requests.exceptions.ConnectionError:
-                                                    st.error("❌ 無法連接到 API 服務")
-                                                except Exception as e:
-                                                    st.error(f"❌ 下載錯誤: {str(e)}")
-                                                    import traceback
-                                                    st.error(f"詳細錯誤: {traceback.format_exc()}")
-                            else:
-                                st.info("💡 首次使用將自動下載模型")
-                        except:
-                            st.info("💡 首次使用將自動下載模型")
+                    st.success("✅ 模型選擇完成，可以開始使用")
             
             else:  # Ollama
                 st.info("🏠 使用本地 Ollama 服務")
@@ -799,17 +725,7 @@ def main():
                                         current_model_training = model['is_training']
                                         break
                                 
-                                # 顯示狀態
-                                st.markdown("### 當前選擇模型狀態")
-                                if current_model_exists:
-                                    if current_model_training:
-                                        st.warning("⏳ 該模型版本正在訓練中...")
-                                    elif current_model_has_data:
-                                        st.success("✅ 該模型版本已有向量數據，可進行增量訓練或重新索引")
-                                    else:
-                                        st.info("📝 該模型版本已創建但無數據，可進行初始訓練")
-                                else:
-                                    st.info("🆕 該模型版本尚未創建，將創建新的向量資料夾進行初始訓練")
+                                # 模型狀態檢查完成
                         except:
                             pass
                         
@@ -882,50 +798,7 @@ def main():
                 except Exception as e:
                     st.error(f"獲取模型列表失敗: {e}")
             
-                # 向量模型狀態
-                st.markdown("---")
-                st.subheader("📊 向量模型狀態")
-                
-                try:
-                    vector_models_resp = requests.get(f"{API_URL}/api/vector-models", timeout=10)
-                    if vector_models_resp.status_code == 200:
-                        vector_models = vector_models_resp.json()
-                        
-                        if vector_models:
-                            for model in vector_models:
-                                with st.expander(f"📁 {model['display_name']}", expanded=False):
-                                    col1, col2, col3 = st.columns(3)
-                                    
-                                    with col1:
-                                        if model['has_data']:
-                                            st.success("✅ 有數據")
-                                        else:
-                                            st.warning("⚠️ 無數據")
-                                    
-                                    with col2:
-                                        if model['is_training']:
-                                            st.warning("⏳ 訓練中")
-                                        else:
-                                            st.success("✅ 可用")
-                                    
-                                    with col3:
-                                        if model['has_data'] and not model['is_training']:
-                                            st.success("🟢 可問答")
-                                        else:
-                                            st.error("🔴 不可問答")
-                                    
-                                    if model['model_info']:
-                                        st.write(f"**語言模型:** {model['model_info'].get('OLLAMA_MODEL', '未知')}")
-                                        st.write(f"**嵌入模型:** {model['model_info'].get('OLLAMA_EMBEDDING_MODEL', '未知')}")
-                                    
-                                    st.write(f"**文件夾:** {model['folder_name']}")
-                        else:
-                            st.info("尚無向量模型")
-                    else:
-                        st.error("無法獲取向量模型狀態")
-                except Exception as e:
-                    st.error(f"獲取向量模型狀態失敗: {e}")
-                
+
 
                 
                 # 鎖定狀態管理
@@ -1336,18 +1209,7 @@ def main():
                         else:
                                     st.warning("沒有可用於內容維護的模型（需要有數據且未在訓練中）")
                                     
-                                    # 顯示所有模型的狀態
-                                    if vector_models:
-                                        st.subheader("📊 所有模型狀態")
-                                        for model in vector_models:
-                                            status_text = []
-                                            if not model['has_data']:
-                                                status_text.append("無數據")
-                                            if model['is_training']:
-                                                status_text.append("訓練中")
-                                            
-                                            status_str = f" ({', '.join(status_text)})" if status_text else " (可用)"
-                                            st.write(f"- {model['display_name']}{status_str}")
+                                    # 模型狀態檢查完成
                     else:
                         st.error("無法獲取向量模型列表")
                 except Exception as e:

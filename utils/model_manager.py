@@ -157,6 +157,10 @@ class ModelManager:
                         "device_map": "auto",
                         "low_cpu_mem_usage": True,
                     })
+
+                if "gpt-oss-20b" in model_name.lower():
+                    logger.info(f"{model_name} 是 Mxfp4 量化模型，移除 quantization_config 參數以避免衝突")
+                    model_kwargs.pop("quantization_config", None)
                 
                 # 根據模型類型選擇正確的 AutoModel 類
                 if model_type == "seq2seq":

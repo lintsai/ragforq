@@ -28,6 +28,46 @@ from utils.setup_flow_manager import get_setup_flow_manager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 讓 Docker 情境下（直接以 uvicorn 啟動）也會輸出到 logs/app.log
+def _configure_file_logging():
+    try:
+        # 確保日誌目錄存在
+        from config.config import LOGS_DIR  # 已在上方導入，但保留以利靜態掃描
+        logs_dir_path = Path(LOGS_DIR)
+        logs_dir_path.mkdir(parents=True, exist_ok=True)
+
+        log_file = logs_dir_path / "app.log"
+
+        # 檢查是否已經有指向 app.log 的處理器，避免重複寫入
+        root_logger = logging.getLogger()
+        for h in root_logger.handlers:
+            if isinstance(h, logging.FileHandler):
+                try:
+                    if hasattr(h, 'baseFilename') and str(h.baseFilename).endswith(str(log_file)):
+                        return
+                except Exception:
+                    pass
+
+        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+
+        # 掛到 root，讓所有子 logger（含 uvicorn）也能寫入
+        root_logger.addHandler(file_handler)
+
+        # 明確掛到 uvicorn 相關 logger，以防其自有設定不經過 root
+        for name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
+            uv_logger = logging.getLogger(name)
+            uv_logger.propagate = True
+            uv_logger.addHandler(file_handler)
+
+        root_logger.setLevel(logging.INFO)
+    except Exception as e:
+        # 僅記錄，不阻斷服務啟動
+        logger.warning(f"設定檔案日誌處理器失敗: {e}")
+
+_configure_file_logging()
+
 # 創建FastAPI應用
 app = FastAPI(
     title="Q槽文件智能助手 API",
@@ -1593,202 +1633,7 @@ async def health_check():
     """健康檢查端點"""
     return {"status": "healthy", "timestamp": "2025-08-12", "api_version": "1.0.0"}
 
-@app.get("/api/model-status")
-async def get_model_status(language_model: str, embedding_model: str):
-    """檢查指定模型的狀態 - Web 應用即時檢查"""
-    try:
-        from config.config import HF_MODEL_CACHE_DIR
-        from pathlib import Path
-        
-        # 檢查模型緩存目錄
-        cache_dir = Path(HF_MODEL_CACHE_DIR)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 檢查語言模型 - 使用正確的 Hugging Face 緩存格式
-        language_model_path = cache_dir / f"models--{language_model.replace('/', '--')}"
-        language_model_ready = False
-        if language_model_path.exists():
-            snapshots_dir = language_model_path / "snapshots"
-            if snapshots_dir.exists():
-                # 檢查是否有完整的快照目錄
-                snapshot_dirs = [d for d in snapshots_dir.iterdir() if d.is_dir()]
-                if snapshot_dirs:
-                    # 檢查最新快照是否包含必要文件
-                    latest_snapshot = snapshot_dirs[0]
-                    # 檢查 config.json 和模型權重文件
-                    has_config = (latest_snapshot / "config.json").exists()
-                    has_weights = (latest_snapshot / "model.safetensors").exists() or \
-                                  (latest_snapshot / "pytorch_model.bin").exists()
-                    language_model_ready = has_config and has_weights
-        
-        # 檢查嵌入模型 - 使用正確的 Hugging Face 緩存格式
-        embedding_model_path = cache_dir / f"models--{embedding_model.replace('/', '--')}"
-        embedding_model_ready = False
-        if embedding_model_path.exists():
-            snapshots_dir = embedding_model_path / "snapshots"
-            if snapshots_dir.exists():
-                # 檢查是否有完整的快照目錄
-                snapshot_dirs = [d for d in snapshots_dir.iterdir() if d.is_dir()]
-                if snapshot_dirs:
-                    # 檢查最新快照是否包含必要文件
-                    latest_snapshot = snapshot_dirs[0]
-                    required_files = ["config.json", "model.safetensors"]  # 嵌入模型必要文件
-                    embedding_model_ready = all((latest_snapshot / f).exists() for f in required_files)
-        
-        # 檢查是否有下載進程
-        downloading = False
-        try:
-            import psutil
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                if proc.info['cmdline'] and any('transformers' in str(cmd) or 'sentence-transformers' in str(cmd) for cmd in proc.info['cmdline']):
-                    downloading = True
-                    break
-        except:
-            pass
-        
-        models_ready = language_model_ready and embedding_model_ready
-        
-        return {
-            "ready": models_ready,
-            "downloading": downloading,
-            "language_model_ready": language_model_ready,
-            "embedding_model_ready": embedding_model_ready,
-            "progress": "下載中..." if downloading else "就緒" if models_ready else "待下載"
-        }
-        
-    except Exception as e:
-        logger.error(f"檢查模型狀態失敗: {str(e)}")
-        return {
-            "ready": False,
-            "downloading": False,
-            "error": str(e)
-        }
-
-class ModelDownloadRequest(BaseModel):
-    language_model: str
-    embedding_model: str
-    inference_engine: Optional[str] = "transformers"
-
-@app.post("/api/download-models")
-async def download_models(request: ModelDownloadRequest):
-    """預先下載指定的模型"""
-    try:
-        from utils.model_manager import get_model_manager
-        
-        logger.info(f"開始下載模型: 語言模型={request.language_model}, 嵌入模型={request.embedding_model}, 推理引擎={request.inference_engine}")
-        
-        model_manager = get_model_manager()
-        
-        # 下載結果追蹤
-        language_model_success = False
-        embedding_model_success = False
-        errors = []
-        
-        # 下載語言模型
-        logger.info(f"下載語言模型: {request.language_model}")
-        try:
-            # 清理模型緩存以確保使用最新的模型管理器
-            model_manager.clear_cache("llm")
-            llm_model = model_manager.get_llm_model(request.language_model)
-            logger.info(f"語言模型下載完成: {request.language_model}")
-            language_model_success = True
-        except Exception as e:
-            error_msg = f"語言模型下載失敗: {str(e)}"
-            logger.error(error_msg)
-            errors.append(error_msg)
-        
-        # 下載嵌入模型
-        logger.info(f"下載嵌入模型: {request.embedding_model}")
-        try:
-            embedding_model = model_manager.get_embedding_model(request.embedding_model)
-            logger.info(f"嵌入模型下載完成: {request.embedding_model}")
-            embedding_model_success = True
-        except Exception as e:
-            error_msg = f"嵌入模型下載失敗: {str(e)}"
-            logger.error(error_msg)
-            errors.append(error_msg)
-        
-        # 檢查下載結果
-        if not language_model_success and not embedding_model_success:
-            raise HTTPException(status_code=500, detail=f"所有模型下載失敗: {'; '.join(errors)}")
-        elif not embedding_model_success:
-            raise HTTPException(status_code=500, detail=f"嵌入模型下載失敗: {errors[-1]}")
-        elif not language_model_success:
-            # 嵌入模型成功，語言模型失敗 - 部分成功
-            logger.warning(f"語言模型下載失敗，但嵌入模型成功: {errors[0]}")
-            return {
-                "success": True,
-                "message": "嵌入模型下載完成，語言模型下載失敗",
-                "language_model": request.language_model,
-                "embedding_model": request.embedding_model,
-                "warnings": errors
-            }
-        
-        return {
-            "success": True,
-            "message": "模型下載完成",
-            "language_model": request.language_model,
-            "embedding_model": request.embedding_model
-        }
-        
-    except Exception as e:
-        logger.error(f"模型下載失敗: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"模型下載失敗: {str(e)}")
-
-@app.post("/api/reload-model-manager")
-async def reload_model_manager():
-    """重新載入模型管理器 - 清理緩存"""
-    try:
-        from utils.model_manager import get_model_manager
-        
-        model_manager = get_model_manager()
-        model_manager.reload_model_manager()
-        
-        return {
-            "success": True,
-            "message": "模型管理器已重新載入"
-        }
-        
-    except Exception as e:
-        logger.error(f"重新載入模型管理器失敗: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"重新載入失敗: {str(e)}")
-
-@app.post("/api/simple-download")
-async def simple_download():
-    """簡化的模型下載端點 - 測試用"""
-    try:
-        logger.info("簡化下載端點被調用")
-        return {
-            "success": True,
-            "message": "簡化下載端點正常工作"
-        }
-    except Exception as e:
-        logger.error(f"簡化下載失敗: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"下載失敗: {str(e)}")
-
-@app.get("/api/test-model-download")
-async def test_model_download():
-    """測試模型下載功能 - 使用最小的模型"""
-    try:
-        from utils.model_manager import get_model_manager
-        
-        model_manager = get_model_manager()
-        
-        # 測試下載多語言嵌入模型
-        test_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-        logger.info(f"測試下載模型: {test_model}")
-        
-        embedding_model = model_manager.get_embedding_model(test_model)
-        
-        return {
-            "success": True,
-            "message": f"測試模型 {test_model} 下載成功",
-            "model": test_model
-        }
-        
-    except Exception as e:
-        logger.error(f"測試模型下載失敗: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"測試下載失敗: {str(e)}")
+# 移除了多餘的模型狀態檢測和下載端點
 
 @app.get("/api/supported-languages")
 async def get_supported_languages_endpoint():

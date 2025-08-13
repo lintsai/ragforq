@@ -138,7 +138,9 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)
                 
-                return answer.strip()
+                # 檢測並修復重複內容
+                cleaned_answer = self._clean_repetitive_content(answer.strip())
+                return cleaned_answer
                 
             except concurrent.futures.TimeoutError:
                 logger.error("简体中文回答生成超时")
@@ -305,3 +307,58 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
     
     def _get_general_fallback(self, query: str) -> str:
         return f"根据一般IT知识，关于「{query}」的相关信息可能需要查阅更多QSI内部文档。"
+    
+    def _clean_repetitive_content(self, text: str) -> str:
+        """清理重复内容"""
+        if not text:
+            return text
+        
+        # 分割成段落
+        paragraphs = text.split('\n\n')
+        cleaned_paragraphs = []
+        seen_content = set()
+        
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            
+            # 检查是否是重复段落（使用前100个字符作为指纹）
+            fingerprint = paragraph[:100].strip()
+            if fingerprint not in seen_content:
+                seen_content.add(fingerprint)
+                cleaned_paragraphs.append(paragraph)
+            else:
+                logger.warning(f"检测到重复段落，已移除: {fingerprint[:50]}...")
+        
+        # 重新组合
+        cleaned_text = '\n\n'.join(cleaned_paragraphs)
+        
+        # 检查是否有句子级别的重复
+        sentences = cleaned_text.split('。')
+        cleaned_sentences = []
+        seen_sentences = set()
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            # 检查是否是重复句子（使用前50个字符作为指纹）
+            sentence_fingerprint = sentence[:50].strip()
+            if sentence_fingerprint not in seen_sentences:
+                seen_sentences.add(sentence_fingerprint)
+                cleaned_sentences.append(sentence)
+            else:
+                logger.warning(f"检测到重复句子，已移除: {sentence_fingerprint[:30]}...")
+        
+        final_text = '。'.join(cleaned_sentences)
+        if final_text and not final_text.endswith('。'):
+            final_text += '。'
+        
+        # 如果清理后内容太短，返回原始内容的前500字符
+        if len(final_text.strip()) < 50:
+            logger.warning("清理后内容过短，返回原始内容的截取版本")
+            return text[:500] + "..." if len(text) > 500 else text
+        
+        return final_text

@@ -168,7 +168,12 @@ class RAGEngineInterface(ABC):
         
         # 基於檢索到的文檔生成回答
         context = self.format_context(docs)
-        answer = self._generate_answer(question, context) if hasattr(self, '_generate_answer') else self.answer_question(question)
+        # 避免遞迴調用：如果子類有自定義的 _generate_answer 方法，使用它；否則直接使用基本回答
+        if hasattr(self, '_generate_answer') and self._generate_answer != RAGEngineInterface._generate_answer:
+            answer = self._generate_answer(question, context)
+        else:
+            # 這裡不能調用 answer_question，因為會造成遞迴
+            answer = f"根據提供的文檔內容：\n\n{context[:500]}..."
         
         sources = self.format_sources(docs)
         return answer, sources, docs
@@ -194,7 +199,12 @@ class RAGEngineInterface(ABC):
         
         # 基於檢索到的文檔生成回答
         context = self.format_context(docs)
-        answer = self._generate_answer(original_query, context) if hasattr(self, '_generate_answer') else self.answer_question(original_query)
+        # 避免遞迴調用：如果子類有自定義的 _generate_answer 方法，使用它；否則直接使用基本回答
+        if hasattr(self, '_generate_answer') and self._generate_answer != RAGEngineInterface._generate_answer:
+            answer = self._generate_answer(original_query, context)
+        else:
+            # 這裡不能調用 answer_question，因為會造成遞迴
+            answer = f"根據提供的文檔內容：\n\n{context[:500]}..."
         
         sources = self.format_sources(docs)
         return answer, sources, docs, rewritten_query
@@ -239,5 +249,5 @@ class RAGEngineInterface(ABC):
         Returns:
             生成的回答
         """
-        # 默認實現：直接調用answer_question
-        return self.answer_question(question)
+        # 默認實現：基於上下文提供簡單回答，避免遞迴調用 answer_question
+        return f"根據提供的文檔內容，關於「{question}」的相關信息如下：\n\n{context[:500]}..."

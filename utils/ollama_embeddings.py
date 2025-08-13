@@ -6,7 +6,7 @@ import logging
 import requests
 import numpy as np
 from typing import List, Union
-from config.config import OLLAMA_HOST
+from config.config import OLLAMA_HOST, OLLAMA_EMBEDDING_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class OllamaEmbeddings:
                     "model": self.model_name,
                     "prompt": text
                 },
-                timeout=30
+                timeout=OLLAMA_EMBEDDING_TIMEOUT
             )
             response.raise_for_status()
             

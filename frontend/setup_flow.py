@@ -174,7 +174,9 @@ def render_model_selection(api_url: str) -> bool:
         language_models = models.get("language_models", [])
         
         if not language_models:
-            st.error("沒有可用的語言模型")
+            st.error("沒有找到本地語言模型")
+            st.info("請先下載模型到 `models/cache` 目錄：")
+            st.code("hf download Qwen/Qwen2-0.5B-Instruct --cache-dir ./models/cache")
             return False
         
         # 創建語言模型選項
@@ -183,9 +185,6 @@ def render_model_selection(api_url: str) -> bool:
         
         for model in language_models:
             display_name = f"{model['name']} ({model['size']})"
-            if model.get("recommended"):
-                display_name = f"⭐ {display_name}"
-            
             language_model_options.append(display_name)
             language_model_map[display_name] = model["id"]
         
@@ -208,6 +207,9 @@ def render_model_selection(api_url: str) -> bool:
                 st.markdown(f"**描述**: {selected_model_info.get('description', 'N/A')}")
                 st.markdown(f"**大小**: {selected_model_info.get('size', 'N/A')}")
                 
+                if selected_model_info.get("path"):
+                    st.markdown(f"**本地路徑**: `{selected_model_info['path']}`")
+                
                 if selected_model_info.get("requirements"):
                     st.markdown("**硬體需求**:")
                     for key, value in selected_model_info["requirements"].items():
@@ -218,7 +220,9 @@ def render_model_selection(api_url: str) -> bool:
         embedding_models = models.get("embedding_models", [])
         
         if not embedding_models:
-            st.error("沒有可用的嵌入模型")
+            st.error("沒有找到本地嵌入模型")
+            st.info("請先下載模型到 `models/cache` 目錄：")
+            st.code("hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
             return False
         
         # 創建嵌入模型選項
@@ -227,9 +231,6 @@ def render_model_selection(api_url: str) -> bool:
         
         for model in embedding_models:
             display_name = f"{model['name']} ({model['size']})"
-            if model.get("recommended"):
-                display_name = f"⭐ {display_name}"
-            
             embedding_model_options.append(display_name)
             embedding_model_map[display_name] = model["id"]
         
@@ -251,6 +252,9 @@ def render_model_selection(api_url: str) -> bool:
             with st.expander("嵌入模型詳細信息", expanded=False):
                 st.markdown(f"**描述**: {selected_embedding_info.get('description', 'N/A')}")
                 st.markdown(f"**大小**: {selected_embedding_info.get('size', 'N/A')}")
+                
+                if selected_embedding_info.get("path"):
+                    st.markdown(f"**本地路徑**: `{selected_embedding_info['path']}`")
                 
                 if selected_embedding_info.get("languages"):
                     st.markdown(f"**支援語言**: {', '.join(selected_embedding_info['languages'])}")

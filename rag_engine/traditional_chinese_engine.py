@@ -13,6 +13,11 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from utils.hf_langchain_wrapper import HuggingFaceLLM, ChatHuggingFace
+from config.config import (
+    OLLAMA_QUERY_OPTIMIZATION_TIMEOUT, 
+    OLLAMA_ANSWER_GENERATION_TIMEOUT, 
+    OLLAMA_RELEVANCE_TIMEOUT
+)
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -75,7 +80,7 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_invoke_rewrite)
                 try:
-                    optimized_query = future.result(timeout=15)
+                    optimized_query = future.result(timeout=OLLAMA_QUERY_OPTIMIZATION_TIMEOUT)
                     logger.info(f"繁體中文查詢優化: {original_query} -> {optimized_query}")
                     return optimized_query.strip()
                 except concurrent.futures.TimeoutError:
@@ -140,12 +145,14 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_invoke)
             try:
-                answer = future.result(timeout=60)
+                answer = future.result(timeout=OLLAMA_ANSWER_GENERATION_TIMEOUT)
                 
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)
                 
-                return answer.strip()
+                # 檢測並修復重複內容
+                cleaned_answer = self._clean_repetitive_content(answer.strip())
+                return cleaned_answer
                 
             except concurrent.futures.TimeoutError:
                 logger.error("繁體中文回答生成超時")
@@ -185,7 +192,7 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_invoke_relevance)
                 try:
-                    reason = future.result(timeout=20)
+                    reason = future.result(timeout=OLLAMA_RELEVANCE_TIMEOUT)
                     return reason.strip() if reason else "無法確定相關性理由"
                 except concurrent.futures.TimeoutError:
                     return "生成相關性理由超時"
@@ -229,7 +236,7 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_invoke_general)
                 try:
-                    answer = future.result(timeout=30)
+                    answer = future.result(timeout=OLLAMA_ANSWER_GENERATION_TIMEOUT)
                     # 添加免責聲明
                     disclaimer = "\n\n※ 注意：以上回答基於一般IT常識，非來自QSI內部文檔。如需準確資訊，請聯繫相關部門。"
                     return answer.strip() + disclaimer
@@ -286,7 +293,7 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_invoke_batch)
                 try:
-                    batch_result = future.result(timeout=25)
+                    batch_result = future.result(timeout=OLLAMA_RELEVANCE_TIMEOUT)
                     
                     # 解析批量結果
                     reasons = []
@@ -314,3 +321,58 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
     
     def _get_general_fallback(self, query: str) -> str:
         return f"根據一般IT知識，關於「{query}」的相關信息可能需要查閱更多QSI內部文檔。"
+    
+    def _clean_repetitive_content(self, text: str) -> str:
+        """清理重複內容"""
+        if not text:
+            return text
+        
+        # 分割成段落
+        paragraphs = text.split('\n\n')
+        cleaned_paragraphs = []
+        seen_content = set()
+        
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            
+            # 檢查是否是重複段落（使用前100個字符作為指紋）
+            fingerprint = paragraph[:100].strip()
+            if fingerprint not in seen_content:
+                seen_content.add(fingerprint)
+                cleaned_paragraphs.append(paragraph)
+            else:
+                logger.warning(f"檢測到重複段落，已移除: {fingerprint[:50]}...")
+        
+        # 重新組合
+        cleaned_text = '\n\n'.join(cleaned_paragraphs)
+        
+        # 檢查是否有句子級別的重複
+        sentences = cleaned_text.split('。')
+        cleaned_sentences = []
+        seen_sentences = set()
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            # 檢查是否是重複句子（使用前50個字符作為指紋）
+            sentence_fingerprint = sentence[:50].strip()
+            if sentence_fingerprint not in seen_sentences:
+                seen_sentences.add(sentence_fingerprint)
+                cleaned_sentences.append(sentence)
+            else:
+                logger.warning(f"檢測到重複句子，已移除: {sentence_fingerprint[:30]}...")
+        
+        final_text = '。'.join(cleaned_sentences)
+        if final_text and not final_text.endswith('。'):
+            final_text += '。'
+        
+        # 如果清理後內容太短，返回原始內容的前500字符
+        if len(final_text.strip()) < 50:
+            logger.warning("清理後內容過短，返回原始內容的截取版本")
+            return text[:500] + "..." if len(text) > 500 else text
+        
+        return final_text

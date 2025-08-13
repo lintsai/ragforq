@@ -95,7 +95,7 @@ python scripts/quick_start.py
 - **記憶體需求**: ~4GB
 
 #### 標準配置（適合生產環境）
-- **語言模型**: `Qwen/Qwen2-0.5B-Instruct`
+- **語言模型**: `Qwen/Qwen2.5-0.5B-Instruct`
 - **嵌入模型**: `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`
 - **記憶體需求**: ~8GB
 

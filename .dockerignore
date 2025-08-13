@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+.gitea
+
+# Docker
+Dockerfile
+
+# Virtual Environment
+.venv
+
+# IDE/Editor specific
+.vscode
+.cursor
+.cursorignore
+
+# Python cache
+__pycache__
+
+# Large data directories that should not be in the image
+models/
+vector_db/
+logs/
+backups/
+
+# Local environment files
+.env
+.env.local
+.env.example
+
+# Test files
+test_files/
+tests/

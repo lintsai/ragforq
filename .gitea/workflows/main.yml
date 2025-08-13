@@ -47,7 +47,7 @@ jobs:
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
           
           echo "Building Docker image: ${IMAGE_NAME}"
-          docker build -t $IMAGE_NAME .
+          docker build --build-arg ENABLE_GPU=true -t $IMAGE_NAME .
           
           # 將建置好的映像保存到工作區的根目錄下，使用絕對路徑以避免混淆
           echo "Saving image to tarball..."
@@ -109,6 +109,9 @@ jobs:
             echo "-> Preparing data directories..."
             mkdir -p ~/rag_data/db
             mkdir -p ~/rag_data/documents
+            mkdir -p ~/rag_data/models
+            mkdir -p ~/rag_data/backups
+            mkdir -p ~/ragforq_logs
             mkdir -p ~/.cache/huggingface
 
             echo "-> Finding the name of the loaded image..."
@@ -120,9 +123,19 @@ jobs:
                 exit 1
             fi
 
+            echo "-> Checking GPU support on deployment server..."
+            if command -v nvidia-smi >/dev/null 2>&1; then
+                echo "-> ✅ NVIDIA GPU detected:"
+                nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null || echo "-> ⚠️ GPU info unavailable"
+                GPU_SUPPORT="--gpus all"
+            else
+                echo "-> ⚠️ No NVIDIA GPU detected, using CPU mode"
+                GPU_SUPPORT=""
+            fi
+
             echo "-> Running new container with image: ${IMAGE_TO_RUN}"
             docker run -d \
-              --gpus all \
+              $GPU_SUPPORT \
               --restart always \
               --network=host \
               --name $CONTAINER_NAME \
@@ -135,6 +148,28 @@ jobs:
               -v /mnt/winshare/MIC:/mnt/winshare/MIC \
               -e ENVIRONMENT=production \
               "${IMAGE_TO_RUN}"
+
+            echo "-> Waiting for container to start..."
+            sleep 10
+            
+            echo "-> Checking container status..."
+            if docker ps | grep -q $CONTAINER_NAME; then
+                echo "-> ✅ Container is running"
+                
+                echo "-> Checking application GPU status..."
+                docker logs $CONTAINER_NAME 2>&1 | grep -E "(GPU|CPU)" | tail -5 || echo "-> GPU status check pending..."
+                
+                echo "-> Testing API endpoint..."
+                if curl -f http://localhost:8000/ >/dev/null 2>&1; then
+                    echo "-> ✅ API is responding"
+                else
+                    echo "-> ⚠️ API not yet ready (may need more time)"
+                fi
+            else
+                echo "-> ❌ Container failed to start"
+                docker logs $CONTAINER_NAME
+                exit 1
+            fi
 
             echo "-> Cleaning up..."
             docker image prune -f

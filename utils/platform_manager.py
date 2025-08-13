@@ -12,6 +12,7 @@ from config.config import (
     INFERENCE_ENGINE, DEFAULT_LLM_MODEL, DEFAULT_EMBEDDING_MODEL,
     ENVIRONMENT
 )
+from utils.huggingface_utils import huggingface_utils
 from utils.ollama_utils import ollama_utils
 from utils.model_manager import get_model_manager
 from utils.vllm_manager import get_vllm_manager
@@ -119,72 +120,48 @@ class PlatformManager:
         return ollama_utils.check_ollama_connection()
     
     def _get_huggingface_models(self, model_type: ModelType = None) -> Dict[str, List[Dict[str, Any]]]:
-        """獲取 Hugging Face 模型列表"""
+        """獲取 Hugging Face 本地可用模型列表"""
         models = {
             "language_models": [],
             "embedding_models": []
         }
         
-        # 預定義的推薦模型
-        language_models = [
-            {
-                "id": "Qwen/Qwen2-0.5B-Instruct",
-                "name": "Qwen2 0.5B Instruct",
-                "description": "多語言/中文友善，指令遵從佳，適合 RAG",
-                "size": "0.5B",
-                "recommended": True,
-                "requirements": {
-                    "gpu_memory": "2GB+",
-                    "system_memory": "8GB+"
+        try:
+            # 獲取本地模型
+            local_models = huggingface_utils.get_local_models()
+            
+            # 分類模型
+            for model in local_models:
+                model_info = {
+                    "id": model['name'],
+                    "name": self._format_model_display_name(model['name']),
+                    "description": f"本地模型 ({model['size_formatted']})",
+                    "size": model['size_formatted'],
+                    "path": model['path'],
+                    "available": True,
+                    "local": True
                 }
-            },
-            {
-                "id": "openai/gpt-oss-20b",
-                "name": "GPT-OSS 20B",
-                "description": "生產環境推薦（需 vLLM）",
-                "size": "20B",
-                "recommended": True,
-                "requirements": {
-                    "gpu_memory": "40GB+",
-                    "system_memory": "64GB+",
-                    "inference_engine": "vLLM"
-                }
-            }
-        ]
-        
-        embedding_models = [
-            {
-                "id": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-                "name": "Multilingual MPNet Base",
-                "description": "多語言高精度嵌入模型",
-                "size": "1.1GB",
-                "recommended": True,
-                "languages": ["中文", "英文", "多語言"]
-            },
-            {
-                "id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-                "name": "Multilingual MiniLM L12",
-                "description": "多語言平衡型嵌入模型",
-                "size": "278MB",
-                "recommended": True,
-                "languages": ["中文", "英文", "多語言"]
-            },
-            {
-                "description": "輕量級快速嵌入模型（僅英文）",
-                "size": "90MB",
-                "recommended": False,
-                "languages": ["英文"],
-                "note": "不推薦用於中文環境"
-            }
-        ]
-        
-        if model_type is None or model_type == ModelType.LANGUAGE_MODEL:
-            models["language_models"] = language_models
-        
-        if model_type is None or model_type == ModelType.EMBEDDING_MODEL:
-            models["embedding_models"] = embedding_models
+                
+                if model['type'] == 'language':
+                    if model_type is None or model_type == ModelType.LANGUAGE_MODEL:
+                        models["language_models"].append(model_info)
+                elif model['type'] == 'embedding':
+                    if model_type is None or model_type == ModelType.EMBEDDING_MODEL:
+                        models["embedding_models"].append(model_info)
+            
+        except Exception as e:
+            logger.error(f"獲取 Hugging Face 模型列表時出錯: {str(e)}")
         
         return models
+    
+    def _format_model_display_name(self, model_name: str) -> str:
+        """格式化模型顯示名稱"""
+        # 移除組織名稱前綴，讓名稱更簡潔
+        if '/' in model_name:
+            return model_name.split('/')[-1]
+        return model_name
+    
+
     
     def _get_ollama_models(self, model_type: ModelType = None) -> Dict[str, List[Dict[str, Any]]]:
         """獲取 Ollama 模型列表"""

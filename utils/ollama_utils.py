@@ -6,7 +6,7 @@ Ollama API 工具函數
 import requests
 import logging
 from typing import List, Dict, Any, Optional
-from config.config import OLLAMA_HOST
+from config.config import OLLAMA_HOST, OLLAMA_CONNECTION_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class OllamaUtils:
             模型列表，每個模型包含 name, size, modified 等信息
         """
         try:
-            response = requests.get(f"{self.host}/api/tags", timeout=10)
+            response = requests.get(f"{self.host}/api/tags", timeout=OLLAMA_CONNECTION_TIMEOUT)
             response.raise_for_status()
             
             data = response.json()
@@ -88,7 +88,7 @@ class OllamaUtils:
             連接是否正常
         """
         try:
-            response = requests.get(f"{self.host}/api/tags", timeout=5)
+            response = requests.get(f"{self.host}/api/tags", timeout=OLLAMA_CONNECTION_TIMEOUT)
             return response.status_code == 200
         except:
             return False

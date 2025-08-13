@@ -172,7 +172,9 @@ class ThaiRAGEngine(RAGEngineInterface):
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)
                 
-                return answer.strip()
+                # ตรวจสอบและแก้ไขเนื้อหาที่ซ้ำกัน
+                cleaned_answer = self._clean_repetitive_content(answer.strip())
+                return cleaned_answer
                 
             except concurrent.futures.TimeoutError:
                 logger.error("Thai answer generation timeout")
@@ -339,3 +341,56 @@ class ThaiRAGEngine(RAGEngineInterface):
     
     def _get_general_fallback(self, query: str) -> str:
         return f"ตามความรู้ทั่วไปด้าน IT ข้อมูลเกี่ยวกับ '{query}' อาจต้องการการปรึกษาเอกสารภายใน QSI เพิ่มเติม"
+    
+    def _clean_repetitive_content(self, text: str) -> str:
+        """ทำความสะอาดเนื้อหาที่ซ้ำกัน"""
+        if not text:
+            return text
+        
+        # แบ่งเป็นย่อหน้า
+        paragraphs = text.split('\n\n')
+        cleaned_paragraphs = []
+        seen_content = set()
+        
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            
+            # ตรวจสอบย่อหน้าที่ซ้ำกัน (ใช้ 100 ตัวอักษรแรกเป็นลายนิ้วมือ)
+            fingerprint = paragraph[:100].strip()
+            if fingerprint not in seen_content:
+                seen_content.add(fingerprint)
+                cleaned_paragraphs.append(paragraph)
+            else:
+                logger.warning(f"ตรวจพบย่อหน้าซ้ำ ลบออกแล้ว: {fingerprint[:50]}...")
+        
+        # รวมกันใหม่
+        cleaned_text = '\n\n'.join(cleaned_paragraphs)
+        
+        # ตรวจสอบประโยคที่ซ้ำกัน
+        sentences = cleaned_text.split(' ')
+        cleaned_sentences = []
+        seen_sentences = set()
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            # ตรวจสอบประโยคที่ซ้ำกัน (ใช้ 50 ตัวอักษรแรกเป็นลายนิ้วมือ)
+            sentence_fingerprint = sentence[:50].strip()
+            if sentence_fingerprint not in seen_sentences:
+                seen_sentences.add(sentence_fingerprint)
+                cleaned_sentences.append(sentence)
+            else:
+                logger.warning(f"ตรวจพบประโยคซ้ำ ลบออกแล้ว: {sentence_fingerprint[:30]}...")
+        
+        final_text = ' '.join(cleaned_sentences)
+        
+        # หากเนื้อหาที่ทำความสะอาดแล้วสั้นเกินไป ให้คืนค่าเนื้อหาต้นฉบับที่ตัดแล้ว
+        if len(final_text.strip()) < 50:
+            logger.warning("เนื้อหาที่ทำความสะอาดแล้วสั้นเกินไป คืนค่าเนื้อหาต้นฉบับที่ตัดแล้ว")
+            return text[:500] + "..." if len(text) > 500 else text
+        
+        return final_text

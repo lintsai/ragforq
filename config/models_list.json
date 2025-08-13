@@ -1,0 +1,35 @@
+{
+  "language_models": [
+    {
+      "id": "Qwen/Qwen2-0.5B-Instruct",
+      "name": "Qwen2 0.5B Instruct",
+      "description": "多語言/中文友善，指令遵從佳，適合 RAG",
+      "size": "0.5B",
+      "recommended": true
+    },
+    {
+      "id": "openai/gpt-oss-20b",
+      "name": "GPT-OSS 20B",
+      "description": "生產環境推薦（需 vLLM）",
+      "size": "20B",
+      "recommended": true,
+      "note": "需要大量 GPU 記憶體"
+    }
+  ],
+  "embedding_models": [
+    {
+      "id": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+      "name": "Multilingual MPNet Base",
+      "description": "多語言高精度嵌入模型",
+      "size": "1.1GB",
+      "recommended": true
+    },
+    {
+      "id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "name": "Multilingual MiniLM L12",
+      "description": "多語言平衡型嵌入模型",
+      "size": "278MB",
+      "recommended": true
+    }
+  ]
+}
