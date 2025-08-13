@@ -15,8 +15,10 @@ logger = logging.getLogger(__name__)
 Q_DRIVE_PATH = os.getenv("Q_DRIVE_PATH", "Q:")
 Q_DRIVE_NETWORK_PATH = os.getenv("Q_DRIVE_NETWORK_PATH", "\\\\server\\Q")
 
-# 向量數據庫設置
+# 向量數據庫與路徑設置
 VECTOR_DB_PATH = os.path.abspath(os.getenv("VECTOR_DB_PATH", "./vector_db").split("#")[0].strip().strip('"'))
+LOGS_DIR = os.path.abspath(os.getenv("LOGS_DIR", "./logs").split("#")[0].strip().strip('"'))
+BACKUPS_DIR = os.path.abspath(os.getenv("BACKUPS_DIR", "./backups").split("#")[0].strip().strip('"'))
 
 # 文件類型設置
 SUPPORTED_FILE_TYPES = os.getenv("SUPPORTED_FILE_TYPES", ".pdf,.docx,.xlsx,.txt,.md,.pptx,.csv").split(",")

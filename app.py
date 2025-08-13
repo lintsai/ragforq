@@ -20,13 +20,13 @@ print("✅ 使用 PyTorch 作為主要深度學習框架")
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(project_root)
 
-from config.config import APP_HOST, APP_PORT, is_q_drive_accessible
+from config.config import APP_HOST, APP_PORT, is_q_drive_accessible, LOGS_DIR
 from indexer.file_crawler import FileCrawler
 from indexer.document_indexer import DocumentIndexer
 from utils.ml_optimization import initialize_ml_frameworks
 
 # 設置日誌
-logs_dir = os.path.join(project_root, 'logs')
+logs_dir = LOGS_DIR
 os.makedirs(logs_dir, exist_ok=True)
 
 logging.basicConfig(
@@ -44,8 +44,7 @@ def check_environment():
     """檢查運行環境"""
     
     # 確保logs目錄存在
-    logs_dir = os.path.join(project_root, 'logs')
-    os.makedirs(logs_dir, exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
     
     # 確保模型緩存目錄存在
     models_dir = os.path.join(project_root, 'models', 'cache')

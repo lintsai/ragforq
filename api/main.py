@@ -15,7 +15,7 @@ from scripts.monitor_indexing import get_status_text, get_progress_text, get_mon
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.config import APP_HOST, APP_PORT, is_q_drive_accessible, ADMIN_TOKEN, SELECTED_PLATFORM
+from config.config import APP_HOST, APP_PORT, is_q_drive_accessible, ADMIN_TOKEN, SELECTED_PLATFORM, LOGS_DIR, BACKUPS_DIR
 from rag_engine.rag_engine_factory import get_rag_engine_for_language, get_supported_languages, validate_language
 from indexer.document_indexer import DocumentIndexer
 from langchain_core.documents import Document
@@ -466,7 +466,7 @@ async def ask_question(request: QuestionRequest):
 async def list_logs(request: Request):
     """列出所有可用的日誌文件"""
     await check_admin(request)
-    log_dir = Path("logs")
+    log_dir = Path(LOGS_DIR)
     if not log_dir.exists():
         return []
     
@@ -482,7 +482,7 @@ async def download_log(request: Request, filename: str = Query(...)):
     if '/' in filename or '\\' in filename:
         raise HTTPException(status_code=400, detail="無效的文件名")
         
-    log_file = Path("logs") / filename
+    log_file = Path(LOGS_DIR) / filename
     
     if not log_file.exists() or not log_file.is_file():
         return PlainTextResponse("(尚無日誌)", status_code=404)
@@ -990,7 +990,7 @@ async def backup_vector_db(request: Request, backup_request: dict = Body(...)):
         import shutil
         import datetime
         
-        backup_dir = Path("backups")
+        backup_dir = Path(BACKUPS_DIR)
         backup_dir.mkdir(exist_ok=True)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

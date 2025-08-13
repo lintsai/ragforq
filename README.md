@@ -63,14 +63,7 @@ docker stop ragforq-test-container
 docker build -t ragforq-local-test .
 
 # 3. 運行開發容器
-docker run --rm -d \
-  -p 8501:8501 \
-  -p 8000:8000 \
-  --name ragforq-test-container \
-  -v D:\source\ragforq\.env.local:/app/.env \
-  -v D:\data:/q_drive_data/MIC共用文件庫/05_MIC專案 \
-  -v D:\source\ragforq\vector_db:/app/vector_db \
-  ragforq-local-test
+docker run --rm -d -p 8501:8501 -p 8000:8000 --name ragforq-test-container -v D:\source\ragforq\.env.local:/app/.env -v D:\data:/q_drive_data/MIC共用文件庫/05_MIC專案 -v D:\source\ragforq\vector_db:/app/vector_db -v D:\source\ragforq\models:/app/models -v D:\source\ragforq\backups:/app/backups -v D:\source\ragforq\logs:/app/logs ragforq-local-test
 ```
 
 ### 生產環境部署

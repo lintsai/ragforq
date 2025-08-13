@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import pytz
+from config.config import LOGS_DIR
 
 class TimezoneFormatter(logging.Formatter):
     """自定義格式化工具，以在特定時區中顯示日誌時間。"""
@@ -38,7 +39,7 @@ def setup_model_logger(model_folder_name: str):
     Args:
         model_folder_name (str): 模型的資料夾名稱，用於命名日誌文件。
     """
-    log_directory = Path("logs")
+    log_directory = Path(LOGS_DIR)
     log_directory.mkdir(exist_ok=True)
 
     log_file_path = log_directory / f"{model_folder_name}.log"

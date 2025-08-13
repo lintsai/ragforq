@@ -9,6 +9,7 @@ import subprocess
 import time
 import requests
 from pathlib import Path
+from config.config import LOGS_DIR
 
 # 添加項目根目錄到路徑
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -69,7 +70,7 @@ def check_directories():
     print("\n📁 檢查目錄結構...")
     
     required_dirs = [
-        "logs",
+        LOGS_DIR,
         "config",
         "models/cache",
         "vector_db"

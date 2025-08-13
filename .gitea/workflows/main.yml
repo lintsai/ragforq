@@ -128,6 +128,9 @@ jobs:
               --name $CONTAINER_NAME \
               -v ~/rag_data/db:/app/db \
               -v ~/rag_data/documents:/app/documents \
+              -v ~/rag_data/models:/app/models \
+              -v ~/rag_data/backups:/app/backups \
+              -v ~/ragforq_logs:/app/logs \
               -v ~/.cache/huggingface:/root/.cache/huggingface \
               -v /mnt/winshare/MIC:/mnt/winshare/MIC \
               -e ENVIRONMENT=production \
