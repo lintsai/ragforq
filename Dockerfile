@@ -50,7 +50,7 @@ RUN . .venv/bin/activate && \
 
 # Install base packages that don't change often
 RUN . .venv/bin/activate && \
-    pip install --no-cache-dir "numpy>=1.24.0,<2.0.0" && \
+    pip install --no-cache-dir "numpy>=1.24.0,<2" && \
     pip install --no-cache-dir "huggingface_hub[hf_xet]" && \
     pip install --no-cache-dir "transformers>=4.35.0"
 
@@ -77,6 +77,8 @@ RUN . .venv/bin/activate && \
             "faiss-cpu>=1.7.0"; \
     fi
 
+# Final numpy version check
+RUN . .venv/bin/activate && pip install --no-cache-dir "numpy>=1.24.0,<2" --upgrade --force-reinstall
 
 # --- Stage 2: Final Stage ---
 FROM ${FINAL_IMAGE} AS final
