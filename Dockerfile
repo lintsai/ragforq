@@ -36,31 +36,38 @@ RUN . .venv/bin/activate && pip install --no-cache-dir "numpy<2" --upgrade --for
 RUN if [ "$ENABLE_GPU" = "true" ]; then \
         echo "🔧 安裝 GPU 版本的 PyTorch 和 FAISS..."; \
         . .venv/bin/activate && pip uninstall -y torch torchvision torchaudio || true; \
-        . .venv/bin/activate && pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; \
+        . .venv/bin/activate && pip install --no-cache-dir "torch>=2.0.0" torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; \
         . .venv/bin/activate && pip uninstall -y faiss-cpu || true; \
-        . .venv/bin/activate && pip install --no-cache-dir faiss-gpu; \
+        . .venv/bin/activate && pip install --no-cache-dir "faiss-gpu>=1.8.0"; \
     else \
         echo "🔧 安裝 CPU 版本的 PyTorch 和 FAISS..."; \
-        . .venv/bin/activate && pip install --no-cache-dir torch torchvision torchaudio; \
+        . .venv/bin/activate && pip install --no-cache-dir "torch>=2.0.0" torchvision torchaudio; \
         . .venv/bin/activate && pip uninstall -y faiss-gpu || true; \
-        . .venv/bin/activate && pip install --no-cache-dir faiss-cpu; \
+        . .venv/bin/activate && pip install --no-cache-dir "faiss-cpu>=1.8.0"; \
     fi
 
 # 根據 GPU 支援安裝 vLLM（vLLM 需要 GPU）
 RUN if [ "$ENABLE_GPU" = "true" ]; then \
         echo "🚀 Installing vLLM (GPU version)..."; \
-        . .venv/bin/activate && pip install --no-cache-dir "vllm==0.5.1"; \
+        . .venv/bin/activate && pip install --no-cache-dir "vllm>=0.5.1"; \
         echo "🚀 Installing Ray (GPU version)..."; \
-        . .venv/bin/activate && pip install --no-cache-dir "ray==2.20.0"; \
+        . .venv/bin/activate && pip install --no-cache-dir "ray>=2.20.0"; \
+        echo "🔧 Installing bitsandbytes for quantization..."; \
+        . .venv/bin/activate && pip install --no-cache-dir "bitsandbytes>=0.43.2"; \
     else \
         echo "⚠️ Skipping vLLM installation (requires GPU support)"; \
+        echo "🔧 Installing bitsandbytes (CPU fallback)..."; \
+        . .venv/bin/activate && pip install --no-cache-dir "bitsandbytes>=0.43.2" || echo "⚠️ bitsandbytes installation failed (expected on CPU-only)"; \
     fi
 
 # 安裝 HuggingFace 相關依賴以支援大型模型下載
 RUN . .venv/bin/activate && pip install --no-cache-dir "huggingface_hub[hf_xet]"
-RUN . .venv/bin/activate && pip install --no-cache-dir git+https://github.com/huggingface/transformers.git
 
-RUN . .venv/bin/activate && pip install --no-cache-dir "numpy<2" --upgrade --force-reinstall
+# 確保使用與 pyproject.toml 一致的 transformers 版本
+RUN . .venv/bin/activate && pip install --no-cache-dir "transformers>=4.35.0"
+
+# 確保 numpy 版本一致
+RUN . .venv/bin/activate && pip install --no-cache-dir "numpy>=1.24.0,<2" --upgrade --force-reinstall
 
 
 # --- Stage 2: Final Stage ---

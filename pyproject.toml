@@ -44,6 +44,7 @@ aiohttp = "^3.9.1"
 pillow = "^10.0.0"
 langchain-ollama = "^0.3.6"
 bitsandbytes = "^0.43.2"
+sentencepiece = "^0.1.99"
 
 [build-system]
 requires = ["poetry-core"]

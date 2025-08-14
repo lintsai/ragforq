@@ -788,13 +788,13 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             if not sentence:
                 continue
             
-            # 檢查是否是重複句子（使用前50個字符作為指紋）
-            sentence_fingerprint = sentence[:50].strip()
-            if sentence_fingerprint not in seen_sentences:
+            # 更智能的重複檢測：只對完全相同且長度超過20字符的句子進行去重
+            sentence_fingerprint = sentence.strip()
+            if len(sentence_fingerprint) > 20 and sentence_fingerprint in seen_sentences:
+                logger.debug(f"檢測到重複句子，已移除: {sentence_fingerprint[:30]}...")
+            else:
                 seen_sentences.add(sentence_fingerprint)
                 cleaned_sentences.append(sentence)
-            else:
-                logger.warning(f"檢測到重複句子，已移除: {sentence_fingerprint[:30]}...")
         
         final_text = separator.join(cleaned_sentences)
         

@@ -147,20 +147,27 @@ class ModelManager:
                 # 大型模型特殊配置
                 if use_large_model_optimizations and self.device == "cuda":
                     logger.info(f"使用大型模型優化配置載入: {model_name}")
-                    model_kwargs.update({
-                        "quantization_config": BitsAndBytesConfig(
-                            load_in_4bit=True,
-                            bnb_4bit_compute_dtype=torch.float16,
-                            bnb_4bit_use_double_quant=True,
-                            bnb_4bit_quant_type="nf4"
-                        ),
-                        "device_map": "auto",
-                        "low_cpu_mem_usage": True,
-                    })
-
-                if "gpt-oss-20b" in model_name.lower():
-                    logger.info(f"{model_name} 是 Mxfp4 量化模型，移除 quantization_config 參數以避免衝突")
-                    model_kwargs.pop("quantization_config", None)
+                    
+                    # 檢查是否為預量化模型
+                    if "gpt-oss-20b" in model_name.lower():
+                        logger.info(f"{model_name} 是 Mxfp4 量化模型，使用專用配置")
+                        model_kwargs.update({
+                            "device_map": "auto",
+                            "low_cpu_mem_usage": True,
+                            "torch_dtype": torch.float16,
+                            "max_memory": {0: "6GB", "cpu": "8GB"},  # 限制 GPU 記憶體使用
+                        })
+                    else:
+                        model_kwargs.update({
+                            "quantization_config": BitsAndBytesConfig(
+                                load_in_4bit=True,
+                                bnb_4bit_compute_dtype=torch.float16,
+                                bnb_4bit_use_double_quant=True,
+                                bnb_4bit_quant_type="nf4"
+                            ),
+                            "device_map": "auto",
+                            "low_cpu_mem_usage": True,
+                        })
                 
                 # 根據模型類型選擇正確的 AutoModel 類
                 if model_type == "seq2seq":
