@@ -12,8 +12,8 @@ FROM ${BUILDER_IMAGE} AS builder
 ARG ENABLE_GPU
 
 # Set TERM environment variable and prevent interactive prompts during build
-ENV TERM=xterm 
-    DEBIAN_FRONTEND=noninteractive
+ENV TERM=xterm
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies. This list is compatible with both base images.
 # The NVIDIA image is Ubuntu-based, python:slim is Debian-based. Both use apt-get.
