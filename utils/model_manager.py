@@ -160,7 +160,7 @@ class ModelManager:
                         model_kwargs.update({
                             "device_map": "auto",
                             "low_cpu_mem_usage": True,
-                            "torch_dtype": torch.float16,
+                            "torch_dtype": torch.bfloat16,
                             "max_memory": {0: "6GB", "cpu": "8GB"},  # 限制 GPU 記憶體使用
                         })
                     else:
