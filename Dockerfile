@@ -65,8 +65,7 @@ RUN . .venv/bin/activate && \
         pip install --no-cache-dir \
             "faiss-gpu>=1.7.0" \
             "bitsandbytes>=0.43.2" \
-            "triton>=2.1.0,<3.0.0" && \
-        pip install --no-cache-dir \
+            "triton>=2.1.0,<3.0.0" \
             "vllm>=0.5.1" \
             "ray>=2.20.0"; \
     else \
