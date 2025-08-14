@@ -46,18 +46,17 @@ RUN if [ "$ENABLE_GPU" = "true" ]; then \
         . .venv/bin/activate && pip install --no-cache-dir "faiss-cpu>=1.7.0"; \
     fi
 
-# 根據 GPU 支援安裝 vLLM（vLLM 需要 GPU）
+# 根據 GPU 支援安裝量化相關套件
 RUN if [ "$ENABLE_GPU" = "true" ]; then \
+        echo "🔧 Installing GPU quantization dependencies..."; \
+        . .venv/bin/activate && pip install --no-cache-dir --no-build-isolation "triton>=2.1.0,<3.0.0"; \
+        . .venv/bin/activate && pip install --no-cache-dir --no-build-isolation "bitsandbytes>=0.43.2"; \
         echo "🚀 Installing vLLM (GPU version)..."; \
         . .venv/bin/activate && pip install --no-cache-dir "vllm>=0.5.1"; \
         echo "🚀 Installing Ray (GPU version)..."; \
         . .venv/bin/activate && pip install --no-cache-dir "ray>=2.20.0"; \
-        echo "🔧 Installing bitsandbytes for quantization..."; \
-        . .venv/bin/activate && pip install --no-cache-dir "bitsandbytes>=0.43.2"; \
     else \
-        echo "⚠️ Skipping vLLM installation (requires GPU support)"; \
-        echo "🔧 Installing bitsandbytes (CPU fallback)..."; \
-        . .venv/bin/activate && pip install --no-cache-dir "bitsandbytes>=0.43.2" || echo "⚠️ bitsandbytes installation failed (expected on CPU-only)"; \
+        echo "⚠️ Skipping GPU-specific packages (CPU environment)"; \
     fi
 
 # 安裝 HuggingFace 相關依賴以支援大型模型下載
@@ -73,16 +72,29 @@ RUN . .venv/bin/activate && pip install --no-cache-dir "numpy>=1.24.0,<2" --upgr
 # --- Stage 2: Final Stage ---
 FROM python:3.10-slim
 
-# 安裝系統依賴和 CUDA 相關工具，包括 C 編譯器
+# 構建參數：是否啟用 GPU 支援
+ARG ENABLE_GPU=false
+
+# 調試：顯示 ENABLE_GPU 值
+RUN echo "🔍 Final Stage - ENABLE_GPU=$ENABLE_GPU"
+
+# 安裝系統依賴
 RUN apt-get update && apt-get install -y \
     supervisor \
     curl \
     wget \
-    gnupg2 \
-    build-essential \
-    gcc \
-    g++ \
     && rm -rf /var/lib/apt/lists/*
+
+# 如果是 GPU 環境，安裝額外的依賴
+RUN if [ "$ENABLE_GPU" = "true" ]; then \
+        echo "🔧 Installing additional GPU dependencies..."; \
+        apt-get update && apt-get install -y \
+            gnupg2 \
+            build-essential \
+            gcc \
+            g++ \
+            && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # 將 poetry 也安裝到最終鏡像中，以便使用 poetry run
 RUN pip install poetry
