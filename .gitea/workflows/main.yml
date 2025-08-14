@@ -12,6 +12,8 @@ jobs:
   build-and-deploy:
     # 指定 Runner 標籤，Gitea 會尋找帶有此標籤的 Runner 來執行任務
     runs-on: ubuntu-latest
+    # 設定超時時間為 5 小時 (300 分鐘)，避免大型套件安裝超時
+    timeout-minutes: 300
     
     # 定義這個 job 在什麼樣的臨時容器中運行
     container:
@@ -47,7 +49,16 @@ jobs:
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
           
           echo "Building Docker image: ${IMAGE_NAME}"
-          docker build --build-arg ENABLE_GPU=true --build-arg BUILDER_IMAGE=nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 --build-arg FINAL_IMAGE=nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 -t $IMAGE_NAME .
+          # 使用 BuildKit 快取機制來加速構建
+          export DOCKER_BUILDKIT=1
+          docker build \
+            --build-arg ENABLE_GPU=true \
+            --build-arg BUILDER_IMAGE=nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 \
+            --build-arg FINAL_IMAGE=nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 \
+            --cache-from ragforq-app:cache \
+            --tag $IMAGE_NAME \
+            --tag ragforq-app:cache \
+            .
           
           # 將建置好的映像保存到工作區的根目錄下，使用絕對路徑以避免混淆
           echo "Saving image to tarball..."

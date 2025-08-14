@@ -36,22 +36,26 @@ RUN poetry config virtualenvs.in-project true
 # Set working directory
 WORKDIR /app
 
-# Copy project dependency files
+# Copy project dependency files first for better caching
 COPY poetry.lock pyproject.toml ./
 
-# Create a virtual environment and install project dependencies
-# The base images already provide python, so we create the venv from it.
+# Create a virtual environment and install basic dependencies
 RUN python3 -m venv .venv && \
     . .venv/bin/activate && \
+    pip install --upgrade pip setuptools wheel
+
+# Install poetry and basic dependencies in separate layers for better caching
+RUN . .venv/bin/activate && \
     poetry install --no-root --no-interaction --no-ansi
 
-# Activate venv and run all subsequent pip commands in a single RUN block for consistency
+# Install base packages that don't change often
 RUN . .venv/bin/activate && \
-    pip install --no-cache-dir "numpy<2" --upgrade --force-reinstall && \
+    pip install --no-cache-dir "numpy>=1.24.0,<2" && \
     pip install --no-cache-dir "huggingface_hub[hf_xet]" && \
     pip install --no-cache-dir "transformers>=4.35.0"
 
 # Conditional installation of GPU/CPU packages based on the ENABLE_GPU flag
+# This is the most time-consuming step, so we do it last
 RUN . .venv/bin/activate && \
     if [ "$ENABLE_GPU" = "true" ]; then \
         echo "🔧 Installing GPU versions of PyTorch, FAISS, and quantization libraries..."; \
@@ -61,7 +65,8 @@ RUN . .venv/bin/activate && \
         pip install --no-cache-dir \
             "faiss-gpu>=1.7.0" \
             "bitsandbytes>=0.43.2" \
-            "triton>=2.1.0,<3.0.0" \
+            "triton>=2.1.0,<3.0.0" && \
+        pip install --no-cache-dir \
             "vllm>=0.5.1" \
             "ray>=2.20.0"; \
     else \
@@ -71,9 +76,6 @@ RUN . .venv/bin/activate && \
             "torch>=2.0.0" torchvision torchaudio \
             "faiss-cpu>=1.7.0"; \
     fi
-
-# Final numpy version check
-RUN . .venv/bin/activate && pip install --no-cache-dir "numpy>=1.24.0,<2" --upgrade --force-reinstall
 
 
 # --- Stage 2: Final Stage ---
