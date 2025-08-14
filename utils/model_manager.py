@@ -154,14 +154,22 @@ class ModelManager:
                 if use_large_model_optimizations and self.device == "cuda":
                     logger.info(f"使用大型模型優化配置載入: {model_name}")
                     
-                    # 檢查是否為預量化模型
+                    # 檢查是否為 MoE 模型
                     if "gpt-oss-20b" in model_name.lower():
-                        logger.info(f"{model_name} 是 Mxfp4 量化模型，使用專用配置")
+                        logger.info(f"{model_name} 是 MoE 模型，使用專用配置")
+                        # 使用臨時目錄作為 offload 目錄，Docker 友好
+                        import tempfile
+                        offload_dir = Path(tempfile.gettempdir()) / "model_offload"
+                        offload_dir.mkdir(exist_ok=True)
+                        
                         model_kwargs.update({
                             "device_map": "auto",
                             "low_cpu_mem_usage": True,
                             "torch_dtype": torch.bfloat16,
-                            "max_memory": {0: "6GB", "cpu": "8GB"},  # 限制 GPU 記憶體使用
+                            # 移除嚴格的記憶體限制，避免 MoE 層加載問題
+                            # "max_memory": {0: "6GB", "cpu": "8GB"},
+                            "offload_folder": str(offload_dir),  # 設置卸載目錄
+                            "offload_state_dict": True,          # 允許狀態字典卸載
                         })
                     else:
                         if BitsAndBytesConfig is not None:
@@ -188,8 +196,19 @@ class ModelManager:
                     task = "text2text-generation"
                 else:
                     logger.info(f"使用 AutoModelForCausalLM 載入模型: {model_name}")
-                    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
-                    task = "text-generation"
+                    try:
+                        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+                        task = "text-generation"
+                    except KeyError as e:
+                        if "gpt-oss-20b" in model_name.lower() and "gate_up_proj" in str(e):
+                            logger.warning(f"MoE 模型加載失敗，嘗試不使用 offload 配置: {e}")
+                            # 移除 offload 相關配置重試
+                            retry_kwargs = {k: v for k, v in model_kwargs.items() 
+                                          if k not in ["offload_folder", "offload_state_dict"]}
+                            model = AutoModelForCausalLM.from_pretrained(model_name, **retry_kwargs)
+                            task = "text-generation"
+                        else:
+                            raise
 
                 # For non-large models, manually move to device if not using device_map
                 if not ('device_map' in model_kwargs):
@@ -277,8 +296,11 @@ class ModelManager:
             生成的文本
         """
         try:
-            # 檢查是否使用 vLLM
-            if INFERENCE_ENGINE == "vllm":
+            # 動態檢查是否使用 vLLM
+            from config.config import get_inference_engine
+            current_inference_engine = get_inference_engine()
+            
+            if current_inference_engine == "vllm":
                 from utils.vllm_manager import get_vllm_manager
                 vllm_manager = get_vllm_manager()
                 
