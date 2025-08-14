@@ -17,13 +17,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies. This list is compatible with both base images.
 # The NVIDIA image is Ubuntu-based, python:slim is Debian-based. Both use apt-get.
-RUN apt-get update && apt-get install -y 
-    python3.10 
-    python3.10-venv 
-    python3-pip 
-    build-essential 
-    curl 
-    git 
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-venv \
+    python3-pip \
+    build-essential \
+    curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure python3 is linked to python
@@ -42,35 +42,35 @@ WORKDIR /app
 COPY poetry.lock pyproject.toml ./
 
 # Create a virtual environment and install project dependencies
-RUN python -m venv .venv && 
-    . .venv/bin/activate && 
+RUN python -m venv .venv && \
+    . .venv/bin/activate && \
     poetry install --no-root --no-interaction --no-ansi
 
 # Activate venv and run all subsequent pip commands in a single RUN block for consistency
-RUN . .venv/bin/activate && 
-    pip install --no-cache-dir "numpy<2" --upgrade --force-reinstall && 
-    pip install --no-cache-dir "huggingface_hub[hf_xet]" && 
+RUN . .venv/bin/activate && \
+    pip install --no-cache-dir "numpy<2" --upgrade --force-reinstall && \
+    pip install --no-cache-dir "huggingface_hub[hf_xet]" && \
     pip install --no-cache-dir "transformers>=4.35.0"
 
 # Conditional installation of GPU/CPU packages based on the ENABLE_GPU flag
-RUN . .venv/bin/activate && 
-    if [ "$ENABLE_GPU" = "true" ]; then 
-        echo "🔧 Installing GPU versions of PyTorch, FAISS, and quantization libraries..."; 
-        pip uninstall -y torch torchvision torchaudio faiss-cpu || true; 
-        pip install --no-cache-dir 
-            "torch>=2.0.0" torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && 
-        pip install --no-cache-dir 
-            "faiss-gpu>=1.7.0" 
-            "bitsandbytes>=0.43.2" 
-            "triton>=2.1.0,<3.0.0" 
-            "vllm>=0.5.1" 
-            "ray>=2.20.0"; 
-    else 
-        echo "🔧 Installing CPU versions of PyTorch and FAISS..."; 
-        pip uninstall -y faiss-gpu || true; 
-        pip install --no-cache-dir 
-            "torch>=2.0.0" torchvision torchaudio 
-            "faiss-cpu>=1.7.0"; 
+RUN . .venv/bin/activate && \
+    if [ "$ENABLE_GPU" = "true" ]; then \
+        echo "🔧 Installing GPU versions of PyTorch, FAISS, and quantization libraries..."; \
+        pip uninstall -y torch torchvision torchaudio faiss-cpu || true; \
+        pip install --no-cache-dir \
+            "torch>=2.0.0" torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
+        pip install --no-cache-dir \
+            "faiss-gpu>=1.7.0" \
+            "bitsandbytes>=0.43.2" \
+            "triton>=2.1.0,<3.0.0" \
+            "vllm>=0.5.1" \
+            "ray>=2.20.0"; \
+    else \
+        echo "🔧 Installing CPU versions of PyTorch and FAISS..."; \
+        pip uninstall -y faiss-gpu || true; \
+        pip install --no-cache-dir \
+            "torch>=2.0.0" torchvision torchaudio \
+            "faiss-cpu>=1.7.0"; \
     fi
 
 # Final numpy version check
@@ -87,12 +87,12 @@ ARG ENABLE_GPU
 RUN echo "🔍 Final Stage - ENABLE_GPU=$ENABLE_GPU"
 
 # Install runtime system dependencies
-RUN apt-get update && apt-get install -y 
-    python3.10 
-    python3-pip 
-    supervisor 
-    curl 
-    wget 
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    supervisor \
+    curl \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure python3 is linked to python
@@ -128,9 +128,8 @@ RUN chmod +x /app/app.py
 EXPOSE 8000 8501
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/ || exit 1
 
 # Container start command
 CMD ["sh", "-c", ". /app/.venv/bin/activate && echo '🚀 RAG for Q Container Starting...' && echo '🔍 Checking GPU support...' && python -c \"import torch; print(f'PyTorch Version: {torch.__version__}'); print(f'CUDA Available: {torch.cuda.is_available()}'); print(f'GPU Count: {torch.cuda.device_count()}' if torch.cuda.is_available() else 'GPU Count: 0'); [print(f'GPU {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else None\" && echo '🎯 Starting services...' && exec /usr/bin/supervisord -n -c /etc/supervisor/conf.d/supervisord.conf"]
-
