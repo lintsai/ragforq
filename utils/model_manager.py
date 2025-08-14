@@ -11,8 +11,14 @@ from typing import Optional, Dict, Any, Union
 from pathlib import Path
 from transformers import (
     AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoModelForSeq2SeqLM,
-    pipeline, BitsAndBytesConfig
+    pipeline
 )
+
+# 嘗試導入 BitsAndBytesConfig，如果失敗則設為 None
+try:
+    from transformers import BitsAndBytesConfig
+except ImportError:
+    BitsAndBytesConfig = None
 from sentence_transformers import SentenceTransformer
 import numpy as np
 
@@ -158,16 +164,22 @@ class ModelManager:
                             "max_memory": {0: "6GB", "cpu": "8GB"},  # 限制 GPU 記憶體使用
                         })
                     else:
-                        model_kwargs.update({
-                            "quantization_config": BitsAndBytesConfig(
-                                load_in_4bit=True,
-                                bnb_4bit_compute_dtype=torch.float16,
-                                bnb_4bit_use_double_quant=True,
-                                bnb_4bit_quant_type="nf4"
-                            ),
-                            "device_map": "auto",
-                            "low_cpu_mem_usage": True,
-                        })
+                        if BitsAndBytesConfig is not None:
+                            model_kwargs.update({
+                                "quantization_config": BitsAndBytesConfig(
+                                    load_in_4bit=True,
+                                    bnb_4bit_compute_dtype=torch.float16,
+                                    bnb_4bit_use_double_quant=True,
+                                    bnb_4bit_quant_type="nf4"
+                                ),
+                                "device_map": "auto",
+                                "low_cpu_mem_usage": True,
+                            })
+                        else:
+                            model_kwargs.update({
+                                "device_map": "auto",
+                                "low_cpu_mem_usage": True,
+                            })
                 
                 # 根據模型類型選擇正確的 AutoModel 類
                 if model_type == "seq2seq":

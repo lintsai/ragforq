@@ -73,16 +73,26 @@ RUN . .venv/bin/activate && pip install --no-cache-dir "numpy>=1.24.0,<2" --upgr
 # --- Stage 2: Final Stage ---
 FROM python:3.10-slim
 
-# 安裝系統依賴和 CUDA 相關工具
+# 安裝系統依賴和 CUDA 相關工具，包括 C 編譯器
 RUN apt-get update && apt-get install -y \
     supervisor \
     curl \
     wget \
     gnupg2 \
+    build-essential \
+    gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # 將 poetry 也安裝到最終鏡像中，以便使用 poetry run
 RUN pip install poetry
+
+# 設置環境變數以解決編譯問題
+ENV CC=gcc
+ENV CXX=g++
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
 # 設置工作目錄
 WORKDIR /app

@@ -6,9 +6,6 @@
 # Docker
 Dockerfile
 
-# Virtual Environment
-.venv
-
 # IDE/Editor specific
 .vscode
 .cursor
