@@ -15,11 +15,9 @@ ARG ENABLE_GPU
 ENV TERM=xterm
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies. This list is compatible with both base images.
-# The NVIDIA image is Ubuntu-based, python:slim is Debian-based. Both use apt-get.
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3.10-venv \
+# Install system dependencies using generic and compatible package names.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-venv \
     python3-pip \
     build-essential \
     curl \
@@ -42,7 +40,8 @@ WORKDIR /app
 COPY poetry.lock pyproject.toml ./
 
 # Create a virtual environment and install project dependencies
-RUN python -m venv .venv && \
+# The base images already provide python, so we create the venv from it.
+RUN python3 -m venv .venv && \
     . .venv/bin/activate && \
     poetry install --no-root --no-interaction --no-ansi
 
@@ -87,8 +86,7 @@ ARG ENABLE_GPU
 RUN echo "🔍 Final Stage - ENABLE_GPU=$ENABLE_GPU"
 
 # Install runtime system dependencies
-RUN apt-get update && apt-get install -y \
-    python3.10 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     supervisor \
     curl \

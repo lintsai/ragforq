@@ -47,7 +47,7 @@ jobs:
           IMAGE_NAME=ragforq-app:${IMAGE_TAG}
           
           echo "Building Docker image: ${IMAGE_NAME}"
-          docker build --build-arg ENABLE_GPU=true -t $IMAGE_NAME .
+          docker build --build-arg ENABLE_GPU=true --build-arg BUILDER_IMAGE=nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 --build-arg FINAL_IMAGE=nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 -t $IMAGE_NAME .
           
           # 將建置好的映像保存到工作區的根目錄下，使用絕對路徑以避免混淆
           echo "Saving image to tarball..."

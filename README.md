@@ -99,7 +99,7 @@ docker run --rm -d -p 8501:8501 -p 8000:8000 --name ragforq-test-container -v D:
 docker stop ragforq-test-container
 
 # 2. 構建本地測試映像
-docker build --build-arg ENABLE_GPU=true -t ragforq-local-test .
+docker build --build-arg ENABLE_GPU=true --build-arg BUILDER_IMAGE=nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 --build-arg FINAL_IMAGE=nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 -t ragforq-local-test .
 
 # 3. 運行開發容器
 docker run --rm -d --gpus all -p 8501:8501 -p 8000:8000 --name ragforq-test-container -v C:\Users\user\source\ragforq\.env.local:/app/.env -v C:\Users\user\source\ragforq:/ragforq -v C:\Users\user\source\ragforq\vector_db:/app/vector_db -v C:\Users\user\source\ragforq\models:/app/models -v C:\Users\user\source\ragforq\backups:/app/backups -v C:\Users\user\source\ragforq\logs:/app/logs ragforq-local-test
@@ -109,7 +109,7 @@ docker run --rm -d --gpus all -p 8501:8501 -p 8000:8000 --name ragforq-test-cont
 
 ```bash
 # 構建映像
-docker build --build-arg ENABLE_GPU=true -t ragforq .
+docker build --build-arg ENABLE_GPU=true --build-arg BUILDER_IMAGE=nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 --build-arg FINAL_IMAGE=nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 -t ragforq .
 
 # 運行容器
   ragforq
