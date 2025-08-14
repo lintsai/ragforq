@@ -38,12 +38,12 @@ RUN if [ "$ENABLE_GPU" = "true" ]; then \
         . .venv/bin/activate && pip uninstall -y torch torchvision torchaudio || true; \
         . .venv/bin/activate && pip install --no-cache-dir "torch>=2.0.0" torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; \
         . .venv/bin/activate && pip uninstall -y faiss-cpu || true; \
-        . .venv/bin/activate && pip install --no-cache-dir "faiss-gpu>=1.8.0"; \
+        . .venv/bin/activate && pip install --no-cache-dir "faiss-gpu>=1.7.0"; \
     else \
         echo "🔧 安裝 CPU 版本的 PyTorch 和 FAISS..."; \
         . .venv/bin/activate && pip install --no-cache-dir "torch>=2.0.0" torchvision torchaudio; \
         . .venv/bin/activate && pip uninstall -y faiss-gpu || true; \
-        . .venv/bin/activate && pip install --no-cache-dir "faiss-cpu>=1.8.0"; \
+        . .venv/bin/activate && pip install --no-cache-dir "faiss-cpu>=1.7.0"; \
     fi
 
 # 根據 GPU 支援安裝 vLLM（vLLM 需要 GPU）

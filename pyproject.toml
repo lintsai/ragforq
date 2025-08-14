@@ -12,7 +12,7 @@ streamlit = "^1.47.0"
 fastapi = "^0.111.0"
 uvicorn = {extras = ["standard"], version = "^0.29.0"}
 sentence-transformers = "^2.7.0"
-faiss-cpu = "^1.8.0"  # 使用 CPU 版本，Windows 兼容性更好
+faiss-cpu = "^1.7.0"  # 使用 CPU 版本，Windows 兼容性更好
 unstructured = {extras = ["pdf", "docx"], version = "^0.14.4"}
 python-dotenv = "^1.0.1"
 pypdf = "^4.2.0"
