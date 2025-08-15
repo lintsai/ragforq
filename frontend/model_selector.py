@@ -184,7 +184,7 @@ def render_huggingface_models(current_config: Dict[str, Any], api_url: str = "ht
             else:
                 st.sidebar.error("沒有找到本地嵌入模型")
                 st.sidebar.info("請先下載模型")
-                st.sidebar.code("hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
+                st.sidebar.code("hf download sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --cache-dir ./models/cache")
         
         else:
             st.sidebar.error("無法獲取模型列表")
@@ -207,7 +207,7 @@ def _render_fallback_huggingface_models():
     st.sidebar.markdown("#### 🔤 嵌入模型")
     st.sidebar.error("無法獲取模型列表")
     st.sidebar.info("請先下載模型：")
-    st.sidebar.code("hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
+    st.sidebar.code("hf download sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --cache-dir ./models/cache")
     
     # 設置空的選擇狀態
     st.session_state.selected_language_model = None

@@ -222,7 +222,7 @@ def render_model_selection(api_url: str) -> bool:
         if not embedding_models:
             st.error("沒有找到本地嵌入模型")
             st.info("請先下載模型到 `models/cache` 目錄：")
-            st.code("hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
+            st.code("hf download sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --cache-dir ./models/cache")
             return False
         
         # 創建嵌入模型選項

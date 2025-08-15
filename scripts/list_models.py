@@ -32,7 +32,7 @@ def main():
             print("\n💡 使用 Hugging Face CLI 下載模型:")
             print("  pip install huggingface-hub[cli]")
             print("  hf download Qwen/Qwen2.5-0.5B-Instruct --cache-dir ./models/cache")
-            print("  hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
+            print("  hf download sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --cache-dir ./models/cache")
         
         print(f"\n📁 緩存目錄: {huggingface_utils.cache_dir}")
         

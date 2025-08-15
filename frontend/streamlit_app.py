@@ -308,7 +308,7 @@ def main():
                                 else:
                                     st.error("沒有找到本地嵌入模型")
                                     st.info("請先下載模型：")
-                                    st.code("hf download sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --cache-dir ./models/cache")
+                                    st.code("hf download sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --cache-dir ./models/cache")
                                     selected_embedding_model = None
                         else:
                             st.error(f"獲取模型列表失敗: {models_data['error']}")

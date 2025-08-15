@@ -242,10 +242,10 @@ class PlatformManager:
             if ENVIRONMENT == "production":
                 return {
                     "platform": PlatformType.HUGGINGFACE.value,
-                    "language_model": "openai/gpt-oss-20b",
-                    "embedding_model": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-                    "inference_engine": "vllm",
-                    "reason": "生產環境推薦使用 gpt-oss-20b + vLLM 獲得最佳性能"
+                    "language_model": "openai/Qwen2.5-7B-Instruct",
+                    "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                    "inference_engine": "transformers",
+                    "reason": "目前生產環境推薦使用 Qwen2.5-7B-Instruct"
                 }
             else:
                 return {
