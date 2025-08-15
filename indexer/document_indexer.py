@@ -407,7 +407,7 @@ class DocumentIndexer:
     
     def index_files(self, file_paths: List[str], show_progress: bool = True) -> Tuple[int, int]:
         """
-        索引多個文件 (並行處理版本)
+        索引多個文件 (並行處理版本) - 優化版本，支持斷點續傳和錯誤恢復
         
         Args:
             file_paths: 要索引的文件路徑列表
@@ -422,6 +422,9 @@ class DocumentIndexer:
         if not valid_files:
             logger.warning("沒有有效的文件需要索引")
             return 0, len(file_paths)
+        
+        # 檢查文件編碼並預處理
+        valid_files = self._preprocess_files_encoding(valid_files)
         
         try:
             # 檢查是否有未完成的索引任務
@@ -520,6 +523,71 @@ class DocumentIndexer:
                 
         logger.info(f"索引完成：{success_count} 個成功，{fail_count} 個失敗")
         return success_count, fail_count
+    
+    def _preprocess_files_encoding(self, file_paths: List[str]) -> List[str]:
+        """
+        預處理文件編碼，過濾掉無法處理的文件
+        
+        Args:
+            file_paths: 文件路徑列表
+            
+        Returns:
+            可處理的文件路徑列表
+        """
+        valid_files = []
+        for file_path in file_paths:
+            try:
+                # 檢查文件是否可讀
+                if not os.access(file_path, os.R_OK):
+                    logger.warning(f"文件無讀取權限，跳過: {file_path}")
+                    continue
+                
+                # 檢查文件大小（跳過過大的文件）
+                file_size = os.path.getsize(file_path)
+                if file_size > 100 * 1024 * 1024:  # 100MB
+                    logger.warning(f"文件過大 ({file_size/1024/1024:.1f}MB)，跳過: {file_path}")
+                    continue
+                
+                # 對於文本文件，檢查編碼
+                file_ext = os.path.splitext(file_path)[1].lower()
+                if file_ext in ['.txt', '.md', '.csv']:
+                    if not self._check_text_file_encoding(file_path):
+                        logger.warning(f"文件編碼問題，跳過: {file_path}")
+                        continue
+                
+                valid_files.append(file_path)
+                
+            except Exception as e:
+                logger.error(f"預處理文件時出錯 {file_path}: {str(e)}")
+                continue
+        
+        logger.info(f"預處理完成，{len(valid_files)}/{len(file_paths)} 個文件可處理")
+        return valid_files
+    
+    def _check_text_file_encoding(self, file_path: str) -> bool:
+        """
+        檢查文本文件編碼是否可處理
+        
+        Args:
+            file_path: 文件路徑
+            
+        Returns:
+            是否可處理
+        """
+        encodings = ['utf-8', 'big5', 'gb18030', 'latin-1', 'cp1252']
+        
+        for encoding in encodings:
+            try:
+                with open(file_path, 'r', encoding=encoding, errors='strict') as f:
+                    # 讀取前1KB檢查編碼
+                    f.read(1024)
+                return True
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+            except Exception:
+                return False
+        
+        return False
     
     def _delete_file_from_index(self, file_path: str) -> bool:
         """

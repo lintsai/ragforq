@@ -51,36 +51,62 @@ class ThaiRAGEngine(RAGEngineInterface):
     
     def rewrite_query(self, original_query: str) -> str:
         """
-        ปรับปรุงคำถามภาษาไทยให้เป็นคำอธิบายที่แม่นยำและเหมาะสมสำหรับการค้นหาเวกเตอร์
+        ปรับปรุงคำถามภาษาไทยให้เป็นคำอธิบายที่แม่นยำและเหมาะสมสำหรับการค้นหาเวกเตอร์ - พร้อมกลไกลองใหม่
         """
-        try:
-            rewrite_prompt = PromptTemplate(
-                template="""คุณเป็นผู้เชี่ยวชาญด้านการปรับแต่งการค้นหา กรุณาแปลงคำถามต่อไปนี้ให้เป็นคำสำคัญหรือวลีที่เหมาะสมสำหรับการค้นหาในฐานความรู้ กรุณาตอบเป็นภาษาไทยเท่านั้น
+        from config.config import OLLAMA_MAX_RETRIES, OLLAMA_RETRY_DELAY, OLLAMA_QUERY_OPTIMIZATION_TIMEOUT
+        import time
+        
+        for attempt in range(OLLAMA_MAX_RETRIES):
+            try:
+                rewrite_prompt = PromptTemplate(
+                    template="""คุณเป็นผู้เชี่ยวชาญด้านการปรับแต่งการค้นหา กรุณาแปลงคำถามต่อไปนี้ให้เป็นคำอธิบายที่สมบูรณ์และเหมาะสมสำหรับการค้นหาในฐานความรู้
+
+ข้อกำหนด:
+1. ใช้ภาษาไทยเท่านั้น
+2. ขยายคำศัพท์เฉพาะทางและคำพ้องความหมายที่เกี่ยวข้อง
+3. รวมการแสดงออกที่แตกต่างกันที่อาจปรากฏในเอกสาร
+4. รักษาแนวคิดหลักและความหมายเชิงความหมายของคำถาม
 
 คำถามเดิม: {question}
 
 คำค้นหาที่ปรับปรุงแล้ว:""",
-                input_variables=["question"]
-            )
-            
-            rewrite_chain = rewrite_prompt | self.llm | StrOutputParser()
-            
-            def _invoke_rewrite():
-                return rewrite_chain.invoke({"question": original_query})
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_invoke_rewrite)
-                try:
-                    optimized_query = future.result(timeout=15)
-                    logger.info(f"Thai query optimization: {original_query} -> {optimized_query}")
-                    return optimized_query.strip()
-                except concurrent.futures.TimeoutError:
-                    logger.error("Thai query optimization timeout, using original query")
+                    input_variables=["question"]
+                )
+                
+                def _invoke_rewrite():
+                    # การเรียกใช้โดยตรงโดยไม่ใช้การดำเนินการแบบลูกโซ่
+                    prompt_text = rewrite_prompt.format(question=original_query)
+                    response = self.llm.invoke(prompt_text)
+                    if hasattr(response, 'content'):
+                        return response.content
+                    else:
+                        return str(response)
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_invoke_rewrite)
+                    try:
+                        optimized_query = future.result(timeout=OLLAMA_QUERY_OPTIMIZATION_TIMEOUT)
+                        logger.info(f"Thai query optimization: {original_query} -> {optimized_query}")
+                        return optimized_query.strip()
+                    except concurrent.futures.TimeoutError:
+                        if attempt < OLLAMA_MAX_RETRIES - 1:
+                            logger.warning(f"การปรับแต่งคำค้นหาหมดเวลา ลองใหม่ครั้งที่ {attempt + 1}...")
+                            time.sleep(OLLAMA_RETRY_DELAY)
+                            continue
+                        else:
+                            logger.error("การปรับแต่งคำค้นหาหมดเวลาหลายครั้ง ใช้คำค้นหาเดิม")
+                            return original_query
+                
+            except Exception as e:
+                if attempt < OLLAMA_MAX_RETRIES - 1:
+                    logger.warning(f"การปรับแต่งคำค้นหาผิดพลาด ลองใหม่ครั้งที่ {attempt + 1}: {str(e)}")
+                    time.sleep(OLLAMA_RETRY_DELAY)
+                    continue
+                else:
+                    logger.error(f"การปรับแต่งคำค้นหาล้มเหลวหลายครั้ง: {str(e)}")
                     return original_query
-            
-        except Exception as e:
-            logger.error(f"Error during Thai query optimization: {str(e)}")
-            return original_query
+        
+        return original_query
     
     def answer_question(self, question: str) -> str:
         """ตอบคำถามเป็นภาษาไทย"""
@@ -167,7 +193,8 @@ class ThaiRAGEngine(RAGEngineInterface):
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_invoke)
             try:
-                answer = future.result(timeout=60)
+                from config.config import OLLAMA_ANSWER_GENERATION_TIMEOUT
+                answer = future.result(timeout=OLLAMA_ANSWER_GENERATION_TIMEOUT)
                 
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)

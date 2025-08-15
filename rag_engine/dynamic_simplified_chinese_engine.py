@@ -1,16 +1,25 @@
 """
 Dynamic RAG Engine for Simplified Chinese
 """
+import logging
 from .dynamic_rag_base import DynamicRAGEngineBase
+
+logger = logging.getLogger(__name__)
 
 class DynamicSimplifiedChineseRAGEngine(DynamicRAGEngineBase):
     """動態簡體中文RAG引擎"""
 
-    REWRITE_PROMPT_TEMPLATE = """请从以下问题中提取2-3个最重要的关键词，用空格分隔。
+    REWRITE_PROMPT_TEMPLATE = """你是一个搜索优化专家。请将以下问题转换为更适合在知识库中检索的完整描述性语句。
 
-问题: {original_query}
+要求：
+1. 保持简体中文
+2. 扩展相关的专业术语和同义词
+3. 包含可能在文档中出现的不同表达方式
+4. 保留问题的核心概念和语意
 
-关键词:"""
+原始问题: {original_query}
+
+优化后的检索查询:"""
 
     ANSWER_PROMPT_TEMPLATE = """你是一个专业的AI文档问答助手。请严格根据以下“上下文信息”来回答“用户问题”。请使用与问题相同的语言（简体中文）来回答。
 
@@ -36,3 +45,41 @@ class DynamicSimplifiedChineseRAGEngine(DynamicRAGEngineBase):
 
     def get_language(self) -> str:
         return "简体中文"
+    
+    def _generate_general_knowledge_answer(self, question: str) -> str:
+        """当找不到相关文档时，基于常识提供简体中文回答"""
+        try:
+            if self.llm is None:
+                return f"抱歉，我在文档中找不到与「{question}」相关的具体信息。这可能是因为相关文档不在当前的检索范围内，或者问题涉及的内容需要更具体的关键词。建议您尝试使用更具体的关键词重新提问。"
+            
+            general_prompt = f"""你是一个IT领域的专家助手。虽然在QSI内部文档中找不到相关资料，但请基于一般IT常识来回答以下问题。
+
+问题：{question}
+
+请注意：
+1. 使用简体中文回答
+2. 基于一般IT知识提供有用的回答
+3. 明确说明这是基于常识的回答，不是来自QSI内部文档
+4. 如果是QSI特定的问题，建议联系相关部门
+
+简体中文回答："""
+            
+            try:
+                response = self.llm.invoke(general_prompt)
+                answer = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+                
+                # 添加简体中文免责声明
+                disclaimer = "\n\n※ 注意：以上回答基于一般IT常识，非来自QSI内部文档。如需准确信息，请联系相关部门。"
+                return answer + disclaimer
+                
+            except Exception as e:
+                logger.error(f"简体中文动态RAG常识回答生成失败: {str(e)}")
+                return self._get_general_fallback(question)
+        
+        except Exception as e:
+            logger.error(f"简体中文动态RAG常识回答处理失败: {str(e)}")
+            return self._get_general_fallback(question)
+    
+    def _get_general_fallback(self, query: str) -> str:
+        """获取简体中文通用回退回答"""
+        return f"根据一般IT知识，关于「{query}」的相关信息可能需要查阅更多QSI内部文档。"

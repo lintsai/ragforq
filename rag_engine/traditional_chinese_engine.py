@@ -56,40 +56,55 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
     
     def rewrite_query(self, original_query: str) -> str:
         """
-        將繁體中文查詢優化為更精準適合向量檢索的完整描述
+        將繁體中文查詢優化為更精準適合向量檢索的完整描述 - 帶重試機制
         """
-        try:
-            rewrite_prompt = PromptTemplate(
-                template="""你是一個搜尋優化專家。請將以下問題轉換為更適合在知識庫中檢索的關鍵詞或描述性語句。請嚴格使用繁體中文輸出。
+        from config.config import OLLAMA_MAX_RETRIES, OLLAMA_RETRY_DELAY
+        
+        for attempt in range(OLLAMA_MAX_RETRIES):
+            try:
+                rewrite_prompt = PromptTemplate(
+                    template="""你是一個搜尋優化專家。請將以下問題轉換為更適合在知識庫中檢索的關鍵詞或描述性語句。請嚴格使用繁體中文輸出。
 
 原始問題: {question}
 
 優化後的檢索查詢:""",
-                input_variables=["question"]
-            )
-            
-            def _invoke_rewrite():
-                # 直接調用而不使用鏈式操作
-                prompt_text = rewrite_prompt.format(question=original_query)
-                response = self.llm.invoke(prompt_text)
-                if hasattr(response, 'content'):
-                    return response.content
+                    input_variables=["question"]
+                )
+                
+                def _invoke_rewrite():
+                    # 直接調用而不使用鏈式操作
+                    prompt_text = rewrite_prompt.format(question=original_query)
+                    response = self.llm.invoke(prompt_text)
+                    if hasattr(response, 'content'):
+                        return response.content
+                    else:
+                        return str(response)
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_invoke_rewrite)
+                    try:
+                        optimized_query = future.result(timeout=OLLAMA_QUERY_OPTIMIZATION_TIMEOUT)
+                        logger.info(f"繁體中文查詢優化: {original_query} -> {optimized_query}")
+                        return optimized_query.strip()
+                    except concurrent.futures.TimeoutError:
+                        if attempt < OLLAMA_MAX_RETRIES - 1:
+                            logger.warning(f"查詢優化超時，第 {attempt + 1} 次重試...")
+                            time.sleep(OLLAMA_RETRY_DELAY)
+                            continue
+                        else:
+                            logger.error("查詢優化多次超時，使用原始查詢")
+                            return original_query
+                
+            except Exception as e:
+                if attempt < OLLAMA_MAX_RETRIES - 1:
+                    logger.warning(f"查詢優化出錯，第 {attempt + 1} 次重試: {str(e)}")
+                    time.sleep(OLLAMA_RETRY_DELAY)
+                    continue
                 else:
-                    return str(response)
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_invoke_rewrite)
-                try:
-                    optimized_query = future.result(timeout=OLLAMA_QUERY_OPTIMIZATION_TIMEOUT)
-                    logger.info(f"繁體中文查詢優化: {original_query} -> {optimized_query}")
-                    return optimized_query.strip()
-                except concurrent.futures.TimeoutError:
-                    logger.error("繁體中文查詢優化超時，使用原始查詢")
+                    logger.error(f"查詢優化多次失敗: {str(e)}")
                     return original_query
-            
-        except Exception as e:
-            logger.error(f"繁體中文查詢優化時出錯: {str(e)}")
-            return original_query
+        
+        return original_query
     
     def answer_question(self, question: str) -> str:
         """使用繁體中文回答問題"""

@@ -1,16 +1,25 @@
 """
 Dynamic RAG Engine for Thai
 """
+import logging
 from .dynamic_rag_base import DynamicRAGEngineBase
+
+logger = logging.getLogger(__name__)
 
 class DynamicThaiRAGEngine(DynamicRAGEngineBase):
     """Dynamic Thai RAG Engine"""
 
-    REWRITE_PROMPT_TEMPLATE = """โปรดดึงคำสำคัญที่สำคัญที่สุด 2-3 คำจากคำถามต่อไปนี้ คั่นด้วยช่องว่าง
+    REWRITE_PROMPT_TEMPLATE = """คุณเป็นผู้เชี่ยวชาญด้านการปรับแต่งการค้นหา กรุณาแปลงคำถามต่อไปนี้ให้เป็นคำอธิบายที่สมบูรณ์และเหมาะสมสำหรับการค้นหาในฐานความรู้
 
-คำถาม: {original_query}
+ข้อกำหนด:
+1. ใช้ภาษาไทยเท่านั้น
+2. ขยายคำศัพท์เฉพาะทางและคำพ้องความหมายที่เกี่ยวข้อง
+3. รวมการแสดงออกที่แตกต่างกันที่อาจปรากฏในเอกสาร
+4. รักษาแนวคิดหลักและความหมายเชิงความหมายของคำถาม
 
-คำสำคัญ:"""
+คำถามเดิม: {original_query}
+
+คำค้นหาที่ปรับปรุงแล้ว:"""
 
     ANSWER_PROMPT_TEMPLATE = """คุณเป็นผู้ช่วย AI มืออาชีพสำหรับเอกสาร โปรดตอบ "คำถามของผู้ใช้" ตาม "ข้อมูลบริบท" ด้านล่างอย่างเคร่งครัด โปรดตอบเป็นภาษาเดียวกับคำถาม (ภาษาไทย)
 
@@ -36,3 +45,41 @@ class DynamicThaiRAGEngine(DynamicRAGEngineBase):
 
     def get_language(self) -> str:
         return "ไทย"
+    
+    def _generate_general_knowledge_answer(self, question: str) -> str:
+        """ให้คำตอบจากความรู้ทั่วไปเป็นภาษาไทยเมื่อไม่พบเอกสารที่เกี่ยวข้อง"""
+        try:
+            if self.llm is None:
+                return f"ขออภัย ไม่พบข้อมูลเฉพาะที่เกี่ยวข้องกับ '{question}' ในเอกสาร นี่อาจเป็นเพราะเอกสารที่เกี่ยวข้องไม่อยู่ในขอบเขตการค้นหาปัจจุบัน หรือคำถามต้องการคำสำคัญที่เฉพาะเจาะจงมากขึ้น แนะนำให้ลองใช้คำสำคัญที่เฉพาะเจาะจงมากขึ้น"
+            
+            general_prompt = f"""คุณเป็นผู้ช่วยผู้เชี่ยวชาญด้าน IT แม้ว่าจะไม่พบข้อมูลที่เกี่ยวข้องในเอกสารภายใน QSI แต่กรุณาให้คำตอบโดยอิงจากความรู้ทั่วไปด้าน IT
+
+คำถาม: {question}
+
+กรุณาทราบ:
+1. ตอบเป็นภาษาไทยเท่านั้น
+2. ให้คำตอบที่เป็นประโยชน์โดยอิงจากความรู้ทั่วไปด้าน IT
+3. ระบุอย่างชัดเจนว่านี่เป็นคำตอบจากความรู้ทั่วไป ไม่ใช่จากเอกสารภายใน QSI
+4. หากเป็นคำถามเฉพาะของ QSI แนะนำให้ติดต่อแผนกที่เกี่ยวข้อง
+
+คำตอบภาษาไทย:"""
+            
+            try:
+                response = self.llm.invoke(general_prompt)
+                answer = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+                
+                # เพิ่มข้อความปฏิเสธความรับผิดชอบภาษาไทย
+                disclaimer = "\n\n※ หมายเหตุ: คำตอบข้างต้นอิงจากความรู้ทั่วไปด้าน IT ไม่ใช่จากเอกสารภายใน QSI หากต้องการข้อมูลที่แม่นยำ กรุณาติดต่อแผนกที่เกี่ยวข้อง"
+                return answer + disclaimer
+                
+            except Exception as e:
+                logger.error(f"การสร้างคำตอบความรู้ทั่วไปภาษาไทยของ Dynamic RAG ล้มเหลว: {str(e)}")
+                return self._get_general_fallback(question)
+        
+        except Exception as e:
+            logger.error(f"การประมวลผลคำตอบความรู้ทั่วไปภาษาไทยของ Dynamic RAG ล้มเหลว: {str(e)}")
+            return self._get_general_fallback(question)
+    
+    def _get_general_fallback(self, query: str) -> str:
+        """รับคำตอบทางเลือกทั่วไปภาษาไทย"""
+        return f"ตามความรู้ทั่วไปด้าน IT ข้อมูลเกี่ยวกับ '{query}' อาจต้องการการปรึกษาเอกสารภายใน QSI เพิ่มเติม"

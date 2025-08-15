@@ -52,36 +52,56 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
     
     def rewrite_query(self, original_query: str) -> str:
         """
-        将简体中文查询优化为更精准适合向量检索的完整描述
+        将简体中文查询优化为更精准适合向量检索的完整描述 - 带重试机制
         """
-        try:
-            rewrite_prompt = PromptTemplate(
-                template="""你是一个搜索优化专家。请将以下问题转换为更适合在知识库中检索的关键词或描述性语句。请严格使用简体中文输出。
+        from config.config import OLLAMA_MAX_RETRIES, OLLAMA_RETRY_DELAY, OLLAMA_QUERY_OPTIMIZATION_TIMEOUT
+        import time
+        
+        for attempt in range(OLLAMA_MAX_RETRIES):
+            try:
+                rewrite_prompt = PromptTemplate(
+                    template="""你是一个搜索优化专家。请将以下问题转换为更适合在知识库中检索的关键词或描述性语句。请严格使用简体中文输出。
 
 原始问题: {question}
 
 优化后的检索查询:""",
-                input_variables=["question"]
-            )
-            
-            rewrite_chain = rewrite_prompt | self.llm | StrOutputParser()
-            
-            def _invoke_rewrite():
-                return rewrite_chain.invoke({"question": original_query})
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_invoke_rewrite)
-                try:
-                    optimized_query = future.result(timeout=15)
-                    logger.info(f"简体中文查询优化: {original_query} -> {optimized_query}")
-                    return optimized_query.strip()
-                except concurrent.futures.TimeoutError:
-                    logger.error("简体中文查询优化超时，使用原始查询")
+                    input_variables=["question"]
+                )
+                
+                def _invoke_rewrite():
+                    # 直接调用而不使用链式操作
+                    prompt_text = rewrite_prompt.format(question=original_query)
+                    response = self.llm.invoke(prompt_text)
+                    if hasattr(response, 'content'):
+                        return response.content
+                    else:
+                        return str(response)
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_invoke_rewrite)
+                    try:
+                        optimized_query = future.result(timeout=OLLAMA_QUERY_OPTIMIZATION_TIMEOUT)
+                        logger.info(f"简体中文查询优化: {original_query} -> {optimized_query}")
+                        return optimized_query.strip()
+                    except concurrent.futures.TimeoutError:
+                        if attempt < OLLAMA_MAX_RETRIES - 1:
+                            logger.warning(f"查询优化超时，第 {attempt + 1} 次重试...")
+                            time.sleep(OLLAMA_RETRY_DELAY)
+                            continue
+                        else:
+                            logger.error("查询优化多次超时，使用原始查询")
+                            return original_query
+                
+            except Exception as e:
+                if attempt < OLLAMA_MAX_RETRIES - 1:
+                    logger.warning(f"查询优化出错，第 {attempt + 1} 次重试: {str(e)}")
+                    time.sleep(OLLAMA_RETRY_DELAY)
+                    continue
+                else:
+                    logger.error(f"查询优化多次失败: {str(e)}")
                     return original_query
-            
-        except Exception as e:
-            logger.error(f"简体中文查询优化时出错: {str(e)}")
-            return original_query
+        
+        return original_query
     
     def answer_question(self, question: str) -> str:
         """使用简体中文回答问题"""
@@ -128,17 +148,24 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
         chain = prompt | self.llm | StrOutputParser()
         
         def _invoke():
-            return chain.invoke({"context": context, "question": question})
+            # 直接调用而不使用链式操作
+            prompt_text = prompt.format(context=context, question=question)
+            response = self.llm.invoke(prompt_text)
+            if hasattr(response, 'content'):
+                return response.content
+            else:
+                return str(response)
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_invoke)
             try:
-                answer = future.result(timeout=60)
+                from config.config import OLLAMA_ANSWER_GENERATION_TIMEOUT
+                answer = future.result(timeout=OLLAMA_ANSWER_GENERATION_TIMEOUT)
                 
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)
                 
-                # 檢測並修復重複內容
+                # 检测并修复重复内容
                 cleaned_answer = self._clean_repetitive_content(answer.strip())
                 return cleaned_answer
                 

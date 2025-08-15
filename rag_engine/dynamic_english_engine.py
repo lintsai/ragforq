@@ -1,16 +1,25 @@
 """
 Dynamic RAG Engine for English
 """
+import logging
 from .dynamic_rag_base import DynamicRAGEngineBase
+
+logger = logging.getLogger(__name__)
 
 class DynamicEnglishRAGEngine(DynamicRAGEngineBase):
     """Dynamic English RAG Engine"""
 
-    REWRITE_PROMPT_TEMPLATE = """Extract 2-3 most important keywords from the following question, separated by spaces.
+    REWRITE_PROMPT_TEMPLATE = """You are a search optimization expert. Convert the following question into a more comprehensive descriptive statement suitable for searching in a knowledge base.
 
-Question: {original_query}
+Requirements:
+1. Keep it in English
+2. Expand relevant professional terms and synonyms
+3. Include different expressions that might appear in documents
+4. Preserve the core concept and semantic meaning of the question
 
-Keywords:"""
+Original question: {original_query}
+
+Optimized search query:"""
 
     ANSWER_PROMPT_TEMPLATE = """You are a professional AI document assistant. Strictly answer the "User Question" based on the "Context Information" below. Please respond in the same language as the question (English).
 
@@ -36,3 +45,41 @@ Relevance Reason:"""
 
     def get_language(self) -> str:
         return "English"
+    
+    def _generate_general_knowledge_answer(self, question: str) -> str:
+        """Provide general knowledge answer in English when no relevant documents found"""
+        try:
+            if self.llm is None:
+                return f"Sorry, I cannot find specific information related to '{question}' in the documents. This may be because the relevant documents are not within the current search scope, or the question requires more specific keywords. I suggest you try rephrasing with more specific keywords."
+            
+            general_prompt = f"""You are an IT expert assistant. Although no relevant information was found in QSI internal documents, please provide an answer based on general IT knowledge.
+
+Question: {question}
+
+Please note:
+1. Answer in English only
+2. Provide useful answers based on general IT knowledge
+3. Clearly state this is based on general knowledge, not from QSI internal documents
+4. If it's QSI-specific, suggest contacting relevant departments
+
+English answer:"""
+            
+            try:
+                response = self.llm.invoke(general_prompt)
+                answer = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+                
+                # Add English disclaimer
+                disclaimer = "\n\n※ Note: The above answer is based on general IT knowledge, not from QSI internal documents. For accurate information, please contact relevant departments."
+                return answer + disclaimer
+                
+            except Exception as e:
+                logger.error(f"English dynamic RAG knowledge answer generation failed: {str(e)}")
+                return self._get_general_fallback(question)
+        
+        except Exception as e:
+            logger.error(f"English dynamic RAG knowledge answer processing failed: {str(e)}")
+            return self._get_general_fallback(question)
+    
+    def _get_general_fallback(self, query: str) -> str:
+        """Get English general fallback answer"""
+        return f"Based on general IT knowledge, information about '{query}' may require consulting additional QSI internal documentation."

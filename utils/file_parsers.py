@@ -537,7 +537,7 @@ class ExcelParser(FileParser):
 
 
 class TextParser(FileParser):
-    """文本文件解析器 (TXT, MD等)"""
+    """文本文件解析器 (TXT, MD等) - 支持多種編碼自動檢測"""
     
     def parse(self, file_path: str) -> List[Tuple[str, Dict[str, Any]]]:
         """
@@ -553,19 +553,89 @@ class TextParser(FileParser):
         metadata = self.extract_metadata(file_path)
         metadata["document_type"] = os.path.splitext(file_path)[1][1:].upper() or "TXT"
 
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-                if content.strip():
-                    metadata["line_count"] = len(content.splitlines())
-                    results.append((content, metadata))
+        # 嘗試多種編碼
+        encodings = ['utf-8', 'big5', 'gb18030', 'gb2312', 'latin-1', 'cp1252', 'utf-16']
+        content = None
+        used_encoding = None
+        
+        for encoding in encodings:
+            try:
+                with open(file_path, 'r', encoding=encoding, errors='strict') as f:
+                    content = f.read()
+                    used_encoding = encoding
+                    break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+            except Exception as e:
+                logger.warning(f"使用編碼 {encoding} 讀取文件時出錯: {str(e)}")
+                continue
+        
+        # 如果所有編碼都失敗，使用二進制讀取並嘗試修復
+        if content is None:
+            try:
+                with open(file_path, 'rb') as f:
+                    raw_data = f.read()
+                    # 嘗試使用chardet檢測編碼
+                    try:
+                        import chardet
+                        detected = chardet.detect(raw_data)
+                        if detected['encoding'] and detected['confidence'] > 0.7:
+                            content = raw_data.decode(detected['encoding'], errors='replace')
+                            used_encoding = detected['encoding']
+                            logger.info(f"使用chardet檢測到編碼: {detected['encoding']} (置信度: {detected['confidence']:.2f})")
+                    except ImportError:
+                        pass
+                    
+                    # 如果chardet也失敗，使用utf-8並替換錯誤字符
+                    if content is None:
+                        content = raw_data.decode('utf-8', errors='replace')
+                        used_encoding = 'utf-8 (with errors replaced)'
+                        
+            except Exception as e:
+                logger.error(f"二進制讀取文件 {file_path} 時出錯: {str(e)}")
+                metadata["error"] = str(e)
+                results.append(("文本文件解析出錯，可能是編碼問題或權限限制", metadata))
+                return results
 
-        except Exception as e:
-            logger.error(f"解析文本文件 {file_path} 時出錯: {str(e)}")
-            metadata["error"] = str(e)
-            results.append(("文本文件解析出錯，可能是編碼問題或權限限制", metadata))
+        if content and content.strip():
+            metadata["line_count"] = len(content.splitlines())
+            metadata["encoding"] = used_encoding
+            metadata["file_size_chars"] = len(content)
+            
+            # 檢測並清理可能的亂碼
+            cleaned_content = self._clean_garbled_text(content)
+            results.append((cleaned_content, metadata))
+        else:
+            results.append(("文本文件為空或無法提取文本", metadata))
 
-        return results if results else [("文本文件為空或無法提取文本", metadata)]
+        return results
+    
+    def _clean_garbled_text(self, text: str) -> str:
+        """
+        清理可能的亂碼文本
+        
+        Args:
+            text: 原始文本
+            
+        Returns:
+            清理後的文本
+        """
+        if not text:
+            return text
+        
+        # 移除常見的亂碼字符
+        garbled_chars = ['\ufffd', '\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07', '\x08']
+        cleaned_text = text
+        
+        for char in garbled_chars:
+            cleaned_text = cleaned_text.replace(char, '')
+        
+        # 移除過多的空白字符
+        import re
+        cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)  # 最多保留兩個連續換行
+        cleaned_text = re.sub(r' {3,}', '  ', cleaned_text)     # 最多保留兩個連續空格
+        
+        return cleaned_text.strip()
 
 
 class CSVParser(FileParser):

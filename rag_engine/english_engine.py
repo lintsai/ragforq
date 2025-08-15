@@ -51,36 +51,62 @@ class EnglishRAGEngine(RAGEngineInterface):
     
     def rewrite_query(self, original_query: str) -> str:
         """
-        Optimize English query into a more precise and comprehensive search description
+        Optimize English query into a more precise and comprehensive search description - with retry mechanism
         """
-        try:
-            rewrite_prompt = PromptTemplate(
-                template="""You are a search optimization expert. Convert the following question into keywords or a descriptive phrase suitable for searching in a knowledge base. Please respond strictly in English.
+        from config.config import OLLAMA_MAX_RETRIES, OLLAMA_RETRY_DELAY, OLLAMA_QUERY_OPTIMIZATION_TIMEOUT
+        import time
+        
+        for attempt in range(OLLAMA_MAX_RETRIES):
+            try:
+                rewrite_prompt = PromptTemplate(
+                    template="""You are a search optimization expert. Convert the following question into a more comprehensive descriptive statement suitable for searching in a knowledge base.
+
+Requirements:
+1. Keep it in English
+2. Expand relevant professional terms and synonyms
+3. Include different expressions that might appear in documents
+4. Preserve the core concept and semantic meaning of the question
 
 Original question: {question}
 
 Optimized search query:""",
-                input_variables=["question"]
-            )
-            
-            rewrite_chain = rewrite_prompt | self.llm | StrOutputParser()
-            
-            def _invoke_rewrite():
-                return rewrite_chain.invoke({"question": original_query})
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_invoke_rewrite)
-                try:
-                    optimized_query = future.result(timeout=15)
-                    logger.info(f"English query optimization: {original_query} -> {optimized_query}")
-                    return optimized_query.strip()
-                except concurrent.futures.TimeoutError:
-                    logger.error("English query optimization timeout, using original query")
+                    input_variables=["question"]
+                )
+                
+                def _invoke_rewrite():
+                    # Direct invocation without chain operations
+                    prompt_text = rewrite_prompt.format(question=original_query)
+                    response = self.llm.invoke(prompt_text)
+                    if hasattr(response, 'content'):
+                        return response.content
+                    else:
+                        return str(response)
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_invoke_rewrite)
+                    try:
+                        optimized_query = future.result(timeout=OLLAMA_QUERY_OPTIMIZATION_TIMEOUT)
+                        logger.info(f"English query optimization: {original_query} -> {optimized_query}")
+                        return optimized_query.strip()
+                    except concurrent.futures.TimeoutError:
+                        if attempt < OLLAMA_MAX_RETRIES - 1:
+                            logger.warning(f"Query optimization timeout, retry {attempt + 1}...")
+                            time.sleep(OLLAMA_RETRY_DELAY)
+                            continue
+                        else:
+                            logger.error("Query optimization multiple timeouts, using original query")
+                            return original_query
+                
+            except Exception as e:
+                if attempt < OLLAMA_MAX_RETRIES - 1:
+                    logger.warning(f"Query optimization error, retry {attempt + 1}: {str(e)}")
+                    time.sleep(OLLAMA_RETRY_DELAY)
+                    continue
+                else:
+                    logger.error(f"Query optimization multiple failures: {str(e)}")
                     return original_query
-            
-        except Exception as e:
-            logger.error(f"Error during English query optimization: {str(e)}")
-            return original_query
+        
+        return original_query
     
     def answer_question(self, question: str) -> str:
         """Answer question in English"""
@@ -127,12 +153,19 @@ Answer:"""
         chain = prompt | self.llm | StrOutputParser()
         
         def _invoke():
-            return chain.invoke({"context": context, "question": question})
+            # Direct invocation without chain operations
+            prompt_text = prompt.format(context=context, question=question)
+            response = self.llm.invoke(prompt_text)
+            if hasattr(response, 'content'):
+                return response.content
+            else:
+                return str(response)
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_invoke)
             try:
-                answer = future.result(timeout=60)
+                from config.config import OLLAMA_ANSWER_GENERATION_TIMEOUT
+                answer = future.result(timeout=OLLAMA_ANSWER_GENERATION_TIMEOUT)
                 
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)

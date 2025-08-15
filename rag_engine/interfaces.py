@@ -50,7 +50,7 @@ class RAGEngineInterface(ABC):
     
     def retrieve_documents(self, query: str, top_k: int = 5) -> List[Document]:
         """
-        檢索與查詢最相關的文檔（通用實現）
+        檢索與查詢最相關的文檔（優化版本）- 改進相關性和去重
         
         Args:
             query: 用戶查詢
@@ -62,30 +62,54 @@ class RAGEngineInterface(ABC):
         try:
             vector_store = self.vector_store
             # 檢索更多文檔以便後續按文件去重和排序
-            search_count = max(top_k * 3, 15)  # 至少檢索15個段落
+            search_count = max(top_k * 4, 20)  # 增加檢索數量
             documents = vector_store.similarity_search_with_score(query, k=search_count)
             
             # 按相似度排序（距離越小越相關）
             sorted_docs = sorted(documents, key=lambda x: x[1])
             
-            # 保留相關的文檔，使用更寬鬆的閾值
+            # 使用動態閾值和文件去重
             filtered_docs = []
+            seen_files = set()
+            file_best_scores = {}
+            
+            # 第一輪：收集每個文件的最佳分數
             for doc, score in sorted_docs:
-                if score < 2.0:  # 稍微放寬相似度閾值
+                file_path = doc.metadata.get('file_path', 'unknown')
+                if file_path not in file_best_scores or score < file_best_scores[file_path]:
+                    file_best_scores[file_path] = score
+            
+            # 計算動態閾值
+            if file_best_scores:
+                scores = list(file_best_scores.values())
+                avg_score = sum(scores) / len(scores)
+                dynamic_threshold = min(avg_score * 1.5, 1.8)  # 動態調整閾值
+            else:
+                dynamic_threshold = 1.5
+            
+            # 第二輪：按文件去重，每個文件只保留最相關的段落
+            for doc, score in sorted_docs:
+                file_path = doc.metadata.get('file_path', 'unknown')
+                
+                if score < dynamic_threshold and file_path not in seen_files:
                     doc.metadata['score'] = score
+                    doc.metadata['relevance_rank'] = len(filtered_docs) + 1
                     filtered_docs.append(doc)
+                    seen_files.add(file_path)
                     
-                    # 限制最終返回的段落數量，但保留足夠多的選擇
-                    if len(filtered_docs) >= search_count:
+                    # 達到所需數量就停止
+                    if len(filtered_docs) >= top_k:
                         break
             
+            logger.info(f"檢索到 {len(filtered_docs)} 個相關文檔，動態閾值: {dynamic_threshold:.2f}")
             return filtered_docs
             
         except Exception as e:
+            logger.error(f"檢索文檔時出錯: {str(e)}")
             # 如果失敗，使用簡單搜索
             try:
                 documents = vector_store.similarity_search(query, k=max(top_k * 2, 10))
-                return documents
+                return documents[:top_k]
             except Exception:
                 return []
     
