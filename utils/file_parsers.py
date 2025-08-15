@@ -448,9 +448,13 @@ class DocxParser(FileParser):
             for table in doc.tables:
                 table_text = []
                 for row in table.rows:
-                    row_text = [cell.text.strip() for cell in row.cells]
-                    if any(row_text):  # 如果行不為空
-                        table_text.append(" | ".join(row_text))
+                    row_values = [cell.text.strip() for cell in row.cells]
+                    if any(row_values):
+                        import re
+                        row_text = " | ".join(row_values)
+                        cleaned_row_text = re.sub(r'(\s*\|\s*){2,}', ' | ', row_text).strip(' |')
+                        if cleaned_row_text:
+                            table_text.append(cleaned_row_text)
                 if table_text:
                     text_blocks.append("\n".join(table_text))
 
@@ -505,9 +509,15 @@ class ExcelParser(FileParser):
                             break
                         
                         try:
-                            row_values = [str(cell) if cell is not None else "" for cell in row]
-                            if any(filter(bool, row_values)):  # 如果行不為空
-                                sheet_text.append(" | ".join(row_values))
+                            row_values = [str(cell).strip() if cell is not None else "" for cell in row]
+                            if any(row_values):
+                                import re
+                                row_text = " | ".join(row_values)
+                                # 將多個分隔符壓縮為一個，並清理開頭和結尾的分隔符
+                                cleaned_row_text = re.sub(r'(\s*\|\s*){2,}', ' | ', row_text).strip(' |')
+                                # 只有在清理後仍有內容時才添加
+                                if cleaned_row_text:
+                                    sheet_text.append(cleaned_row_text)
                         except Exception as row_error:
                             logger.warning(f"處理 Excel 行 {row_count} 時出錯: {str(row_error)}")
                             continue
@@ -672,9 +682,13 @@ class CSVParser(FileParser):
                             rows.append("... (表格過大，僅顯示前5000行)")
                             break
                         
-                        row_text = [str(cell).strip() for cell in row]
-                        if any(row_text):  # 如果行不為空
-                            rows.append(" | ".join(row_text))
+                        row_values = [str(cell).strip() for cell in row]
+                        if any(row_values):
+                            import re
+                            row_text = " | ".join(row_values)
+                            cleaned_row_text = re.sub(r'(\s*\|\s*){2,}', ' | ', row_text).strip(' |')
+                            if cleaned_row_text:
+                                rows.append(cleaned_row_text)
                 
                 if rows:
                     content = "\n".join(rows)

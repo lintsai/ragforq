@@ -104,23 +104,34 @@ class SmartFileRetriever:
             
             # 分類目錄
             try:
-                for item in os.listdir(scan_path):
-                    item_path = os.path.join(scan_path, item)
-                    if os.path.isdir(item_path):
-                        item_lower = item.lower()
-                        # 優先處理可能包含重要文檔的目錄
-                        if any(keyword in item_lower for keyword in ['文件', '資料', '檔案', 'document', 'data', 'file', '共用', 'share']):
-                            priority_dirs.append(item_path)
-                        else:
-                            common_dirs.append(item_path)
+                # 如果指定了文件夾路徑，直接掃描該路徑
+                if self.folder_path:
+                    # 檢查指定的文件夾是否存在
+                    if os.path.exists(scan_path) and os.path.isdir(scan_path):
+                        priority_dirs = [scan_path]
+                        logger.info(f"直接掃描指定文件夾: {scan_path}")
+                    else:
+                        logger.warning(f"指定的文件夾不存在: {scan_path}")
+                        priority_dirs = [self.base_path]
+                else:
+                    # 全局掃描模式，分類子目錄
+                    for item in os.listdir(scan_path):
+                        item_path = os.path.join(scan_path, item)
+                        if os.path.isdir(item_path):
+                            item_lower = item.lower()
+                            # 優先處理可能包含重要文檔的目錄
+                            if any(keyword in item_lower for keyword in ['文件', '資料', '檔案', 'document', 'data', 'file', '共用', 'share']):
+                                priority_dirs.append(item_path)
+                            else:
+                                common_dirs.append(item_path)
             except Exception as e:
                 logger.warning(f"列舉目錄時出錯: {str(e)}")
-                priority_dirs = [self.base_path]
+                priority_dirs = [scan_path if self.folder_path else self.base_path]
             
             # 按優先級掃描
             scan_dirs = priority_dirs + common_dirs
             if not scan_dirs:
-                scan_dirs = [self.base_path]
+                scan_dirs = [scan_path if self.folder_path else self.base_path]
             
             for scan_dir in scan_dirs:
                 if file_count >= max_files:
@@ -128,8 +139,14 @@ class SmartFileRetriever:
                     
                 try:
                     for root, dirs, files in os.walk(scan_dir):
-                        # 計算當前深度
-                        depth = root.replace(self.base_path, '').count(os.sep)
+                        # 計算當前深度（相對於掃描起始路徑）
+                        if self.folder_path:
+                            # 文件夾限制模式：相對於指定文件夾計算深度
+                            depth = root.replace(scan_path, '').count(os.sep)
+                        else:
+                            # 全局模式：相對於基礎路徑計算深度
+                            depth = root.replace(self.base_path, '').count(os.sep)
+                            
                         if depth >= max_depth:
                             dirs[:] = []  # 不再深入子目錄
                             continue
@@ -159,13 +176,23 @@ class SmartFileRetriever:
                                     if stat.st_size < 100:  # 小於100字節
                                         continue
                                         
+                                    # 計算相對路徑
+                                    if self.folder_path:
+                                        # 文件夾限制模式：顯示相對於指定文件夾的路徑
+                                        relative_path = os.path.relpath(file_path, scan_path)
+                                        display_path = os.path.join(self.folder_path, relative_path).replace('\\', '/')
+                                    else:
+                                        # 全局模式：顯示相對於基礎路徑的路徑
+                                        display_path = os.path.relpath(file_path, self.base_path).replace('\\', '/')
+                                    
                                     self.file_cache[file_path] = {
                                         'name': file,
                                         'size': stat.st_size,
                                         'mtime': stat.st_mtime,
                                         'ext': file_ext,
-                                        'relative_path': os.path.relpath(file_path, self.base_path),
-                                        'depth': depth
+                                        'relative_path': display_path,
+                                        'depth': depth,
+                                        'folder_limited': bool(self.folder_path)  # 標記是否為文件夾限制模式
                                     }
                                     file_count += 1
                                 except (OSError, PermissionError):
@@ -766,11 +793,8 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             if not result or len(result.strip()) < 5:
                 return self._get_general_fallback(question)
             
-            # 檢測並修復重複內容
-            cleaned_result = self._clean_repetitive_content(result)
-            
             # 嘗試確保輸出符合目標語言
-            return self._ensure_language(cleaned_result)
+            return self._ensure_language(result)
             
         except Exception as e:
             logger.error(f"生成回答過程中發生錯誤: {str(e)}")
@@ -887,76 +911,4 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         except Exception:
             return text
     
-    def _clean_repetitive_content(self, text: str) -> str:
-        """清理重複內容 - 通用版本"""
-        if not text:
-            return text
-        
-        # 分割成段落
-        paragraphs = text.split('\n\n')
-        cleaned_paragraphs = []
-        seen_content = set()
-        
-        for paragraph in paragraphs:
-            paragraph = paragraph.strip()
-            if not paragraph:
-                continue
-            
-            # 檢查是否是重複段落（使用前100個字符作為指紋）
-            fingerprint = paragraph[:100].strip()
-            if fingerprint not in seen_content:
-                seen_content.add(fingerprint)
-                cleaned_paragraphs.append(paragraph)
-            else:
-                logger.warning(f"檢測到重複段落，已移除: {fingerprint[:50]}...")
-        
-        # 重新組合
-        cleaned_text = '\n\n'.join(cleaned_paragraphs)
-        
-        # 檢查是否有句子級別的重複（根據語言選擇分隔符）
-        try:
-            target_lang = self.get_language()
-            if target_lang in ("繁體中文", "简体中文"):
-                sentences = cleaned_text.split('。')
-                separator = '。'
-            elif target_lang == "ไทย":
-                sentences = cleaned_text.split(' ')
-                separator = ' '
-            else:  # English
-                sentences = cleaned_text.split('. ')
-                separator = '. '
-        except:
-            # 如果無法獲取語言，使用通用分隔符
-            sentences = cleaned_text.split('. ')
-            separator = '. '
-        
-        cleaned_sentences = []
-        seen_sentences = set()
-        
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            
-            # 更智能的重複檢測：只對完全相同且長度超過20字符的句子進行去重
-            sentence_fingerprint = sentence.strip()
-            if len(sentence_fingerprint) > 20 and sentence_fingerprint in seen_sentences:
-                logger.debug(f"檢測到重複句子，已移除: {sentence_fingerprint[:30]}...")
-            else:
-                seen_sentences.add(sentence_fingerprint)
-                cleaned_sentences.append(sentence)
-        
-        final_text = separator.join(cleaned_sentences)
-        
-        # 根據語言添加適當的結尾
-        if separator == '。' and final_text and not final_text.endswith('。'):
-            final_text += '。'
-        elif separator == '. ' and final_text and not final_text.endswith('.'):
-            final_text += '.'
-        
-        # 如果清理後內容太短，返回原始內容的前500字符
-        if len(final_text.strip()) < 50:
-            logger.warning("清理後內容過短，返回原始內容的截取版本")
-            return text[:500] + "..." if len(text) > 500 else text
-        
-        return final_text
+    
