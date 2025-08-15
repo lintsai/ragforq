@@ -947,44 +947,105 @@ async def get_folder_list(path: Optional[str] = Query(None)):
         total_size = 0
         supported_extensions = get_supported_file_extensions()
         
-        def calculate_folder_stats(folder_path: Path, max_files: int = 2000):
-            """計算文件夾統計信息"""
+        def calculate_folder_stats_shallow(folder_path: Path):
+            """計算文件夾統計信息（淺層掃描，避免大文件夾超時）"""
+            # 從環境變量獲取配置
+            max_files = int(os.getenv("FOLDER_SCAN_MAX_FILES", "50"))
+            max_depth = int(os.getenv("FOLDER_SCAN_MAX_DEPTH", "1"))
+            
             file_count = 0
             total_size = 0
             
-            try:
-                for file_path in folder_path.rglob("*"):
-                    if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
-                        file_count += 1
-                        try:
-                            total_size += file_path.stat().st_size
-                        except (OSError, PermissionError):
-                            pass
-                        
-                        # 限制計數以提高性能
+            def scan_directory(dir_path: Path, current_depth: int = 0):
+                nonlocal file_count, total_size
+                
+                if current_depth > max_depth or file_count >= max_files:
+                    return
+                
+                try:
+                    # 只掃描當前目錄，不遞歸太深
+                    for item in dir_path.iterdir():
                         if file_count >= max_files:
+                            break
+                            
+                        if item.is_file() and item.suffix.lower() in supported_extensions:
+                            file_count += 1
+                            try:
+                                total_size += item.stat().st_size
+                            except (OSError, PermissionError):
+                                pass
+                        elif item.is_dir() and current_depth < max_depth:
+                            # 只遞歸到指定深度
+                            scan_directory(item, current_depth + 1)
+                            
+                except (PermissionError, OSError):
+                    pass
+            
+            scan_directory(folder_path)
+            return file_count, total_size
+        
+        def get_immediate_folder_info(folder_path: Path):
+            """獲取文件夾的直接信息（不遞歸，最快速）"""
+            # 從環境變量獲取配置
+            max_files = int(os.getenv("FOLDER_SCAN_MAX_FILES", "50"))
+            
+            file_count = 0
+            has_subfolders = False
+            
+            try:
+                for item in folder_path.iterdir():
+                    if item.is_file() and item.suffix.lower() in supported_extensions:
+                        file_count += 1
+                        if file_count >= max_files:  # 使用配置的最大文件數
+                            break
+                    elif item.is_dir():
+                        has_subfolders = True
+                        if file_count >= max_files // 2 and has_subfolders:  # 有文件又有子文件夾，快速返回
                             break
             except (PermissionError, OSError):
                 pass
             
-            return file_count, total_size
+            return file_count, has_subfolders
         
         try:
-            # 獲取文件夾列表和統計
+            # 獲取文件夾列表和統計（使用快速掃描避免超時）
             for item in base_path.iterdir():
                 if item.is_dir():
-                    # 計算該文件夾下的支持文件數量和大小
-                    folder_files_count, folder_size = calculate_folder_stats(item)
+                    # 使用快速掃描獲取文件夾信息
+                    immediate_files, has_subfolders = get_immediate_folder_info(item)
                     
                     relative_path = str(item.relative_to(Path(Q_DRIVE_PATH)))
-                    folders.append({
-                        "name": item.name,
-                        "path": relative_path,
-                        "files_count": folder_files_count,
-                        "total_size": folder_size,
-                        "size_mb": round(folder_size / (1024 * 1024), 2),
-                        "is_folder": True
-                    })
+                    
+                    # 根據文件夾大小決定掃描策略
+                    if immediate_files > 20 or has_subfolders:
+                        # 大文件夾：使用估算值，避免精確計算導致超時
+                        display_count = f"{immediate_files}+" if immediate_files >= 50 else str(immediate_files)
+                        folders.append({
+                            "name": item.name,
+                            "path": relative_path,
+                            "files_count": immediate_files,
+                            "files_count_display": display_count,
+                            "total_size": 0,  # 大文件夾不計算總大小
+                            "size_mb": 0,
+                            "is_folder": True,
+                            "is_large_folder": True,
+                            "has_subfolders": has_subfolders
+                        })
+                    else:
+                        # 小文件夾：使用精確計算
+                        folder_files_count, folder_size = calculate_folder_stats_shallow(item)
+                        folders.append({
+                            "name": item.name,
+                            "path": relative_path,
+                            "files_count": folder_files_count,
+                            "files_count_display": str(folder_files_count),
+                            "total_size": folder_size,
+                            "size_mb": round(folder_size / (1024 * 1024), 2),
+                            "is_folder": True,
+                            "is_large_folder": False,
+                            "has_subfolders": has_subfolders
+                        })
+                        
                 elif item.is_file() and item.suffix.lower() in supported_extensions:
                     files_count += 1
                     try:

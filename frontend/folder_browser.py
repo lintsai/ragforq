@@ -172,9 +172,19 @@ class FolderBrowser:
                     
                     with col1:
                         # 文件夾信息
-                        size_display = f"{folder.get('size_mb', 0):.1f} MB" if folder.get('size_mb', 0) < 1024 else f"{folder.get('size_mb', 0)/1024:.1f} GB"
-                        st.write(f"📁 **{folder['name']}**")
-                        st.caption(f"📄 {folder['files_count']} 個文件 • 💾 {size_display}")
+                        folder_name = folder['name']
+                        files_display = folder.get('files_count_display', str(folder['files_count']))
+                        
+                        # 根據文件夾類型顯示不同信息
+                        if folder.get('is_large_folder', False):
+                            # 大文件夾：顯示估算信息
+                            st.write(f"📁 **{folder_name}** {'📂' if folder.get('has_subfolders') else ''}")
+                            st.caption(f"📄 約 {files_display} 個文件 {'• 📁 包含子文件夾' if folder.get('has_subfolders') else ''}")
+                        else:
+                            # 小文件夾：顯示精確信息
+                            size_display = f"{folder.get('size_mb', 0):.1f} MB" if folder.get('size_mb', 0) < 1024 else f"{folder.get('size_mb', 0)/1024:.1f} GB"
+                            st.write(f"📁 **{folder_name}**")
+                            st.caption(f"📄 {files_display} 個文件 • 💾 {size_display}")
                     
                     with col2:
                         if st.button("📂 進入", key=f"enter_{i}", help=f"進入 {folder['name']} 文件夾"):
@@ -183,9 +193,22 @@ class FolderBrowser:
                     
                     with col3:
                         if folder['files_count'] > 0:
-                            if st.button("✅ 選擇", key=f"select_{i}", help=f"選擇 {folder['name']} 作為搜索範圍"):
+                            # 根據文件夾類型顯示不同的選擇按鈕
+                            if folder.get('is_large_folder', False):
+                                button_text = "⚡ 選擇"
+                                help_text = f"選擇 {folder['name']} 作為搜索範圍（大文件夾，建議進一步細分）"
+                            else:
+                                button_text = "✅ 選擇"
+                                help_text = f"選擇 {folder['name']} 作為搜索範圍"
+                            
+                            if st.button(button_text, key=f"select_{i}", help=help_text):
                                 st.session_state.selected_folder_path = folder["path"]
                                 st.success(f"🎯 已選擇：{folder['name']}")
+                                
+                                # 顯示警告信息（如果是大文件夾）
+                                if folder.get('is_large_folder', False):
+                                    st.warning("⚠️ 這是一個大文件夾，建議進入子文件夾以獲得更精確的搜索結果")
+                                
                                 return folder["path"]
                         else:
                             st.button("❌ 無文件", key=f"empty_{i}", disabled=True, help="此文件夾沒有支持的文件")
