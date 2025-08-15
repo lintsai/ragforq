@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Tuple, Optional
 from langchain_core.documents import Document
+import logging
+
+logger = logging.getLogger(__name__)
 
 class RAGEngineInterface(ABC):
     """RAG引擎接口，定義所有RAG引擎必須實現的方法"""
