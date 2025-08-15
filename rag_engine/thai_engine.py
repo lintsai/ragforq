@@ -8,6 +8,9 @@ from pathlib import Path
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 設置日誌
+logger = logging.getLogger(__name__)
+
 from rag_engine.interfaces import RAGEngineInterface
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document

@@ -241,21 +241,29 @@ class ModelManager:
                 logger.info(f"語言模型 {model_name} 加載成功")
                 
             except Exception as e:
-                logger.error(f"加載語言模型失敗: {str(e)}")
+                error_msg = str(e)
+                logger.error(f"加載語言模型失敗: {error_msg}")
+                
+                # 特殊處理 CUDA 記憶體分配器錯誤
+                if "expandable_segment" in error_msg or "CUDACachingAllocator" in error_msg:
+                    logger.error("檢測到 CUDA 記憶體分配器內部錯誤，執行深度清理...")
+                    self._deep_gpu_cleanup()
                 
                 # 清理 GPU 記憶體
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
                     logger.info("已清理 GPU 記憶體")
                 
-                # 智能回退策略
-                fallback_model = "Qwen/Qwen2-0.5B-Instruct"
-                if model_name != fallback_model:
+                # 智能回退策略 - 動態選擇合適的回退模型
+                fallback_model = self._get_fallback_model(model_name, error_msg)
+                
+                if fallback_model and model_name != fallback_model:
                     logger.info(f"嘗試回退到較小模型: {fallback_model}")
                     # 確保回退模型不使用大型模型優化
                     return self.get_llm_model(fallback_model, use_large_model_optimizations=False)
                 else:
-                    logger.error("回退模型也載入失敗")
+                    logger.error("無法找到合適的回退模型或回退模型也載入失敗")
                     raise
         
         return self._llm_models[model_name]
@@ -475,6 +483,96 @@ class ModelManager:
             self._tokenizers.clear()
             logger.info("分詞器緩存已清理")
     
+    def _get_fallback_model(self, original_model: str, error_msg: str) -> Optional[str]:
+        """
+        智能選擇回退模型
+        
+        Args:
+            original_model: 原始模型名稱
+            error_msg: 錯誤信息
+            
+        Returns:
+            合適的回退模型名稱，如果無法確定則返回 None
+        """
+        # 獲取可用的 GPU 記憶體
+        total_memory = 0
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                total_memory += torch.cuda.get_device_properties(i).total_memory / (1024**3)
+        
+        # 根據錯誤類型和可用記憶體智能選擇
+        if "expandable_segment" in error_msg or "out of memory" in error_msg.lower():
+            # 嚴重記憶體錯誤，選擇最小可用模型
+            if total_memory >= 8:
+                return os.getenv('FALLBACK_SMALL_MODEL', 'microsoft/DialoGPT-small')
+            else:
+                return os.getenv('FALLBACK_TINY_MODEL', 'distilgpt2')
+        
+        # 根據原始模型大小智能降級
+        model_lower = original_model.lower()
+        
+        # 大型模型 (>10B) 回退策略
+        if any(size in model_lower for size in ['20b', '14b', '13b', '11b']):
+            if total_memory >= 16:
+                return os.getenv('FALLBACK_MEDIUM_MODEL', 'microsoft/DialoGPT-medium')
+            else:
+                return os.getenv('FALLBACK_SMALL_MODEL', 'microsoft/DialoGPT-small')
+        
+        # 中型模型 (3-10B) 回退策略
+        elif any(size in model_lower for size in ['7b', '6b', '5b', '4b', '3b']):
+            if total_memory >= 8:
+                return os.getenv('FALLBACK_SMALL_MODEL', 'microsoft/DialoGPT-small')
+            else:
+                return os.getenv('FALLBACK_TINY_MODEL', 'distilgpt2')
+        
+        # 小型模型 (1-3B) 回退策略
+        elif any(size in model_lower for size in ['2b', '1.5b', '1b']):
+            return os.getenv('FALLBACK_TINY_MODEL', 'distilgpt2')
+        
+        # 如果無法從模型名稱判斷大小，根據記憶體選擇
+        if total_memory >= 16:
+            return os.getenv('FALLBACK_MEDIUM_MODEL', 'microsoft/DialoGPT-medium')
+        elif total_memory >= 8:
+            return os.getenv('FALLBACK_SMALL_MODEL', 'microsoft/DialoGPT-small')
+        else:
+            return os.getenv('FALLBACK_TINY_MODEL', 'distilgpt2')
+
+    def _deep_gpu_cleanup(self):
+        """深度 GPU 記憶體清理 - 處理記憶體碎片化問題"""
+        import gc
+        import time
+        
+        logger.info("執行深度 GPU 記憶體清理...")
+        
+        if torch.cuda.is_available():
+            try:
+                # 1. 清理所有模型緩存
+                self.clear_cache()
+                
+                # 2. 強制垃圾回收
+                gc.collect()
+                
+                # 3. 清理每個 GPU 設備
+                for i in range(torch.cuda.device_count()):
+                    with torch.cuda.device(i):
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
+                        # 重置記憶體統計
+                        torch.cuda.reset_peak_memory_stats(i)
+                        torch.cuda.reset_accumulated_memory_stats(i)
+                
+                # 4. 等待清理完成
+                time.sleep(2)
+                
+                # 5. 再次強制清理
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+                logger.info("深度 GPU 記憶體清理完成")
+                
+            except Exception as e:
+                logger.error(f"深度 GPU 清理失敗: {e}")
+
     def reload_model_manager(self):
         """重新載入模型管理器 - 清理所有緩存"""
         self.clear_cache()
