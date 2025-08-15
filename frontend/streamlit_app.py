@@ -22,6 +22,7 @@ sys.path.append(project_root)
 from config.config import APP_HOST, APP_PORT, STREAMLIT_PORT, API_BASE_URL, is_q_drive_accessible, Q_DRIVE_PATH, DISPLAY_DRIVE_NAME
 from frontend.help_system import render_help_sidebar, show_help_modal
 from frontend.model_selector import render_model_selector, is_setup_completed
+from frontend.folder_browser import FolderBrowser
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -98,7 +99,7 @@ def retry_with_backoff(func, max_retries=3, initial_delay=1):
             time.sleep(delay)
             delay *= 2
 
-def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None, language: str = "繁體中文", use_dynamic_rag: bool = False, dynamic_ollama_model: Optional[str] = None, dynamic_embedding_model: Optional[str] = None, platform: Optional[str] = None) -> Dict[str, Any]:
+def get_answer(question: str, include_sources: bool = True, max_sources: Optional[int] = None, use_query_rewrite: bool = True, show_relevance: bool = True, selected_model: Optional[str] = None, language: str = "繁體中文", use_dynamic_rag: bool = False, dynamic_ollama_model: Optional[str] = None, dynamic_embedding_model: Optional[str] = None, platform: Optional[str] = None, folder_path: Optional[str] = None) -> Dict[str, Any]:
     """獲取問題答案"""
     try:
         payload = {
@@ -109,7 +110,8 @@ def get_answer(question: str, include_sources: bool = True, max_sources: Optiona
             "show_relevance": show_relevance,
             "language": language,  # 將語言作為獨立參數傳遞
             "use_dynamic_rag": use_dynamic_rag,
-            "ollama_embedding_model": dynamic_embedding_model
+            "ollama_embedding_model": dynamic_embedding_model,
+            "folder_path": folder_path
         }
         
         if platform:
@@ -494,6 +496,31 @@ def main():
             )
             st.session_state.selected_language = selected_language
             
+            # 文件夾選擇（僅在動態RAG模式下顯示）
+            selected_folder_path = None
+            if rag_mode_main == "Dynamic RAG":
+                st.markdown("---")
+                st.markdown("### 📁 搜索範圍")
+                
+                # 文件夾選擇器
+                folder_enabled = st.checkbox("限制搜索範圍", value=False, help="限制在特定文件夾內搜索", key="folder_enabled")
+                
+                if folder_enabled:
+                    # 使用文件夾瀏覽器組件
+                    folder_browser = FolderBrowser(API_URL)
+                    selected_folder_path = folder_browser.render()
+                    
+                    # 顯示當前選擇
+                    if selected_folder_path is not None:
+                        display_path = selected_folder_path if selected_folder_path else "根目錄"
+                        st.success(f"🎯 當前選擇的搜索範圍：{display_path}")
+                        
+                        # 清除選擇按鈕
+                        if st.button("🗑️ 清除選擇", key="clear_folder_selection"):
+                            folder_browser.clear_selection()
+                            selected_folder_path = None
+                            st.rerun()
+            
             # 固定設置，不再提供用戶選項
             include_sources = True  # 總是包含相關文件
             max_sources = 5  # 固定回應5筆結果
@@ -600,7 +627,8 @@ def main():
                         use_dynamic_rag=(rag_mode_main == "Dynamic RAG"),
                         dynamic_ollama_model=st.session_state.get('dynamic_language_model'),
                         dynamic_embedding_model=st.session_state.get('dynamic_embedding_model'),
-                        platform=st.session_state.get('dynamic_platform') if rag_mode_main == "Dynamic RAG" else None
+                        platform=st.session_state.get('dynamic_platform') if rag_mode_main == "Dynamic RAG" else None,
+                        folder_path=selected_folder_path
                     )
 
                     answer_text = result.get("answer", "無法獲取答案")

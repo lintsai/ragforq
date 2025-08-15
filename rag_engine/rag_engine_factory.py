@@ -89,7 +89,7 @@ class RAGEngineFactory:
             return "traditional_chinese"
         return normalized
     
-    def create_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None) -> RAGEngineInterface:
+    def create_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None, folder_path: Optional[str] = None) -> RAGEngineInterface:
         """
         創建指定語言的RAG引擎
         
@@ -115,8 +115,8 @@ class RAGEngineFactory:
         
         try:
             if normalized_lang.startswith("dynamic_"):
-                # 動態RAG引擎
-                engine = engine_class(ollama_model, ollama_embedding_model, platform=platform)
+                # 動態RAG引擎，支持文件夾路徑
+                engine = engine_class(ollama_model, ollama_embedding_model, platform=platform, folder_path=folder_path)
             else:
                 # 傳統RAG引擎
                 engine = engine_class(document_indexer, ollama_model, platform)
@@ -127,7 +127,7 @@ class RAGEngineFactory:
             logger.error(f"創建{language}RAG引擎失敗: {str(e)}")
             raise
     
-    def get_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None) -> RAGEngineInterface:
+    def get_engine(self, language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None, folder_path: Optional[str] = None) -> RAGEngineInterface:
         """
         獲取或創建指定語言的RAG引擎（帶緩存）
         
@@ -148,10 +148,12 @@ class RAGEngineFactory:
             
         normalized_lang = self.normalize_language(language)
         
-        # 創建緩存鍵，包含平台信息
+        # 創建緩存鍵，只有動態 RAG 才包含文件夾路徑
         if normalized_lang.startswith("dynamic_"):
-            cache_key = f"{normalized_lang}_{ollama_model}_{ollama_embedding_model}_{platform}"
+            folder_key = f"_{folder_path}" if folder_path else ""
+            cache_key = f"{normalized_lang}_{ollama_model}_{ollama_embedding_model}_{platform}{folder_key}"
         else:
+            # 傳統 RAG 不使用文件夾路徑，忽略 folder_path 參數
             cache_key = f"{normalized_lang}_{ollama_model}_{platform}"
         
         # 檢查緩存
@@ -161,7 +163,7 @@ class RAGEngineFactory:
         if cache_key not in self._engines[normalized_lang]:
             # 創建新引擎
             self._engines[normalized_lang][cache_key] = self.create_engine(
-                language, document_indexer, ollama_model, ollama_embedding_model, platform
+                language, document_indexer, ollama_model, ollama_embedding_model, platform, folder_path
             )
         
         return self._engines[normalized_lang][cache_key]
@@ -219,7 +221,7 @@ class RAGEngineFactory:
 # 創建全局工廠實例
 rag_engine_factory = RAGEngineFactory()
 
-def get_rag_engine_for_language(language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None) -> RAGEngineInterface:
+def get_rag_engine_for_language(language: str, document_indexer, ollama_model: str, ollama_embedding_model: str = None, platform: str = None, folder_path: Optional[str] = None) -> RAGEngineInterface:
     """
     便捷函數：獲取指定語言的RAG引擎
     
@@ -238,7 +240,7 @@ def get_rag_engine_for_language(language: str, document_indexer, ollama_model: s
         from config.config import detect_platform_from_model
         platform = detect_platform_from_model(ollama_model)
     
-    return rag_engine_factory.get_engine(language, document_indexer, ollama_model, ollama_embedding_model, platform)
+    return rag_engine_factory.get_engine(language, document_indexer, ollama_model, ollama_embedding_model, platform, folder_path)
 
 def clear_rag_engine_cache(language: Optional[str] = None, ollama_model: Optional[str] = None):
     """

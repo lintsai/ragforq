@@ -1,76 +1,65 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-同步 Poetry 和 requirements.txt 的依賴版本
-以 pyproject.toml 為主要來源
+同步 Poetry 和 requirements.txt 依賴的腳本
 """
 
-import toml
-import re
+import subprocess
+import sys
+import logging
 from pathlib import Path
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 def sync_dependencies():
-    """同步依賴版本"""
+    """同步 Poetry 和 requirements.txt"""
     
-    # 讀取 pyproject.toml
-    pyproject_path = Path("pyproject.toml")
-    if not pyproject_path.exists():
-        print("❌ pyproject.toml 不存在")
-        return
+    if not Path("pyproject.toml").exists():
+        logger.error("❌ 未找到 pyproject.toml 文件")
+        return False
     
-    with open(pyproject_path, 'r', encoding='utf-8') as f:
-        pyproject_data = toml.load(f)
+    try:
+        # 1. 安裝 Poetry 依賴
+        logger.info("安裝 Poetry 依賴...")
+        subprocess.run(["poetry", "install"], check=True)
+        logger.info("✅ Poetry 依賴安裝完成")
+        
+        # 2. 導出到 requirements.txt
+        logger.info("導出依賴到 requirements.txt...")
+        result = subprocess.run(
+            ["poetry", "export", "-f", "requirements.txt", "--output", "requirements.txt", "--without-hashes"],
+            check=True, capture_output=True, text=True
+        )
+        logger.info("✅ requirements.txt 已更新")
+        
+        # 3. 更新 poetry.lock
+        logger.info("更新 poetry.lock...")
+        subprocess.run(["poetry", "lock"], check=True)
+        logger.info("✅ poetry.lock 已更新")
+        
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ 同步失敗: {e}")
+        return False
+    except FileNotFoundError:
+        logger.error("❌ Poetry 未安裝，請先安裝 Poetry")
+        logger.info("安裝命令: curl -sSL https://install.python-poetry.org | python3 -")
+        return False
+
+def main():
+    """主函數"""
+    logger.info("開始同步依賴...")
     
-    dependencies = pyproject_data.get('tool', {}).get('poetry', {}).get('dependencies', {})
-    
-    # 生成新的 requirements.txt
-    requirements_lines = []
-    
-    for package, version in dependencies.items():
-        if package == 'python':
-            continue
-            
-        # 處理不同的版本格式
-        if isinstance(version, str):
-            if version.startswith('^'):
-                # ^1.2.3 -> >=1.2.3
-                clean_version = version[1:]
-                requirements_lines.append(f"{package}>={clean_version}")
-            elif version.startswith('>='):
-                requirements_lines.append(f"{package}{version}")
-            else:
-                requirements_lines.append(f"{package}>={version}")
-        elif isinstance(version, dict):
-            # 處理 extras 和 version
-            if 'extras' in version and 'version' in version:
-                extras = ','.join(version['extras'])
-                ver = version['version']
-                if ver.startswith('^'):
-                    ver = '>=' + ver[1:]
-                requirements_lines.append(f"{package}[{extras}]{ver}")
-            elif 'version' in version:
-                ver = version['version']
-                if ver.startswith('^'):
-                    ver = '>=' + ver[1:]
-                requirements_lines.append(f"{package}{ver}")
-    
-    # 寫入 requirements.txt
-    requirements_path = Path("requirements.txt")
-    with open(requirements_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(sorted(requirements_lines)) + '\n')
-    
-    print("✅ 依賴版本已同步")
-    print(f"📦 共同步 {len(requirements_lines)} 個套件")
-    
-    # 顯示主要差異
-    print("\n主要套件版本:")
-    key_packages = ['transformers', 'torch', 'fastapi', 'streamlit', 'langchain']
-    for package in key_packages:
-        if package in dependencies:
-            version = dependencies[package]
-            if isinstance(version, str):
-                print(f"  {package}: {version}")
-            elif isinstance(version, dict) and 'version' in version:
-                print(f"  {package}: {version['version']}")
+    if sync_dependencies():
+        logger.info("🎉 依賴同步完成！")
+        print("\n✅ 同步完成！")
+        print("- pyproject.toml: Poetry 依賴配置")
+        print("- poetry.lock: 鎖定的依賴版本")
+        print("- requirements.txt: pip 兼容的依賴列表")
+    else:
+        logger.error("❌ 依賴同步失敗")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    sync_dependencies()
+    main()

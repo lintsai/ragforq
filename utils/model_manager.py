@@ -154,40 +154,50 @@ class ModelManager:
                 if use_large_model_optimizations and self.device == "cuda":
                     logger.info(f"使用大型模型優化配置載入: {model_name}")
                     
-                    # 檢查是否為 MoE 模型
-                    if "gpt-oss-20b" in model_name.lower():
-                        logger.info(f"{model_name} 是 MoE 模型，使用專用配置")
-                        # 使用臨時目錄作為 offload 目錄，Docker 友好
-                        import tempfile
-                        offload_dir = Path(tempfile.gettempdir()) / "model_offload"
-                        offload_dir.mkdir(exist_ok=True)
+                    # 檢查 GPU 記憶體
+                    if torch.cuda.is_available():
+                        gpu_count = torch.cuda.device_count()
+                        total_memory = 0
                         
-                        model_kwargs.update({
-                            "device_map": "auto",
-                            "low_cpu_mem_usage": True,
-                            "torch_dtype": torch.bfloat16,
-                            # 移除嚴格的記憶體限制，避免 MoE 層加載問題
-                            # "max_memory": {0: "6GB", "cpu": "8GB"},
-                            "offload_folder": str(offload_dir),  # 設置卸載目錄
-                            "offload_state_dict": True,          # 允許狀態字典卸載
-                        })
-                    else:
-                        if BitsAndBytesConfig is not None:
+                        for i in range(gpu_count):
+                            gpu_memory = torch.cuda.get_device_properties(i).total_memory / (1024**3)  # GB
+                            total_memory += gpu_memory
+                            logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}, 記憶體: {gpu_memory:.1f} GB")
+                        
+                        logger.info(f"總 GPU 記憶體: {total_memory:.1f} GB")
+                        
+                        # 根據可用記憶體動態配置
+                        if total_memory >= 16:  # 有足夠記憶體載入大型模型
+                            logger.info("GPU 記憶體充足，使用自動設備映射")
+                            
+                            # 選擇合適的數據類型
+                            if torch.cuda.is_bf16_supported():
+                                dtype = torch.bfloat16
+                                logger.info("使用 bfloat16 數據類型")
+                            else:
+                                dtype = torch.float16
+                                logger.info("使用 float16 數據類型")
+                            
                             model_kwargs.update({
-                                "quantization_config": BitsAndBytesConfig(
-                                    load_in_4bit=True,
-                                    bnb_4bit_compute_dtype=torch.float16,
-                                    bnb_4bit_use_double_quant=True,
-                                    bnb_4bit_quant_type="nf4"
-                                ),
                                 "device_map": "auto",
                                 "low_cpu_mem_usage": True,
+                                "torch_dtype": dtype,
                             })
+                            
+                            # 根據記憶體大小決定是否使用量化
+                            if total_memory >= 32:
+                                logger.info("記憶體充足，不使用量化")
+                            elif BitsAndBytesConfig is not None:
+                                logger.info("使用 8bit 量化節省記憶體")
+                                model_kwargs.update({
+                                    "quantization_config": BitsAndBytesConfig(load_in_8bit=True),
+                                })
                         else:
-                            model_kwargs.update({
-                                "device_map": "auto",
-                                "low_cpu_mem_usage": True,
-                            })
+                            # 記憶體不足，拋出異常讓系統回退
+                            logger.warning(f"GPU 記憶體不足 ({total_memory:.1f} GB < 16 GB)")
+                            raise RuntimeError(f"GPU 記憶體不足，需要至少 16GB，當前僅有 {total_memory:.1f}GB")
+                    else:
+                        raise RuntimeError("未檢測到 CUDA GPU")
                 
                 # 根據模型類型選擇正確的 AutoModel 類
                 if model_type == "seq2seq":
@@ -232,12 +242,20 @@ class ModelManager:
                 
             except Exception as e:
                 logger.error(f"加載語言模型失敗: {str(e)}")
-                # 回退到更小的模型
+                
+                # 清理 GPU 記憶體
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.info("已清理 GPU 記憶體")
+                
+                # 智能回退策略
                 fallback_model = "Qwen/Qwen2-0.5B-Instruct"
                 if model_name != fallback_model:
-                    logger.info(f"嘗試回退到 {fallback_model}")
-                    return self.get_llm_model(fallback_model)
+                    logger.info(f"嘗試回退到較小模型: {fallback_model}")
+                    # 確保回退模型不使用大型模型優化
+                    return self.get_llm_model(fallback_model, use_large_model_optimizations=False)
                 else:
+                    logger.error("回退模型也載入失敗")
                     raise
         
         return self._llm_models[model_name]

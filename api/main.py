@@ -97,6 +97,7 @@ class QuestionRequest(BaseModel):
     ollama_embedding_model: Optional[str] = None  # Dynamic RAG需要的嵌入模型
     show_relevance: bool = True
     platform: Optional[str] = None # 新增：動態RAG使用的平台
+    folder_path: Optional[str] = None  # 新增：指定搜索的文件夾路徑
 
 class SourceInfo(BaseModel):
     file_name: str
@@ -156,7 +157,8 @@ rag_engines = {}
 
 def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體中文", 
                    use_dynamic_rag: bool = False, ollama_model: str = None, 
-                   ollama_embedding_model: str = None, platform: Optional[str] = None):
+                   ollama_embedding_model: str = None, platform: Optional[str] = None,
+                   folder_path: Optional[str] = None):
     """
     獲取或初始化指定語言的RAG引擎，支持智能模型選擇和訓練狀態檢查
     
@@ -203,7 +205,7 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
                 dynamic_language_key = f"Dynamic_{language}"
                 current_platform = platform or "ollama"
                 rag_engines[cache_key] = get_rag_engine_for_language(
-                    dynamic_language_key, None, ollama_model, ollama_embedding_model, current_platform
+                    dynamic_language_key, None, ollama_model, ollama_embedding_model, current_platform, folder_path
                 )
                 
             elif selected_model:
@@ -386,7 +388,8 @@ async def ask_question(request: QuestionRequest):
             use_dynamic_rag=request.use_dynamic_rag,
             ollama_model=request.ollama_model if request.use_dynamic_rag else None,
             ollama_embedding_model=request.ollama_embedding_model if request.use_dynamic_rag else None,
-            platform=request.platform if request.use_dynamic_rag else None
+            platform=request.platform if request.use_dynamic_rag else None,
+            folder_path=request.folder_path
         )
         
         # 根據是否使用查詢改寫選擇函數
@@ -918,6 +921,111 @@ async def complete_setup():
     """完成設置"""
     setup_manager = get_setup_flow_manager()
     return setup_manager.complete_setup()
+
+# === 文件夾選擇 API ===
+@app.get("/api/folders")
+async def get_folder_list(path: Optional[str] = Query(None)):
+    """獲取指定路徑下的文件夾列表，支持多層級導航和詳細統計"""
+    try:
+        from config.config import Q_DRIVE_PATH, get_supported_file_extensions
+        
+        # 如果沒有指定路徑，使用 Q 槽根目錄
+        if not path:
+            base_path = Path(Q_DRIVE_PATH)
+        else:
+            # 確保路徑在 Q 槽範圍內（安全檢查）
+            requested_path = Path(Q_DRIVE_PATH) / path.lstrip('/')
+            if not str(requested_path).startswith(str(Path(Q_DRIVE_PATH))):
+                raise HTTPException(status_code=400, detail="路徑不在允許範圍內")
+            base_path = requested_path
+        
+        if not base_path.exists():
+            raise HTTPException(status_code=404, detail="路徑不存在")
+        
+        folders = []
+        files_count = 0
+        total_size = 0
+        supported_extensions = get_supported_file_extensions()
+        
+        def calculate_folder_stats(folder_path: Path, max_files: int = 2000):
+            """計算文件夾統計信息"""
+            file_count = 0
+            total_size = 0
+            
+            try:
+                for file_path in folder_path.rglob("*"):
+                    if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
+                        file_count += 1
+                        try:
+                            total_size += file_path.stat().st_size
+                        except (OSError, PermissionError):
+                            pass
+                        
+                        # 限制計數以提高性能
+                        if file_count >= max_files:
+                            break
+            except (PermissionError, OSError):
+                pass
+            
+            return file_count, total_size
+        
+        try:
+            # 獲取文件夾列表和統計
+            for item in base_path.iterdir():
+                if item.is_dir():
+                    # 計算該文件夾下的支持文件數量和大小
+                    folder_files_count, folder_size = calculate_folder_stats(item)
+                    
+                    relative_path = str(item.relative_to(Path(Q_DRIVE_PATH)))
+                    folders.append({
+                        "name": item.name,
+                        "path": relative_path,
+                        "files_count": folder_files_count,
+                        "total_size": folder_size,
+                        "size_mb": round(folder_size / (1024 * 1024), 2),
+                        "is_folder": True
+                    })
+                elif item.is_file() and item.suffix.lower() in supported_extensions:
+                    files_count += 1
+                    try:
+                        total_size += item.stat().st_size
+                    except (OSError, PermissionError):
+                        pass
+        
+        except (PermissionError, OSError) as e:
+            logger.warning(f"無法訪問路徑 {base_path}: {e}")
+            raise HTTPException(status_code=403, detail="無權限訪問該路徑")
+        
+        # 按文件夾名稱排序
+        folders.sort(key=lambda x: x["name"].lower())
+        
+        # 構建路徑導航
+        path_parts = []
+        if base_path != Path(Q_DRIVE_PATH):
+            current_path = base_path.relative_to(Path(Q_DRIVE_PATH))
+            parts = current_path.parts
+            for i, part in enumerate(parts):
+                path_parts.append({
+                    "name": part,
+                    "path": str(Path(*parts[:i+1])) if i > 0 else part
+                })
+        
+        return {
+            "current_path": str(base_path.relative_to(Path(Q_DRIVE_PATH))) if base_path != Path(Q_DRIVE_PATH) else "",
+            "parent_path": str(base_path.parent.relative_to(Path(Q_DRIVE_PATH))) if base_path.parent != base_path and base_path != Path(Q_DRIVE_PATH) else None,
+            "path_parts": path_parts,
+            "folders": folders,
+            "files_count": files_count,
+            "total_size": total_size,
+            "size_mb": round(total_size / (1024 * 1024), 2),
+            "total_folders": len(folders)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"獲取文件夾列表失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"獲取文件夾列表失敗: {str(e)}")
 
 @app.post("/api/setup/reset")
 async def reset_setup():

@@ -28,8 +28,9 @@ logger = logging.getLogger(__name__)
 class SmartFileRetriever:
     """智能文件檢索器 - 根據查詢內容智能選擇相關文件"""
     
-    def __init__(self, base_path: str = Q_DRIVE_PATH):
+    def __init__(self, base_path: str = Q_DRIVE_PATH, folder_path: Optional[str] = None):
         self.base_path = base_path
+        self.folder_path = folder_path  # 指定的文件夾路徑過濾
         self.file_cache = {}  # 文件元數據緩存
         self.last_scan_time = 0
         self.cache_duration = 300  # 5分鐘緩存
@@ -69,18 +70,32 @@ class SmartFileRetriever:
         return [file_path for file_path, score in scored_files[:max_files]]
     
     def _update_file_cache(self):
-        """更新文件緩存 - 優化版本，支持完整Q槽掃描"""
+        """更新文件緩存 - 優化版本，支持完整Q槽掃描和文件夾過濾"""
         current_time = time.time()
         if current_time - self.last_scan_time < self.cache_duration:
             return
         
-        logger.info("更新文件緩存...")
+        # 確定掃描路徑
+        if self.folder_path:
+            scan_path = os.path.join(self.base_path, self.folder_path.lstrip('/'))
+            logger.info(f"更新文件緩存（限制在文件夾: {self.folder_path}）...")
+        else:
+            scan_path = self.base_path
+            logger.info("更新文件緩存...")
+        
         self.file_cache = {}
         
         try:
-            # 增加掃描限制以支持更完整的文件發現
-            max_files = 5000   # 增加到5000個文件
-            max_depth = 8      # 增加掃描深度到8層
+            # 根據是否有文件夾限制調整掃描參數
+            if self.folder_path:
+                # 文件夾限制模式：可以掃描更多文件
+                max_files = 10000
+                max_depth = 10
+            else:
+                # 全局掃描模式：保守設置
+                max_files = 5000
+                max_depth = 8
+            
             file_count = 0
             
             # 優先掃描重要目錄
@@ -89,8 +104,8 @@ class SmartFileRetriever:
             
             # 分類目錄
             try:
-                for item in os.listdir(self.base_path):
-                    item_path = os.path.join(self.base_path, item)
+                for item in os.listdir(scan_path):
+                    item_path = os.path.join(scan_path, item)
                     if os.path.isdir(item_path):
                         item_lower = item.lower()
                         # 優先處理可能包含重要文檔的目錄
@@ -534,13 +549,14 @@ class DynamicRAGEngineBase(RAGEngineInterface):
     ANSWER_PROMPT_TEMPLATE = ""
     RELEVANCE_PROMPT_TEMPLATE = ""
     
-    def __init__(self, ollama_model: str, ollama_embedding_model: str, platform: str = "ollama"):
+    def __init__(self, ollama_model: str, ollama_embedding_model: str, platform: str = "ollama", folder_path: Optional[str] = None):
         self.ollama_model = ollama_model
         self.ollama_embedding_model = ollama_embedding_model
         self.platform = platform
+        self.folder_path = folder_path
         
-        # 初始化組件
-        self.file_retriever = SmartFileRetriever()
+        # 初始化組件，傳遞文件夾路徑
+        self.file_retriever = SmartFileRetriever(folder_path=folder_path)
         self.content_processor = DynamicContentProcessor()
         self.vectorizer = RealTimeVectorizer(ollama_embedding_model, platform=self.platform)
         
