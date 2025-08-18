@@ -34,6 +34,7 @@ class SmartFileRetriever:
         self.file_cache = {}  # 文件元數據緩存
         self.last_scan_time = 0
         self.cache_duration = 300  # 5分鐘緩存
+        self._file_count_warning = None
     
     def retrieve_relevant_files(self, query: str, max_files: int = 10) -> List[str]:
         """
@@ -52,67 +53,62 @@ class SmartFileRetriever:
         # 1. 首先根據文件夾路徑過濾文件緩存
         working_file_cache = self.file_cache
         if self.folder_path:
-            folder_path_normalized = os.path.normpath(self.folder_path.strip('/\\')).replace('\\', '/')
-            filtered_cache = {}
-            
-            for file_path, metadata in self.file_cache.items():
-                try:
-                    # 計算相對於基礎路徑的相對路徑
-                    rel_path = os.path.relpath(file_path, self.base_path)
-                    rel_path_normalized = os.path.normpath(rel_path).replace('\\', '/')
-                    
-                    # 檢查文件是否在指定文件夾內
-                    if rel_path_normalized.startswith(folder_path_normalized + '/') or rel_path_normalized == folder_path_normalized:
-                        filtered_cache[file_path] = metadata
-                except (ValueError, OSError) as e:
-                    logger.debug(f"處理文件路徑 {file_path} 時出錯: {str(e)}")
-                    continue
-            
-            working_file_cache = filtered_cache
-            logger.info(f"文件夾限制 '{self.folder_path}' 過濾後，剩餘 {len(working_file_cache)} 個文件")
-            
+            # 使用更可靠的路徑比較方法
+            try:
+                target_path = Path(self.base_path, self.folder_path).resolve()
+                logger.info(f"限制搜索範圍於: {target_path}")
+                
+                filtered_cache = {
+                    fp: meta for fp, meta in self.file_cache.items()
+                    if Path(fp).resolve().is_relative_to(target_path)
+                }
+                
+                logger.info(f"文件夾限制 '{self.folder_path}' 前有 {len(working_file_cache)} 個文件，過濾後剩餘 {len(filtered_cache)} 個文件")
+                working_file_cache = filtered_cache
+            except Exception as e:
+                logger.error(f"處理文件夾路徑 '{self.folder_path}' 時出錯: {e}")
+                # 如果路徑處理失敗，則不進行過濾，但記錄錯誤
+                pass
+
             if not working_file_cache:
-                logger.warning(f"在指定文件夾 {self.folder_path} 中沒有找到任何文件")
+                logger.warning(f"在指定文件夾 '{self.folder_path}' 中沒有找到任何支持的文件")
                 return []
 
-        # 2. 檢查文件數量並設置警告
-        if len(working_file_cache) > 5000:
-            logger.warning(f"階層檔案數量過多 ({len(working_file_cache)} 個文件)，建議縮小搜索範圍或指定更具體的文件夾路徑")
-            self._file_count_warning = f"檢測到大量文件 ({len(working_file_cache)} 個)，建議縮小搜索範圍以提高檢索效率"
+        # 2. 檢查文件數量並設置警告 (無論是否有文件夾限制)
+        file_count = len(working_file_cache)
+        if file_count > 3000:
+            warning_message = f"檢測到處理文件數量過多 ({file_count} 個)，可能影響處理速度。建議縮小搜索範圍。"
+            logger.warning(warning_message)
+            self._file_count_warning = warning_message
         else:
             self._file_count_warning = None
 
         # 3. 如果過濾後的文件總數很少，則直接返回所有文件
-        if len(working_file_cache) <= 50:
-            logger.info(f"Found only {len(working_file_cache)} files, processing all of them.")
+        if file_count <= 50:
+            logger.info(f"找到 {file_count} 個文件，將處理全部文件。")
             return list(working_file_cache.keys())
         
         # 4. 在過濾後的文件中進行搜索
-        # 臨時替換file_cache進行搜索
-        original_cache = self.file_cache
-        self.file_cache = working_file_cache
+        # 創建一個臨時的檢索器實例來處理當前請求，避免污染共享緩存
+        temp_retriever = self.__class__()
+        temp_retriever.file_cache = working_file_cache
         
-        try:
-            # 關鍵詞匹配
-            keyword_matches = self._match_by_keywords(query)
-            
-            # 路徑語義分析
-            path_matches = self._analyze_file_paths(query)
-            
-            # 合併和去重
-            all_matches = list(set(keyword_matches + path_matches))
-            
-            # 評分和排序
-            scored_files = self._score_files(query, all_matches)
-            
-            # 返回前N個文件
-            relevant_files = [file_path for file_path, score in scored_files[:max_files]]
-            
-        finally:
-            # 恢復原始緩存
-            self.file_cache = original_cache
+        # 關鍵詞匹配
+        keyword_matches = temp_retriever._match_by_keywords(query)
         
-        logger.info(f"在 {len(working_file_cache)} 個文件中找到 {len(relevant_files)} 個相關文件")
+        # 路徑語義分析
+        path_matches = temp_retriever._analyze_file_paths(query)
+        
+        # 合併和去重
+        all_matches = list(set(keyword_matches + path_matches))
+        
+        # 評分和排序
+        scored_files = temp_retriever._score_files(query, all_matches)
+        
+        # 返回前N個文件
+        relevant_files = [file_path for file_path, score in scored_files[:max_files]]
+        
+        logger.info(f"在 {file_count} 個文件中找到 {len(relevant_files)} 個相關文件")
         return relevant_files
     
     def _quick_estimate_file_count(self, scan_path: str, max_sample_dirs: int = 20) -> int:
@@ -161,20 +157,8 @@ class SmartFileRetriever:
             return
         
         # 確定掃描路徑
-        if self.folder_path:
-            # 處理文件夾路徑，確保正確拼接
-            folder_path_clean = self.folder_path.strip('/\\')
-            scan_path = os.path.join(self.base_path, folder_path_clean)
-            logger.info(f"更新文件緩存（限制在文件夾: {self.folder_path}）...")
-            
-            # 檢查指定的文件夾是否存在
-            if not os.path.exists(scan_path):
-                logger.warning(f"指定的文件夾不存在: {scan_path}，回退到基礎路徑")
-                scan_path = self.base_path
-                self.folder_path = None  # 重置文件夾路徑
-        else:
-            scan_path = self.base_path
-            logger.info("更新文件緩存...")
+        scan_path = self.base_path
+        logger.info(f"更新文件緩存，基礎路徑: {scan_path}")
         
         # 快速估算文件數量
         estimated_count = self._quick_estimate_file_count(scan_path)
@@ -220,10 +204,7 @@ class SmartFileRetriever:
             # 使用生成器避免一次性加載所有文件
             for root, dirs, files in os.walk(scan_path):
                 # 計算當前深度
-                if self.folder_path:
-                    depth = root.replace(scan_path, '').count(os.sep)
-                else:
-                    depth = root.replace(self.base_path, '').count(os.sep)
+                depth = root.replace(scan_path, '').count(os.sep)
                     
                 if depth >= max_depth:
                     dirs[:] = []  # 不再深入子目錄
@@ -254,11 +235,7 @@ class SmartFileRetriever:
                         stat_info = os.stat(file_path)
                         
                         # 計算相對路徑
-                        if self.folder_path:
-                            relative_path = os.path.relpath(file_path, scan_path)
-                            display_path = os.path.join(self.folder_path, relative_path).replace('\\', '/')
-                        else:
-                            display_path = os.path.relpath(file_path, self.base_path).replace('\\', '/')
+                        display_path = os.path.relpath(file_path, self.base_path).replace('\\', '/')
                         
                         self.file_cache[file_path] = {
                             'name': file,
@@ -691,6 +668,10 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         self.vectorizer = RealTimeVectorizer(ollama_embedding_model, platform=self.platform)
         
         # 初始化語言模型
+        llm_params = {"temperature": 0.1}
+        if self.platform != "ollama":
+            llm_params["max_new_tokens"] = 4096
+
         try:
             if self.platform == "ollama":
                 from langchain_ollama import OllamaLLM
@@ -698,7 +679,7 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                 self.llm = OllamaLLM(
                     model=ollama_model,
                     base_url=OLLAMA_HOST,
-                    temperature=0.1,
+                    temperature=llm_params["temperature"],
                     timeout=OLLAMA_REQUEST_TIMEOUT,
                     request_timeout=OLLAMA_REQUEST_TIMEOUT
                 )
@@ -706,31 +687,30 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             else: # 默認為 huggingface
                 self.llm = ChatHuggingFace(
                     model_name=ollama_model,
-                    temperature=0.1
+                    **llm_params
                 )
                 logger.info(f"使用 Hugging Face 語言模型 (透過 ModelManager): {ollama_model}")
         except ImportError:
             logger.warning("langchain_ollama 未安裝，Ollama 模型將透過 Hugging Face 包裝器處理")
             self.llm = ChatHuggingFace(
                 model_name=ollama_model,
-                temperature=0.1
+                **llm_params
             )
         except Exception as e:
             logger.error(f"語言模型初始化失敗: {str(e)}")
             logger.info("回退到使用 ChatHuggingFace 作為最終方案")
             self.llm = ChatHuggingFace(
                 model_name=ollama_model,
-                temperature=0.1
+                **llm_params
             )
 
-        # 顯式記錄最終語言與子類，避免誤解為直接使用 base
+        # 顯式記錄最終語言與子類
         try:
-            logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}，語言: {self.get_language()}，引擎: {self.__class__.__name__}")
+            lang_info = self.get_language()
         except Exception:
-            logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}")
-        
-        logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}")
-    
+            lang_info = "未知"
+        logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}，語言: {lang_info}，引擎: {self.__class__.__name__}")
+
     def rewrite_query(self, original_query: str) -> str:
         """查詢重寫 - 參照傳統RAG的重試機制"""
         try:
@@ -868,52 +848,63 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         """
         if not similarities:
             return []
-        
-        # 參照傳統RAG的TOP_K設置
+
         from config.config import SIMILARITY_TOP_K
-        max_docs = min(SIMILARITY_TOP_K, 10)  # 最多10個文檔
-        
-        # 按文件分組，每個文件只保留最相關的段落
-        file_groups = {}
+        max_docs = min(SIMILARITY_TOP_K, 10)
+
+        # 第一輪：收集每個文件的最佳分數
+        file_best_scores = {}
         for doc, score in similarities:
             file_path = doc.metadata.get('file_path', 'unknown')
-            if file_path not in file_groups or score > file_groups[file_path][1]:
-                file_groups[file_path] = (doc, score)
-        
-        # 按相似度排序（注意：相似度越高越好，所以是降序）
-        sorted_docs = sorted(file_groups.values(), key=lambda x: x[1], reverse=True)
-        
-        # 參照傳統RAG的閾值策略
-        if sorted_docs:
-            best_score = sorted_docs[0][1]
+            if file_path not in file_best_scores or score > file_best_scores[file_path]:
+                file_best_scores[file_path] = score
+
+        # 計算動態閾值 (相似度越高越好)
+        if file_best_scores:
+            scores = list(file_best_scores.values())
+            avg_score = sum(scores) / len(scores)
+            # 設置一個合理的閾值，例如平均分的80%，但不低於一個絕對值
+            dynamic_threshold = max(avg_score * 0.8, 0.4)
+            logger.info(f"動態閾值計算: 平均分={avg_score:.3f}, 最終閾值={dynamic_threshold:.3f}")
+        else:
+            dynamic_threshold = 0.5
+
+        # 第二輪：按文件去重，並根據閾值篩選
+        selected_docs = []
+        seen_files = set()
+        # 按分數從高到低排序
+        sorted_similarities = sorted(similarities, key=lambda x: x[1], reverse=True)
+
+        for doc, score in sorted_similarities:
+            if len(selected_docs) >= max_docs:
+                break
             
-            # 更嚴格的閾值策略，參照傳統RAG
-            if best_score > 0.8:
-                threshold = best_score * 0.8  # 高質量匹配時使用較高閾值
-            elif best_score > 0.6:
-                threshold = best_score * 0.7  # 中等質量匹配
-            else:
-                threshold = max(best_score * 0.6, 0.3)  # 低質量匹配時放寬閾值
-            
-            selected_docs = []
-            for doc, score in sorted_docs:
-                if score >= threshold and len(selected_docs) < max_docs:
+            file_path = doc.metadata.get('file_path', 'unknown')
+            if file_path not in seen_files:
+                if score >= dynamic_threshold:
+                    doc.metadata['score'] = score
                     selected_docs.append(doc)
-                elif len(selected_docs) >= 3:  # 至少保證3個文檔
-                    break
-            
-            # 如果選中的文檔太少，放寬條件
-            if len(selected_docs) < 2 and len(sorted_docs) >= 2:
-                selected_docs = [doc for doc, score in sorted_docs[:3]]
-            
-            logger.info(f"選擇了 {len(selected_docs)} 個文檔，閾值: {threshold:.3f}，最高分: {best_score:.3f}")
-            return selected_docs
-        
-        return []
+                    seen_files.add(file_path)
+
+        # 如果篩選後文檔過少，則放寬條件，取分數最高的幾個
+        if not selected_docs and sorted_similarities:
+            logger.info("沒有文檔通過動態閾值，放寬條件選取最高分的3個文檔")
+            # 確保每個文件只選一次
+            top_files = {}
+            for doc, score in sorted_similarities:
+                file_path = doc.metadata.get('file_path', 'unknown')
+                if file_path not in top_files:
+                    top_files[file_path] = doc
+                    if len(top_files) >= 3:
+                        break
+            selected_docs = list(top_files.values())
+
+        logger.info(f"選擇了 {len(selected_docs)} 個文檔")
+        return selected_docs
     
     def _format_enhanced_context(self, documents: List[Document]) -> str:
         """
-        格式化增強上下文 - 參考傳統RAG的做法
+        格式化增強上下文 - 參考傳統RAG的做法，使用更結構化的格式
         
         Args:
             documents: 文檔列表
@@ -927,31 +918,24 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         
         for i, doc in enumerate(documents, 1):
             file_name = doc.metadata.get("file_name", "未知文件")
+            relative_path = doc.metadata.get("file_path", "未知路徑")
             content = doc.page_content.strip()
             
             if content and current_length < max_total_length:
                 # 計算可用長度
-                available_length = max_total_length - current_length
-                if len(content) > available_length:
-                    content = content[:available_length] + "..."
+                header = f"--- 相關文件 {i} ---\n來源: {file_name}\n路徑: {relative_path}\n"
+                available_length = max_total_length - current_length - len(header)
                 
-                # 添加位置信息（如果有的話）
-                location_info = ""
-                if "page_number" in doc.metadata:
-                    location_info = f" (頁碼: {doc.metadata['page_number']})"
-                elif "block_number" in doc.metadata:
-                    location_info = f" (塊: {doc.metadata['block_number']})"
-                elif "sheet_name" in doc.metadata:
-                    location_info = f" (工作表: {doc.metadata['sheet_name']})"
-                
-                context_parts.append(f"相關內容 {i} (來源: {file_name}{location_info}):\n{content}\n")
-                current_length += len(content)
-                
-                if current_length >= max_total_length:
+                if available_length <= 0:
                     break
+
+                if len(content) > available_length:
+                    content = content[:available_length] + "... (內容截斷)"
+                
+                context_parts.append(f"{header}內容摘要:\n{content}\n")
+                current_length += len(header) + len(content)
         
         return "\n".join(context_parts)
-    
 
     
     def _format_context(self, documents: List[Document]) -> str:
@@ -975,8 +959,6 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             response = self.llm.invoke(prompt)
             result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
             
-
-            
             # 檢查回答長度，如果太短則使用回退方法
             if not result or len(result.strip()) < 5:
                 return self._get_general_fallback(question)
@@ -986,8 +968,12 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             
         except Exception as e:
             logger.error(f"生成回答過程中發生錯誤: {str(e)}")
+            # 提供包含上下文的回退答案
             return self._generate_fallback_answer(question, context)
-    
+
+    def _generate_fallback_answer(self, question: str, context: str) -> str:
+        """當LLM調用失敗時，提供一個基於上下文的簡化回答"""
+        return f"抱歉，AI模型在生成回答時遇到問題。基於檢索到的文件，以下是相關摘要：\n\n{context[:1000]}...\n\n請您根據這些信息自行判斷。"
 
     
     def _generate_general_knowledge_answer(self, question: str) -> str:
@@ -1084,7 +1070,7 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                 try:
                     translate_prompt = f"{to_lang_prompt}\n\n———\n{text}\n———\n只輸出翻譯結果。"
                     resp = self.llm.invoke(translate_prompt)
-                    return resp.content.strip() if hasattr(resp, 'content') else str(resp).strip()
+                    return resp.content.strip() if hasattr(response, 'content') else str(response).strip()
                 except Exception:
                     return text
 

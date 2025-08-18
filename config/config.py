@@ -119,6 +119,7 @@ vector_db_path.mkdir(parents=True, exist_ok=True)
 API_BASE_URL = f"http://{APP_HOST}:{APP_PORT}"
 
 # 文件處理配置
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "1000").split("#")[0].strip())
 MAX_TOKENS_CHUNK = int(os.getenv("MAX_TOKENS_CHUNK", "2000").split("#")[0].strip())  # 增加每個塊的大小
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200").split("#")[0].strip())  # 提高重疊性確保上下文連貫
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "0").split("#")[0].strip())  # 0表示自動決定

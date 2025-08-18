@@ -534,6 +534,13 @@ class DocumentIndexer:
         Returns:
             可處理的文件路徑列表
         """
+        # 從環境變量讀取最大文件大小，默認為 200MB
+        try:
+            from config.config import MAX_FILE_SIZE_MB
+            max_size = int(MAX_FILE_SIZE_MB) * 1024 * 1024
+        except (ImportError, ValueError, TypeError):
+            max_size = 200 * 1024 * 1024 # 默認 200MB
+
         valid_files = []
         for file_path in file_paths:
             try:
@@ -544,8 +551,8 @@ class DocumentIndexer:
                 
                 # 檢查文件大小（跳過過大的文件）
                 file_size = os.path.getsize(file_path)
-                if file_size > 100 * 1024 * 1024:  # 100MB
-                    logger.warning(f"文件過大 ({file_size/1024/1024:.1f}MB)，跳過: {file_path}")
+                if file_size > max_size:
+                    logger.warning(f"文件過大 ({file_size/1024/1024:.1f}MB > 限制的 {max_size/1024/1024:.1f}MB)，跳過: {file_path}。可通過設置 MAX_FILE_SIZE_MB 環境變量調整此限制。")
                     continue
                 
                 # 對於文本文件，檢查編碼

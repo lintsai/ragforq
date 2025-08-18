@@ -45,7 +45,7 @@ class HuggingFaceLLM(LLM):
     """Hugging Face 語言模型的 LangChain 包裝器"""
     
     def __init__(self, model_name: Optional[str] = None, temperature: float = 0.1, 
-                 max_length: int = 512):
+                 max_length: int = 4096):
         super().__init__()
         self.model_name = model_name
         self.temperature = temperature
@@ -115,10 +115,11 @@ except ImportError:
 class ChatHuggingFace(Runnable):
     """聊天式 Hugging Face 模型包裝器 - 完全兼容 LangChain Runnable"""
     
-    def __init__(self, model_name: Optional[str] = None, temperature: float = 0.1):
+    def __init__(self, model_name: Optional[str] = None, temperature: float = 0.1, max_new_tokens: int = 4096):
         super().__init__()
         self.model_name = model_name
         self.temperature = temperature
+        self.max_new_tokens = max_new_tokens
         self.model_manager = get_model_manager()
     
     def invoke(self, input_data, config=None, **kwargs) -> "AIMessage":
@@ -134,7 +135,7 @@ class ChatHuggingFace(Runnable):
                 prompt,
                 self.model_name,
                 temperature=kwargs.get("temperature", self.temperature),
-                max_length=kwargs.get("max_length", 512)
+                max_length=kwargs.get("max_length", self.max_new_tokens)
             )
             
             return AIMessage(content=response)

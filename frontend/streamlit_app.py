@@ -786,6 +786,7 @@ def main():
                                     )
                                     if resp.status_code == 200:
                                         st.success(f"✅ 初始訓練已開始 (PID: {resp.json().get('pid')})")
+                                        st.rerun()
                                     else:
                                         st.error(f"❌ 訓練失敗: {resp.text}")
                                 except Exception as e:
