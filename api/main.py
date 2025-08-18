@@ -456,40 +456,25 @@ async def ask_question(request: QuestionRequest):
             # 生成相關性理由
             if request.show_relevance and source_info_list:
                 try:
-                    # 檢查引擎是否支持批量生成相關性理由
-                    if hasattr(engine, 'generate_batch_relevance_reasons'):
-                        # 使用批量生成方法（傳統RAG引擎）
-                        doc_contents = []
-                        for file_path, file_info in sorted_files[:max_sources]:
-                            doc = file_info['doc']
+                    # 統一使用批量生成方法
+                    doc_contents = []
+                    for source_info in source_info_list:
+                        file_path = source_info.file_path
+                        if file_path in file_relevance_map:
+                            doc = file_relevance_map[file_path]['doc']
                             doc_contents.append(doc.page_content[:500])  # 提取文本內容並限制長度
+                        else:
+                            doc_contents.append("") # 添加一個空的字符串作為占位符
+
+                    if doc_contents:
+                        batch_reasons = engine.generate_batch_relevance_reasons(request.question, doc_contents)
                         
-                        if doc_contents:
-                            batch_reasons = engine.generate_batch_relevance_reasons(request.question, doc_contents)
-                            
-                            # 將生成的理由分配給對應的來源
-                            for i, source_info in enumerate(source_info_list):
-                                if i < len(batch_reasons):
-                                    source_info.relevance_reason = batch_reasons[i]
-                                else:
-                                    source_info.relevance_reason = f"相關文檔 {i+1}"
-                    else:
-                        # 使用單個生成方法（動態RAG引擎）
+                        # 將生成的理由分配給對應的來源
                         for i, source_info in enumerate(source_info_list):
-                            try:
-                                # 獲取對應的文檔
-                                file_path = source_info.file_path
-                                if file_path in file_relevance_map:
-                                    doc = file_relevance_map[file_path]['doc']
-                                    doc_content = doc.page_content[:500]  # 限制內容長度
-                                    
-                                    # 生成單個相關性理由
-                                    relevance_reason = engine.generate_relevance_reason(request.question, doc_content)
-                                    source_info.relevance_reason = relevance_reason if relevance_reason else f"相關文檔 {i+1}"
-                                else:
-                                    source_info.relevance_reason = f"相關文檔 {i+1}"
-                            except Exception as e:
-                                logger.warning(f"生成第{i+1}個文檔的相關性理由失敗: {str(e)}")
+                            if i < len(batch_reasons):
+                                source_info.relevance_reason = batch_reasons[i]
+                            else:
+                                # Fallback in case of mismatch
                                 source_info.relevance_reason = f"相關文檔 {i+1}"
                 
                 except Exception as e:
@@ -517,12 +502,6 @@ async def ask_question(request: QuestionRequest):
         # 如果有改寫的查詢，添加到回應中
         if rewritten_query is not None:
             response["rewritten_query"] = rewritten_query
-        
-        # 如果是動態RAG，檢查文件數量警告
-        if request.use_dynamic_rag and hasattr(engine, 'get_file_count_warning'):
-            file_warning = engine.get_file_count_warning()
-            if file_warning:
-                response["file_count_warning"] = file_warning
         
         return response
         

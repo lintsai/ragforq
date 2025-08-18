@@ -29,8 +29,8 @@ class SmartFileRetriever:
     """智能文件檢索器 - 根據查詢內容智能選擇相關文件"""
     
     def __init__(self, base_path: str = Q_DRIVE_PATH, folder_path: Optional[str] = None):
-        self.base_path = base_path
-        self.folder_path = folder_path  # 指定的文件夾路徑過濾
+        self.base_path = Path(base_path).resolve()
+        self.folder_path = Path(self.base_path, folder_path).resolve() if folder_path else self.base_path
         self.file_cache = {}  # 文件元數據緩存
         self.last_scan_time = 0
         self.cache_duration = 300  # 5分鐘緩存
@@ -50,31 +50,14 @@ class SmartFileRetriever:
         # 更新文件緩存
         self._update_file_cache()
 
-        # 1. 首先根據文件夾路徑過濾文件緩存
+        # 1. 文件緩存已根據 folder_path 進行了過濾
         working_file_cache = self.file_cache
-        if self.folder_path:
-            # 使用更可靠的路徑比較方法
-            try:
-                target_path = Path(self.base_path, self.folder_path).resolve()
-                logger.info(f"限制搜索範圍於: {target_path}")
-                
-                filtered_cache = {
-                    fp: meta for fp, meta in self.file_cache.items()
-                    if Path(fp).resolve().is_relative_to(target_path)
-                }
-                
-                logger.info(f"文件夾限制 '{self.folder_path}' 前有 {len(working_file_cache)} 個文件，過濾後剩餘 {len(filtered_cache)} 個文件")
-                working_file_cache = filtered_cache
-            except Exception as e:
-                logger.error(f"處理文件夾路徑 '{self.folder_path}' 時出錯: {e}")
-                # 如果路徑處理失敗，則不進行過濾，但記錄錯誤
-                pass
 
-            if not working_file_cache:
-                logger.warning(f"在指定文件夾 '{self.folder_path}' 中沒有找到任何支持的文件")
-                return []
+        if not working_file_cache:
+            logger.warning(f"在指定文件夾 '{self.folder_path}' 中沒有找到任何支持的文件")
+            return []
 
-        # 2. 檢查文件數量並設置警告 (無論是否有文件夾限制)
+        # 2. 檢查文件數量並設置警告
         file_count = len(working_file_cache)
         if file_count > 3000:
             warning_message = f"檢測到處理文件數量過多 ({file_count} 個)，可能影響處理速度。建議縮小搜索範圍。"
@@ -83,27 +66,20 @@ class SmartFileRetriever:
         else:
             self._file_count_warning = None
 
-        # 3. 如果過濾後的文件總數很少，則直接返回所有文件
+        # 3. 如果文件總數很少，則直接返回所有文件
         if file_count <= 50:
             logger.info(f"找到 {file_count} 個文件，將處理全部文件。")
             return list(working_file_cache.keys())
         
         # 4. 在過濾後的文件中進行搜索
-        # 創建一個臨時的檢索器實例來處理當前請求，避免污染共享緩存
-        temp_retriever = self.__class__()
-        temp_retriever.file_cache = working_file_cache
-        
-        # 關鍵詞匹配
-        keyword_matches = temp_retriever._match_by_keywords(query)
-        
-        # 路徑語義分析
-        path_matches = temp_retriever._analyze_file_paths(query)
+        keyword_matches = self._match_by_keywords(query, working_file_cache)
+        path_matches = self._analyze_file_paths(query, working_file_cache)
         
         # 合併和去重
         all_matches = list(set(keyword_matches + path_matches))
         
         # 評分和排序
-        scored_files = temp_retriever._score_files(query, all_matches)
+        scored_files = self._score_files(query, all_matches, working_file_cache)
         
         # 返回前N個文件
         relevant_files = [file_path for file_path, score in scored_files[:max_files]]
@@ -157,8 +133,8 @@ class SmartFileRetriever:
             return
         
         # 確定掃描路徑
-        scan_path = self.base_path
-        logger.info(f"更新文件緩存，基礎路徑: {scan_path}")
+        scan_path = str(self.folder_path)
+        logger.info(f"更新文件緩存，掃描路徑: {scan_path}")
         
         # 快速估算文件數量
         estimated_count = self._quick_estimate_file_count(scan_path)
@@ -244,7 +220,7 @@ class SmartFileRetriever:
                             'ext': os.path.splitext(file)[1].lower(),
                             'relative_path': display_path,
                             'depth': depth,
-                            'folder_limited': bool(self.folder_path)
+                            'folder_limited': self.folder_path != self.base_path
                         }
                         file_count += 1
                         
@@ -279,7 +255,7 @@ class SmartFileRetriever:
                                     'ext': file_ext,
                                     'relative_path': file,
                                     'depth': 0,
-                                    'folder_limited': bool(self.folder_path)
+                                    'folder_limited': self.folder_path != self.base_path
                                 }
                         except (OSError, PermissionError):
                             continue
@@ -289,38 +265,14 @@ class SmartFileRetriever:
         except Exception as e:
             logger.error(f"回退掃描也失敗: {str(e)}")
             self.file_cache = {}
-            # 如果掃描失敗，至少嘗試掃描根目錄
-            try:
-                logger.info("嘗試僅掃描根目錄...")
-                for file in os.listdir(self.base_path)[:50]:  # 只掃描根目錄的前50個文件
-                    file_path = os.path.join(self.base_path, file)
-                    if os.path.isfile(file_path):
-                        file_ext = os.path.splitext(file)[1].lower()
-                        if file_ext in SUPPORTED_FILE_TYPES:
-                            try:
-                                stat = os.stat(file_path)
-                                self.file_cache[file_path] = {
-                                    'name': file,
-                                    'size': stat.st_size,
-                                    'mtime': stat.st_mtime,
-                                    'ext': file_ext,
-                                    'relative_path': file
-                                }
-                            except (OSError, PermissionError):
-                                continue
-                logger.info(f"根目錄掃描完成，找到 {len(self.file_cache)} 個文件")
-            except Exception as fallback_error:
-                logger.error(f"根目錄掃描也失敗: {str(fallback_error)}")
-                # 如果完全失敗，創建一個空緩存
-                self.file_cache = {}
     
-    def _match_by_keywords(self, query: str) -> List[str]:
+    def _match_by_keywords(self, query: str, file_cache: dict) -> List[str]:
         """基於關鍵詞匹配文件"""
         query_lower = query.lower()
         query_words = query_lower.split()
         
         matches = []
-        for file_path, metadata in self.file_cache.items():
+        for file_path, metadata in file_cache.items():
             file_name_lower = metadata['name'].lower()
             path_lower = metadata['relative_path'].lower()
             
@@ -349,7 +301,7 @@ class SmartFileRetriever:
         matches.sort(key=lambda x: x[1], reverse=True)
         return [file_path for file_path, score in matches]
     
-    def _analyze_file_paths(self, query: str) -> List[str]:
+    def _analyze_file_paths(self, query: str, file_cache: dict) -> List[str]:
         """基於路徑語義分析匹配文件"""
         # 簡化版本：基於路徑關鍵詞
         path_keywords = {
@@ -365,22 +317,22 @@ class SmartFileRetriever:
         
         for category, keywords in path_keywords.items():
             if any(keyword in query_lower for keyword in keywords):
-                for file_path, metadata in self.file_cache.items():
+                for file_path, metadata in file_cache.items():
                     path_lower = metadata['relative_path'].lower()
                     if any(keyword in path_lower for keyword in keywords):
                         matches.append(file_path)
         
         return matches
     
-    def _score_files(self, query: str, file_paths: List[str]) -> List[Tuple[str, float]]:
+    def _score_files(self, query: str, file_paths: List[str], file_cache: dict) -> List[Tuple[str, float]]:
         """為文件評分並排序"""
         scored_files = []
         
         for file_path in file_paths:
-            if file_path not in self.file_cache:
+            if file_path not in file_cache:
                 continue
                 
-            metadata = self.file_cache[file_path]
+            metadata = file_cache[file_path]
             score = 0
             
             # 文件名相關性
@@ -425,6 +377,7 @@ class SmartFileRetriever:
         # 按分數排序
         scored_files.sort(key=lambda x: x[1], reverse=True)
         return scored_files
+
 
 
 class DynamicContentProcessor:
