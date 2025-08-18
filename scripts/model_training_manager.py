@@ -214,7 +214,11 @@ class ModelTrainingManager:
         if not self.validate_models(ollama_model, ollama_embedding_model):
             return False
         
-        model_path = self.vector_db_manager.get_model_path(ollama_model, ollama_embedding_model)
+        if version:
+            folder_name = self.vector_db_manager.get_model_folder_name(ollama_model, ollama_embedding_model, version)
+            model_path = self.vector_db_manager.base_path / folder_name
+        else:
+            model_path = self.vector_db_manager.get_model_path(ollama_model, ollama_embedding_model)
         
         # 創建鎖定文件，包含進程信息
         process_info = {

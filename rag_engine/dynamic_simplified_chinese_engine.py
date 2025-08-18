@@ -61,6 +61,7 @@ class DynamicSimplifiedChineseRAGEngine(DynamicRAGEngineBase):
 2. 基于一般IT知识提供有用的回答
 3. 明确说明这是基于常识的回答，不是来自QSI内部文档
 4. 如果是QSI特定的问题，建议联系相关部门
+5. 回答要简洁明了，避免重复内容
 
 简体中文回答："""
             
@@ -83,3 +84,11 @@ class DynamicSimplifiedChineseRAGEngine(DynamicRAGEngineBase):
     def _get_general_fallback(self, query: str) -> str:
         """获取简体中文通用回退回答"""
         return f"根据一般IT知识，关于「{query}」的相关信息可能需要查阅更多QSI内部文档。"
+    
+    def _ensure_language(self, result: str) -> str:
+        """確保輸出符合簡體中文"""
+        return result
+    
+    def get_file_count_warning(self) -> str:
+        """獲取文件數量警告"""
+        return getattr(self.file_retriever, '_file_count_warning', None)

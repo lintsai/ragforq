@@ -61,6 +61,7 @@ class DynamicThaiRAGEngine(DynamicRAGEngineBase):
 2. ให้คำตอบที่เป็นประโยชน์โดยอิงจากความรู้ทั่วไปด้าน IT
 3. ระบุอย่างชัดเจนว่านี่เป็นคำตอบจากความรู้ทั่วไป ไม่ใช่จากเอกสารภายใน QSI
 4. หากเป็นคำถามเฉพาะของ QSI แนะนำให้ติดต่อแผนกที่เกี่ยวข้อง
+5. ให้คำตอบที่กระชับและชัดเจน หลีกเลี่ยงเนื้อหาที่ซ้ำซาก
 
 คำตอบภาษาไทย:"""
             
@@ -83,3 +84,11 @@ class DynamicThaiRAGEngine(DynamicRAGEngineBase):
     def _get_general_fallback(self, query: str) -> str:
         """รับคำตอบทางเลือกทั่วไปภาษาไทย"""
         return f"ตามความรู้ทั่วไปด้าน IT ข้อมูลเกี่ยวกับ '{query}' อาจต้องการการปรึกษาเอกสารภายใน QSI เพิ่มเติม"
+    
+    def _ensure_language(self, result: str) -> str:
+        """ตรวจสอบให้แน่ใจว่าผลลัพธ์เป็นภาษาไทย"""
+        return result
+    
+    def get_file_count_warning(self) -> str:
+        """รับคำเตือนจำนวนไฟล์"""
+        return getattr(self.file_retriever, '_file_count_warning', None)

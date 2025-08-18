@@ -111,6 +111,7 @@ class QuestionResponse(BaseModel):
     sources: List[SourceInfo] = []
     rewritten_query: Optional[str] = None
     language: Optional[str] = None # 新增語言欄位
+    file_count_warning: Optional[str] = None # 文件數量警告
 
 class StatusResponse(BaseModel):
     status: str
@@ -452,29 +453,49 @@ async def ask_question(request: QuestionRequest):
                 )
                 source_info_list.append(source_info)
             
-            # 批量生成相關性理由，提高效能
+            # 生成相關性理由
             if request.show_relevance and source_info_list:
                 try:
-                    # 收集所有需要生成理由的文檔對象
-                    docs_for_relevance = []
-                    for file_path, file_info in sorted_files[:max_sources]:
-                        docs_for_relevance.append(file_info['doc'])
-                    
-                    # 批量生成相關性理由
-                    if docs_for_relevance:
-                        batch_reasons = engine.generate_batch_relevance_reasons(request.question, docs_for_relevance)
+                    # 檢查引擎是否支持批量生成相關性理由
+                    if hasattr(engine, 'generate_batch_relevance_reasons'):
+                        # 使用批量生成方法（傳統RAG引擎）
+                        doc_contents = []
+                        for file_path, file_info in sorted_files[:max_sources]:
+                            doc = file_info['doc']
+                            doc_contents.append(doc.page_content[:500])  # 提取文本內容並限制長度
                         
-                        # 將生成的理由分配給對應的來源
+                        if doc_contents:
+                            batch_reasons = engine.generate_batch_relevance_reasons(request.question, doc_contents)
+                            
+                            # 將生成的理由分配給對應的來源
+                            for i, source_info in enumerate(source_info_list):
+                                if i < len(batch_reasons):
+                                    source_info.relevance_reason = batch_reasons[i]
+                                else:
+                                    source_info.relevance_reason = f"相關文檔 {i+1}"
+                    else:
+                        # 使用單個生成方法（動態RAG引擎）
                         for i, source_info in enumerate(source_info_list):
-                            if i < len(batch_reasons):
-                                source_info.relevance_reason = batch_reasons[i]
-                            else:
-                                source_info.relevance_reason = f"相關度分數: {source_info.score:.3f}" if source_info.score else "相關文檔"
+                            try:
+                                # 獲取對應的文檔
+                                file_path = source_info.file_path
+                                if file_path in file_relevance_map:
+                                    doc = file_relevance_map[file_path]['doc']
+                                    doc_content = doc.page_content[:500]  # 限制內容長度
+                                    
+                                    # 生成單個相關性理由
+                                    relevance_reason = engine.generate_relevance_reason(request.question, doc_content)
+                                    source_info.relevance_reason = relevance_reason if relevance_reason else f"相關文檔 {i+1}"
+                                else:
+                                    source_info.relevance_reason = f"相關文檔 {i+1}"
+                            except Exception as e:
+                                logger.warning(f"生成第{i+1}個文檔的相關性理由失敗: {str(e)}")
+                                source_info.relevance_reason = f"相關文檔 {i+1}"
                 
                 except Exception as e:
-                    logger.error(f"批量生成相關性理由時出錯: {str(e)}")
-                    # 如果批量生成失敗，使用簡單的分數說明
-                    for source_info in source_info_list:
+                    logger.error(f"生成相關性理由時出錯: {str(e)}")
+                    # 如果生成失敗，使用簡單的分數說明
+                    for i, source_info in enumerate(source_info_list):
                         if source_info.score is not None:
                             if source_info.score < 0.5:
                                 source_info.relevance_reason = "高度相關文檔"
@@ -485,7 +506,7 @@ async def ask_question(request: QuestionRequest):
                             else:
                                 source_info.relevance_reason = "可能相關文檔"
                         else:
-                            source_info.relevance_reason = "相關文檔"
+                            source_info.relevance_reason = f"相關文檔 {i+1}"
         
         response = {
             "answer": answer,
@@ -496,6 +517,12 @@ async def ask_question(request: QuestionRequest):
         # 如果有改寫的查詢，添加到回應中
         if rewritten_query is not None:
             response["rewritten_query"] = rewritten_query
+        
+        # 如果是動態RAG，檢查文件數量警告
+        if request.use_dynamic_rag and hasattr(engine, 'get_file_count_warning'):
+            file_warning = engine.get_file_count_warning()
+            if file_warning:
+                response["file_count_warning"] = file_warning
         
         return response
         
@@ -668,6 +695,115 @@ async def get_usable_models():
         logger.error(f"獲取可用模型列表失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"獲取可用模型列表失敗: {str(e)}")
 
+@app.get("/api/validate-folder")
+async def validate_folder_path(folder_path: str = Query(...)):
+    """驗證文件夾路徑是否存在並快速估算文件數量"""
+    try:
+        from config.config import Q_DRIVE_PATH, SUPPORTED_FILE_TYPES
+        
+        # 清理文件夾路徑
+        folder_path_clean = folder_path.strip('/\\')
+        full_path = os.path.join(Q_DRIVE_PATH, folder_path_clean)
+        
+        exists = os.path.exists(full_path) and os.path.isdir(full_path)
+        
+        if exists:
+            # 快速估算文件數量 - 使用採樣方法
+            estimated_count = 0
+            actual_count = 0
+            sampled_dirs = 0
+            max_sample_dirs = 10
+            max_quick_count = 500  # 如果文件少於500個，直接計算精確數量
+            
+            try:
+                # 先快速檢查是否文件很少
+                first_level_files = [f for f in os.listdir(full_path) 
+                                   if os.path.isfile(os.path.join(full_path, f)) 
+                                   and os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES]
+                
+                # 採樣估算
+                sample_total = 0
+                total_dirs_count = 0
+                
+                for root, dirs, files in os.walk(full_path):
+                    depth = root.replace(full_path, '').count(os.sep)
+                    if depth > 3:  # 限制深度避免太慢
+                        dirs[:] = []
+                        continue
+                    
+                    total_dirs_count += 1
+                    
+                    if sampled_dirs < max_sample_dirs:
+                        supported_files = [f for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES]
+                        sample_total += len(supported_files)
+                        sampled_dirs += 1
+                        
+                        # 如果總數還很少，繼續精確計算
+                        if sampled_dirs <= 3:
+                            actual_count += len(supported_files)
+                    
+                    # 如果採樣發現文件很少，切換到精確計算
+                    if sampled_dirs >= 3 and sample_total <= max_quick_count:
+                        for f in files:
+                            if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES:
+                                actual_count += 1
+                    
+                    # 跳過系統目錄
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system', 'temp', 'tmp']]
+                
+                # 決定返回精確數量還是估算數量
+                if actual_count > 0 and sample_total <= max_quick_count:
+                    file_count = actual_count
+                    count_type = "精確"
+                elif sampled_dirs > 0:
+                    avg_files_per_dir = sample_total / sampled_dirs
+                    estimated_count = int(avg_files_per_dir * total_dirs_count)
+                    file_count = estimated_count
+                    count_type = "估算"
+                else:
+                    file_count = len(first_level_files)
+                    count_type = "根目錄"
+                
+            except Exception as e:
+                logger.warning(f"計算文件數量時出錯: {str(e)}")
+                file_count = 0
+                count_type = "未知"
+            
+            # 根據文件數量提供建議
+            if file_count > 5000:
+                suggestion = "文件數量較多，建議進一步縮小搜索範圍"
+                warning_level = "high"
+            elif file_count > 1000:
+                suggestion = "文件數量適中，搜索效果應該不錯"
+                warning_level = "medium"
+            else:
+                suggestion = "文件數量較少，搜索效果會很好"
+                warning_level = "low"
+            
+            return {
+                "exists": True,
+                "full_path": full_path,
+                "file_count": file_count,
+                "count_type": count_type,
+                "warning_level": warning_level,
+                "suggestion": suggestion,
+                "message": f"文件夾存在，{count_type}包含約 {file_count} 個支持的文件"
+            }
+        else:
+            return {
+                "exists": False,
+                "full_path": full_path,
+                "file_count": 0,
+                "count_type": "none",
+                "warning_level": "none",
+                "suggestion": "請選擇存在的文件夾",
+                "message": "指定的文件夾不存在"
+            }
+    
+    except Exception as e:
+        logger.error(f"驗證文件夾路徑失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"驗證文件夾路徑失敗: {str(e)}")
+
 @app.get("/api/model-versions", response_model=List[Dict[str, Any]])
 async def get_model_versions(ollama_model: str = Query(...), ollama_embedding_model: str = Query(...)):
     """獲取指定模型組合的所有版本"""
@@ -692,18 +828,14 @@ async def start_initial_training(request: Request, training_request: TrainingReq
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 然後使用 Python 直接啟動訓練程序
+        # 使用異步方式啟動訓練程序，避免阻塞API
         cmd = [
             sys.executable, "scripts/model_training_manager.py", "initial"
         ]
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate()
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        if process.returncode != 0:
-            logger.error(f"啟動初始訓練失敗: {stderr.decode()}")
-            raise HTTPException(status_code=500, detail=f"啟動訓練失敗: {stderr.decode()}")
-        
-        return {"status": "訓練已開始", "message": stdout.decode()}
+        # 不等待進程完成，立即返回
+        return {"status": "初始訓練已開始", "message": f"訓練進程已啟動 (PID: {process.pid})，請通過監控API查看進度"}
         
     except Exception as e:
         logger.error(f"開始初始訓練失敗: {str(e)}")
@@ -723,18 +855,14 @@ async def start_incremental_training(request: Request, training_request: Trainin
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 然後使用 Python 直接啟動訓練程序
+        # 使用異步方式啟動訓練程序，避免阻塞API
         cmd = [
             sys.executable, "scripts/model_training_manager.py", "incremental"
         ]
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate()
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        if process.returncode != 0:
-            logger.error(f"啟動增量訓練失敗: {stderr.decode()}")
-            raise HTTPException(status_code=500, detail=f"啟動增量訓練失敗: {stderr.decode()}")
-        
-        return {"status": "增量訓練已開始", "message": stdout.decode()}
+        # 不等待進程完成，立即返回
+        return {"status": "增量訓練已開始", "message": f"訓練進程已啟動 (PID: {process.pid})，請通過監控API查看進度"}
         
     except Exception as e:
         logger.error(f"開始增量訓練失敗: {str(e)}")
@@ -754,18 +882,14 @@ async def start_reindex_training(request: Request, training_request: TrainingReq
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 然後使用 Python 直接啟動訓練程序
+        # 使用異步方式啟動訓練程序，避免阻塞API
         cmd = [
             sys.executable, "scripts/model_training_manager.py", "reindex"
         ]
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate()
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        if process.returncode != 0:
-            logger.error(f"啟動重新索引失敗: {stderr.decode()}")
-            raise HTTPException(status_code=500, detail=f"啟動重新索引失敗: {stderr.decode()}")
-        
-        return {"status": "重新索引已開始", "message": stdout.decode()}
+        # 不等待進程完成，立即返回
+        return {"status": "重新索引已開始", "message": f"訓練進程已啟動 (PID: {process.pid})，請通過監控API查看進度"}
         
     except Exception as e:
         logger.error(f"開始重新索引失敗: {str(e)}")

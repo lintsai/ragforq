@@ -109,10 +109,25 @@ class ModelManager:
         if model_name not in self._llm_models:
             logger.info(f"加載語言模型: {model_name}")
             
-            # 自動檢測是否為大型模型
+            # 自動檢測是否為大型模型 - 基於參數量而非模型名稱
             if use_large_model_optimizations is None:
-                use_large_model_optimizations = any(indicator in model_name.lower() for indicator in 
-                                                  ['20b', '13b', '7b', '6b', '3b', 'gpt-j', 'gpt-neox', 'bloom', 'chatglm', 'baichuan', 'qwen'])
+                model_name_lower = model_name.lower()
+                # 檢測大型模型的通用邏輯
+                large_model_indicators = ['20b', '13b', '7b', '6b', '3b']
+                small_model_indicators = ['0.5b', '1b', '1.5b', '2b']
+                
+                # 如果明確標示為小型模型，則不使用大型模型優化
+                if any(indicator in model_name_lower for indicator in small_model_indicators):
+                    use_large_model_optimizations = False
+                # 如果明確標示為大型模型，則使用優化
+                elif any(indicator in model_name_lower for indicator in large_model_indicators):
+                    use_large_model_optimizations = True
+                # 其他已知的大型模型架構
+                elif any(arch in model_name_lower for arch in ['gpt-j', 'gpt-neox', 'bloom', 'chatglm', 'baichuan']):
+                    use_large_model_optimizations = True
+                else:
+                    # 默認不使用大型模型優化
+                    use_large_model_optimizations = False
             
             try:
                 # 檢測模型類型
@@ -235,6 +250,16 @@ class ModelManager:
                 # 只對 causal LM 模型添加 return_full_text 參數
                 if model_type == "causal":
                     pipeline_kwargs["return_full_text"] = False
+                
+                # 通用tokenizer配置
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                
+                # 設置通用的生成參數
+                pipeline_kwargs["model_kwargs"] = {
+                    "pad_token_id": tokenizer.eos_token_id,
+                    "eos_token_id": tokenizer.eos_token_id,
+                }
                 
                 self._llm_models[model_name] = pipeline(**pipeline_kwargs)
                 
@@ -362,43 +387,54 @@ class ModelManager:
                 
             model = self.get_llm_model(model_name)
             
-            # 根據模型類型調整生成參數
+            # 根據模型類型調整生成參數 - 從根本上避免重複輸出
+            generation_kwargs = {
+                "pad_token_id": model.tokenizer.eos_token_id,
+                "eos_token_id": model.tokenizer.eos_token_id,
+                "repetition_penalty": 1.15,     # 適度的重複懲罰
+                "no_repeat_ngram_size": 2,      # 避免重複2-gram
+                "early_stopping": True,         # 早停機制
+            }
+            
+            # 根據溫度設置採樣策略
+            if temperature > 0:
+                generation_kwargs.update({
+                    "temperature": temperature,
+                    "do_sample": True,
+                    "top_p": 0.85,              # nucleus採樣
+                    "top_k": 40,                # 限制候選詞彙
+                })
+            else:
+                generation_kwargs.update({
+                    "temperature": 0.1,         # 最小溫度而非0，避免完全確定性
+                    "do_sample": True,
+                    "top_p": 0.95,
+                })
+            
             if model_type == "seq2seq":
                 # T5 等 seq2seq 模型使用不同的參數
-                outputs = model(
-                    prompt,
-                    max_new_tokens=max_length,
-                    temperature=temperature,
-                    do_sample=True if temperature > 0 else False
-                )
+                generation_kwargs["max_new_tokens"] = max_length
+                outputs = model(prompt, **generation_kwargs)
             else:
-                # Causal LM 模型
-                outputs = model(
-                    prompt,
-                    max_length=max_length,
-                    temperature=temperature,
-                    do_sample=True
-                )
+                # Causal LM 模型 - 使用max_new_tokens而不是max_length避免包含prompt
+                generation_kwargs["max_new_tokens"] = max_length
+                generation_kwargs["return_full_text"] = False  # 只返回生成的部分
+                outputs = model(prompt, **generation_kwargs)
             
             if outputs and len(outputs) > 0:
-                # 統一處理輸出格式 - 兩種模型類型都使用相同的格式
+                # 統一處理輸出格式
                 if isinstance(outputs[0], dict) and 'generated_text' in outputs[0]:
                     result = outputs[0]['generated_text'].strip()
-                    # 如果結果為空，返回錯誤信息
-                    if not result:
-                        return "模型生成了空回應，請嘗試調整問題或參數。"
-                    return result
                 elif isinstance(outputs[0], str):
                     result = outputs[0].strip()
-                    if not result:
-                        return "模型生成了空回應，請嘗試調整問題或參數。"
-                    return result
                 else:
-                    # 如果是其他格式，嘗試直接轉換
                     result = str(outputs[0]).strip()
-                    if not result:
-                        return "模型生成了空回應，請嘗試調整問題或參數。"
-                    return result
+                
+                # 檢查結果質量
+                if not result:
+                    return "模型生成了空回應，請嘗試調整問題或參數。"
+                
+                return result
             else:
                 return "抱歉，無法生成回應。"
                 
@@ -408,6 +444,8 @@ class ModelManager:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return "生成過程中發生錯誤，請稍後再試。"
+    
+
     
     def encode_texts(self, texts: Union[str, list], model_name: Optional[str] = None) -> np.ndarray:
         """

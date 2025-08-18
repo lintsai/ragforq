@@ -49,166 +49,269 @@ class SmartFileRetriever:
         # 更新文件緩存
         self._update_file_cache()
 
-        # 如果緩存中的文件總數很少，則直接返回所有文件
-        if len(self.file_cache) <= 50:
-            logger.info(f"Found only {len(self.file_cache)} files, processing all of them.")
-            return list(self.file_cache.keys())
+        # 1. 首先根據文件夾路徑過濾文件緩存
+        working_file_cache = self.file_cache
+        if self.folder_path:
+            folder_path_normalized = os.path.normpath(self.folder_path.strip('/\\')).replace('\\', '/')
+            filtered_cache = {}
+            
+            for file_path, metadata in self.file_cache.items():
+                try:
+                    # 計算相對於基礎路徑的相對路徑
+                    rel_path = os.path.relpath(file_path, self.base_path)
+                    rel_path_normalized = os.path.normpath(rel_path).replace('\\', '/')
+                    
+                    # 檢查文件是否在指定文件夾內
+                    if rel_path_normalized.startswith(folder_path_normalized + '/') or rel_path_normalized == folder_path_normalized:
+                        filtered_cache[file_path] = metadata
+                except (ValueError, OSError) as e:
+                    logger.debug(f"處理文件路徑 {file_path} 時出錯: {str(e)}")
+                    continue
+            
+            working_file_cache = filtered_cache
+            logger.info(f"文件夾限制 '{self.folder_path}' 過濾後，剩餘 {len(working_file_cache)} 個文件")
+            
+            if not working_file_cache:
+                logger.warning(f"在指定文件夾 {self.folder_path} 中沒有找到任何文件")
+                return []
+
+        # 2. 檢查文件數量並設置警告
+        if len(working_file_cache) > 5000:
+            logger.warning(f"階層檔案數量過多 ({len(working_file_cache)} 個文件)，建議縮小搜索範圍或指定更具體的文件夾路徑")
+            self._file_count_warning = f"檢測到大量文件 ({len(working_file_cache)} 個)，建議縮小搜索範圍以提高檢索效率"
+        else:
+            self._file_count_warning = None
+
+        # 3. 如果過濾後的文件總數很少，則直接返回所有文件
+        if len(working_file_cache) <= 50:
+            logger.info(f"Found only {len(working_file_cache)} files, processing all of them.")
+            return list(working_file_cache.keys())
         
-        # 1. 關鍵詞匹配
-        keyword_matches = self._match_by_keywords(query)
+        # 4. 在過濾後的文件中進行搜索
+        # 臨時替換file_cache進行搜索
+        original_cache = self.file_cache
+        self.file_cache = working_file_cache
         
-        # 2. 路徑語義分析
-        path_matches = self._analyze_file_paths(query)
+        try:
+            # 關鍵詞匹配
+            keyword_matches = self._match_by_keywords(query)
+            
+            # 路徑語義分析
+            path_matches = self._analyze_file_paths(query)
+            
+            # 合併和去重
+            all_matches = list(set(keyword_matches + path_matches))
+            
+            # 評分和排序
+            scored_files = self._score_files(query, all_matches)
+            
+            # 返回前N個文件
+            relevant_files = [file_path for file_path, score in scored_files[:max_files]]
+            
+        finally:
+            # 恢復原始緩存
+            self.file_cache = original_cache
         
-        # 3. 合併和去重
-        all_matches = list(set(keyword_matches + path_matches))
-        
-        # 4. 評分和排序
-        scored_files = self._score_files(query, all_matches)
-        
-        # 5. 返回前N個文件
-        return [file_path for file_path, score in scored_files[:max_files]]
+        logger.info(f"在 {len(working_file_cache)} 個文件中找到 {len(relevant_files)} 個相關文件")
+        return relevant_files
     
+    def _quick_estimate_file_count(self, scan_path: str, max_sample_dirs: int = 20) -> int:
+        """快速估算文件數量，避免完整掃描"""
+        try:
+            # 採樣估算法：只掃描部分目錄來估算總數
+            sample_count = 0
+            total_dirs = 0
+            sampled_dirs = 0
+            
+            # 第一層目錄採樣
+            for root, dirs, files in os.walk(scan_path):
+                # 只處理前幾層目錄
+                depth = root.replace(scan_path, '').count(os.sep)
+                if depth > 3:  # 限制深度
+                    dirs[:] = []
+                    continue
+                
+                total_dirs += 1
+                if sampled_dirs < max_sample_dirs:
+                    # 計算當前目錄的支持文件數量
+                    supported_files = sum(1 for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES)
+                    sample_count += supported_files
+                    sampled_dirs += 1
+                
+                # 跳過系統目錄
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system', 'temp', 'tmp', '$recycle.bin']]
+            
+            # 根據採樣結果估算總數
+            if sampled_dirs > 0:
+                avg_files_per_dir = sample_count / sampled_dirs
+                estimated_total = int(avg_files_per_dir * total_dirs)
+                logger.info(f"快速估算：採樣 {sampled_dirs} 個目錄，平均每目錄 {avg_files_per_dir:.1f} 個文件，估算總數 {estimated_total}")
+                return estimated_total
+            
+            return 0
+            
+        except Exception as e:
+            logger.error(f"快速估算文件數量失敗: {str(e)}")
+            return 0
+
     def _update_file_cache(self):
-        """更新文件緩存 - 優化版本，支持完整Q槽掃描和文件夾過濾"""
+        """更新文件緩存 - 性能優化版本"""
         current_time = time.time()
         if current_time - self.last_scan_time < self.cache_duration:
             return
         
         # 確定掃描路徑
         if self.folder_path:
-            scan_path = os.path.join(self.base_path, self.folder_path.lstrip('/'))
+            # 處理文件夾路徑，確保正確拼接
+            folder_path_clean = self.folder_path.strip('/\\')
+            scan_path = os.path.join(self.base_path, folder_path_clean)
             logger.info(f"更新文件緩存（限制在文件夾: {self.folder_path}）...")
+            
+            # 檢查指定的文件夾是否存在
+            if not os.path.exists(scan_path):
+                logger.warning(f"指定的文件夾不存在: {scan_path}，回退到基礎路徑")
+                scan_path = self.base_path
+                self.folder_path = None  # 重置文件夾路徑
         else:
             scan_path = self.base_path
             logger.info("更新文件緩存...")
         
+        # 快速估算文件數量
+        estimated_count = self._quick_estimate_file_count(scan_path)
+        
+        # 根據估算結果決定掃描策略
+        if estimated_count > 10000:
+            logger.warning(f"估算文件數量過多 ({estimated_count} 個)，使用快速掃描模式")
+            self._file_count_warning = f"檢測到大量文件 (估算約 {estimated_count} 個)，建議縮小搜索範圍以提高檢索效率"
+            # 使用更激進的限制
+            max_files = 2000
+            max_depth = 5
+        elif estimated_count > 5000:
+            logger.info(f"估算文件數量較多 ({estimated_count} 個)，使用中等掃描模式")
+            max_files = 3000
+            max_depth = 6
+        else:
+            logger.info(f"估算文件數量適中 ({estimated_count} 個)，使用完整掃描模式")
+            max_files = 5000
+            max_depth = 8
+        
         self.file_cache = {}
         
         try:
-            # 根據是否有文件夾限制調整掃描參數
-            if self.folder_path:
-                # 文件夾限制模式：可以掃描更多文件
-                max_files = 10000
-                max_depth = 10
-            else:
-                # 全局掃描模式：保守設置
-                max_files = 5000
-                max_depth = 8
             
             file_count = 0
             
-            # 優先掃描重要目錄
-            priority_dirs = []
-            common_dirs = []
-            
-            # 分類目錄
-            try:
-                # 如果指定了文件夾路徑，直接掃描該路徑
-                if self.folder_path:
-                    # 檢查指定的文件夾是否存在
-                    if os.path.exists(scan_path) and os.path.isdir(scan_path):
-                        priority_dirs = [scan_path]
-                        logger.info(f"直接掃描指定文件夾: {scan_path}")
-                    else:
-                        logger.warning(f"指定的文件夾不存在: {scan_path}")
-                        priority_dirs = [self.base_path]
-                else:
-                    # 全局掃描模式，分類子目錄
-                    for item in os.listdir(scan_path):
-                        item_path = os.path.join(scan_path, item)
-                        if os.path.isdir(item_path):
-                            item_lower = item.lower()
-                            # 優先處理可能包含重要文檔的目錄
-                            if any(keyword in item_lower for keyword in ['文件', '資料', '檔案', 'document', 'data', 'file', '共用', 'share']):
-                                priority_dirs.append(item_path)
-                            else:
-                                common_dirs.append(item_path)
-            except Exception as e:
-                logger.warning(f"列舉目錄時出錯: {str(e)}")
-                priority_dirs = [scan_path if self.folder_path else self.base_path]
-            
-            # 按優先級掃描
-            scan_dirs = priority_dirs + common_dirs
-            if not scan_dirs:
-                scan_dirs = [scan_path if self.folder_path else self.base_path]
-            
-            for scan_dir in scan_dirs:
-                if file_count >= max_files:
-                    break
-                    
-                try:
-                    for root, dirs, files in os.walk(scan_dir):
-                        # 計算當前深度（相對於掃描起始路徑）
-                        if self.folder_path:
-                            # 文件夾限制模式：相對於指定文件夾計算深度
-                            depth = root.replace(scan_path, '').count(os.sep)
-                        else:
-                            # 全局模式：相對於基礎路徑計算深度
-                            depth = root.replace(self.base_path, '').count(os.sep)
-                            
-                        if depth >= max_depth:
-                            dirs[:] = []  # 不再深入子目錄
-                            continue
-                        
-                        # 跳過系統目錄和隱藏目錄
-                        dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system', 'temp', 'tmp', '$recycle.bin']]
-                        
-                        # 增加每個目錄的文件處理數量
-                        files = files[:200]  # 每個目錄最多處理200個文件
-                        
-                        for file in files:
-                            if file_count >= max_files:
-                                logger.info(f"達到文件數量限制 ({max_files})，停止掃描")
-                                break
-                                
-                            # 跳過系統文件和臨時文件
-                            if file.startswith('.') or file.startswith('~') or file.lower().endswith('.tmp'):
-                                continue
-                                
-                            file_path = os.path.join(root, file)
-                            file_ext = os.path.splitext(file)[1].lower()
-                            
-                            if file_ext in SUPPORTED_FILE_TYPES:
-                                try:
-                                    stat = os.stat(file_path)
-                                    # 跳過過小的文件（可能是空文件）
-                                    if stat.st_size < 100:  # 小於100字節
-                                        continue
-                                        
-                                    # 計算相對路徑
-                                    if self.folder_path:
-                                        # 文件夾限制模式：顯示相對於指定文件夾的路徑
-                                        relative_path = os.path.relpath(file_path, scan_path)
-                                        display_path = os.path.join(self.folder_path, relative_path).replace('\\', '/')
-                                    else:
-                                        # 全局模式：顯示相對於基礎路徑的路徑
-                                        display_path = os.path.relpath(file_path, self.base_path).replace('\\', '/')
-                                    
-                                    self.file_cache[file_path] = {
-                                        'name': file,
-                                        'size': stat.st_size,
-                                        'mtime': stat.st_mtime,
-                                        'ext': file_ext,
-                                        'relative_path': display_path,
-                                        'depth': depth,
-                                        'folder_limited': bool(self.folder_path)  # 標記是否為文件夾限制模式
-                                    }
-                                    file_count += 1
-                                except (OSError, PermissionError):
-                                    continue
-                        
-                        if file_count >= max_files:
-                            break
-                except Exception as e:
-                    logger.warning(f"掃描目錄 {scan_dir} 時出錯: {str(e)}")
-                    continue
+            # 使用更高效的掃描策略
+            self._scan_directories_efficiently(scan_path, max_files, max_depth)
             
             self.last_scan_time = current_time
             logger.info(f"文件緩存更新完成，共 {len(self.file_cache)} 個文件")
             
         except Exception as e:
             logger.error(f"更新文件緩存失敗: {str(e)}")
+            # 如果掃描失敗，至少嘗試掃描根目錄的前50個文件
+            self._fallback_scan(scan_path)
+
+    def _scan_directories_efficiently(self, scan_path: str, max_files: int, max_depth: int):
+        """高效掃描目錄 - 使用批量處理和優化策略"""
+        file_count = 0
+        
+        try:
+            # 使用生成器避免一次性加載所有文件
+            for root, dirs, files in os.walk(scan_path):
+                # 計算當前深度
+                if self.folder_path:
+                    depth = root.replace(scan_path, '').count(os.sep)
+                else:
+                    depth = root.replace(self.base_path, '').count(os.sep)
+                    
+                if depth >= max_depth:
+                    dirs[:] = []  # 不再深入子目錄
+                    continue
+                
+                # 跳過系統目錄和隱藏目錄
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system', 'temp', 'tmp', '$recycle.bin']]
+                
+                # 批量處理文件，避免逐個處理
+                supported_files = [f for f in files[:300] if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES 
+                                 and not f.startswith('.') and not f.startswith('~') and not f.lower().endswith('.tmp')]
+                
+                # 使用批量stat操作
+                for file in supported_files:
+                    if file_count >= max_files:
+                        logger.info(f"達到文件數量限制 ({max_files})，停止掃描")
+                        return
+                    
+                    file_path = os.path.join(root, file)
+                    
+                    try:
+                        # 使用更快的文件大小檢查
+                        file_size = os.path.getsize(file_path)
+                        if file_size < 100:  # 跳過過小的文件
+                            continue
+                        
+                        # 只在需要時獲取完整stat信息
+                        stat_info = os.stat(file_path)
+                        
+                        # 計算相對路徑
+                        if self.folder_path:
+                            relative_path = os.path.relpath(file_path, scan_path)
+                            display_path = os.path.join(self.folder_path, relative_path).replace('\\', '/')
+                        else:
+                            display_path = os.path.relpath(file_path, self.base_path).replace('\\', '/')
+                        
+                        self.file_cache[file_path] = {
+                            'name': file,
+                            'size': file_size,
+                            'mtime': stat_info.st_mtime,
+                            'ext': os.path.splitext(file)[1].lower(),
+                            'relative_path': display_path,
+                            'depth': depth,
+                            'folder_limited': bool(self.folder_path)
+                        }
+                        file_count += 1
+                        
+                    except (OSError, PermissionError):
+                        continue
+                
+                # 每處理1000個文件記錄一次進度
+                if file_count > 0 and file_count % 1000 == 0:
+                    logger.info(f"已掃描 {file_count} 個文件...")
+                    
+        except Exception as e:
+            logger.error(f"高效掃描失敗: {str(e)}")
+
+    def _fallback_scan(self, scan_path: str):
+        """回退掃描方法 - 只掃描根目錄"""
+        try:
+            logger.info("使用回退掃描方法...")
+            files = os.listdir(scan_path)[:100]  # 只掃描前100個項目
+            
+            for file in files:
+                file_path = os.path.join(scan_path, file)
+                if os.path.isfile(file_path):
+                    file_ext = os.path.splitext(file)[1].lower()
+                    if file_ext in SUPPORTED_FILE_TYPES:
+                        try:
+                            stat_info = os.stat(file_path)
+                            if stat_info.st_size >= 100:  # 跳過過小的文件
+                                self.file_cache[file_path] = {
+                                    'name': file,
+                                    'size': stat_info.st_size,
+                                    'mtime': stat_info.st_mtime,
+                                    'ext': file_ext,
+                                    'relative_path': file,
+                                    'depth': 0,
+                                    'folder_limited': bool(self.folder_path)
+                                }
+                        except (OSError, PermissionError):
+                            continue
+            
+            logger.info(f"回退掃描完成，找到 {len(self.file_cache)} 個文件")
+            
+        except Exception as e:
+            logger.error(f"回退掃描也失敗: {str(e)}")
+            self.file_cache = {}
             # 如果掃描失敗，至少嘗試掃描根目錄
             try:
                 logger.info("嘗試僅掃描根目錄...")
@@ -629,43 +732,98 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}")
     
     def rewrite_query(self, original_query: str) -> str:
-        """查詢重寫 - 針對動態檢索優化"""
+        """查詢重寫 - 參照傳統RAG的重試機制"""
         try:
             if len(original_query.strip()) <= 3:
                 return original_query
             
-            prompt = self.REWRITE_PROMPT_TEMPLATE.format(original_query=original_query)
-            response = self.llm.invoke(prompt)
+            # 參照傳統RAG的重試機制
+            from config.config import OLLAMA_MAX_RETRIES, OLLAMA_RETRY_DELAY
+            import time
             
-            rewritten_query = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            for attempt in range(OLLAMA_MAX_RETRIES if hasattr(__import__('config.config'), 'OLLAMA_MAX_RETRIES') else 3):
+                try:
+                    prompt = self.REWRITE_PROMPT_TEMPLATE.format(original_query=original_query)
+                    
+                    # 使用超時控制
+                    import concurrent.futures
+                    def _invoke_rewrite():
+                        response = self.llm.invoke(prompt)
+                        return response.content.strip() if hasattr(response, 'content') else str(response).strip()
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(_invoke_rewrite)
+                        try:
+                            rewritten_query = future.result(timeout=30)  # 30秒超時
+                            
+                            # 質量檢查
+                            if not rewritten_query or len(rewritten_query) < 2:
+                                if attempt < 2:
+                                    continue
+                                return original_query
+                            
+                            # 檢查是否過多標點符號
+                            punctuation_count = sum(1 for char in rewritten_query if char in '，,。.！!？?；;：:')
+                            if punctuation_count > len(rewritten_query) * 0.3:
+                                if attempt < 2:
+                                    continue
+                                return original_query
+                            
+                            # 檢查長度是否合理
+                            if len(rewritten_query) > len(original_query) * 3:
+                                if attempt < 2:
+                                    continue
+                                return original_query
 
-            if not rewritten_query or len(rewritten_query) < 2:
-                return original_query
+                            logger.info(f"優化後查詢: {rewritten_query}")
+                            return rewritten_query
+                            
+                        except concurrent.futures.TimeoutError:
+                            if attempt < 2:
+                                logger.warning(f"查詢重寫超時，第 {attempt + 1} 次重試...")
+                                time.sleep(1)
+                                continue
+                            else:
+                                logger.error("查詢重寫多次超時，使用原始查詢")
+                                return original_query
+                
+                except Exception as e:
+                    if attempt < 2:
+                        logger.warning(f"查詢重寫出錯，第 {attempt + 1} 次重試: {str(e)}")
+                        time.sleep(1)
+                        continue
+                    else:
+                        logger.error(f"查詢重寫多次失敗: {str(e)}")
+                        return original_query
             
-            punctuation_count = sum(1 for char in rewritten_query if char in '，,。.！!？?；;：:')
-            if punctuation_count > len(rewritten_query) * 0.3:
-                return original_query
-            
-            if len(rewritten_query) > len(original_query) * 2:
-                return original_query
-
-            logger.info(f"優化後查詢: {rewritten_query}")
-            return rewritten_query
+            return original_query
             
         except Exception as e:
             logger.error(f"查詢重寫失敗: {str(e)}")
             return original_query
+    
+    def get_file_count_warning(self) -> str:
+        """獲取文件數量警告"""
+        return getattr(self.file_retriever, '_file_count_warning', None)
     
     def answer_question(self, question: str) -> str:
         """回答問題 - 動態RAG流程（優化版本）"""
         try:
             logger.info(f"開始動態RAG處理: {question}")
             
+            # 記錄文件夾限制信息
+            if self.folder_path:
+                logger.info(f"搜索範圍限制在文件夾: {self.folder_path}")
+            
             # 1. 查詢重寫優化
             optimized_query = self.rewrite_query(question)
             
             # 2. 檢索相關文件（增加數量）
             relevant_files = self.file_retriever.retrieve_relevant_files(optimized_query, max_files=12)
+            
+            # 記錄文件夾限制的結果
+            if self.folder_path:
+                logger.info(f"文件夾限制 '{self.folder_path}' 已在檢索階段生效，找到 {len(relevant_files)} 個相關文件")
             
             if not relevant_files:
                 return self._generate_general_knowledge_answer(question)
@@ -699,7 +857,7 @@ class DynamicRAGEngineBase(RAGEngineInterface):
     
     def _select_best_documents(self, similarities: List[Tuple[Document, float]], question: str) -> List[Document]:
         """
-        智能選擇最佳文檔
+        智能選擇最佳文檔 - 參照傳統RAG的文檔選擇策略
         
         Args:
             similarities: 文檔相似度列表
@@ -711,6 +869,10 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         if not similarities:
             return []
         
+        # 參照傳統RAG的TOP_K設置
+        from config.config import SIMILARITY_TOP_K
+        max_docs = min(SIMILARITY_TOP_K, 10)  # 最多10個文檔
+        
         # 按文件分組，每個文件只保留最相關的段落
         file_groups = {}
         for doc, score in similarities:
@@ -718,20 +880,33 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             if file_path not in file_groups or score > file_groups[file_path][1]:
                 file_groups[file_path] = (doc, score)
         
-        # 按相似度排序
+        # 按相似度排序（注意：相似度越高越好，所以是降序）
         sorted_docs = sorted(file_groups.values(), key=lambda x: x[1], reverse=True)
         
-        # 動態閾值選擇
+        # 參照傳統RAG的閾值策略
         if sorted_docs:
             best_score = sorted_docs[0][1]
-            threshold = max(best_score * 0.7, 0.3)  # 動態閾值
+            
+            # 更嚴格的閾值策略，參照傳統RAG
+            if best_score > 0.8:
+                threshold = best_score * 0.8  # 高質量匹配時使用較高閾值
+            elif best_score > 0.6:
+                threshold = best_score * 0.7  # 中等質量匹配
+            else:
+                threshold = max(best_score * 0.6, 0.3)  # 低質量匹配時放寬閾值
             
             selected_docs = []
             for doc, score in sorted_docs:
-                if score >= threshold and len(selected_docs) < 8:  # 最多8個文檔
+                if score >= threshold and len(selected_docs) < max_docs:
                     selected_docs.append(doc)
+                elif len(selected_docs) >= 3:  # 至少保證3個文檔
+                    break
             
-            logger.info(f"選擇了 {len(selected_docs)} 個文檔，閾值: {threshold:.3f}")
+            # 如果選中的文檔太少，放寬條件
+            if len(selected_docs) < 2 and len(sorted_docs) >= 2:
+                selected_docs = [doc for doc, score in sorted_docs[:3]]
+            
+            logger.info(f"選擇了 {len(selected_docs)} 個文檔，閾值: {threshold:.3f}，最高分: {best_score:.3f}")
             return selected_docs
         
         return []
@@ -760,13 +935,24 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                 if len(content) > available_length:
                     content = content[:available_length] + "..."
                 
-                context_parts.append(f"相關內容 {i} (來源: {file_name}):\n{content}\n")
+                # 添加位置信息（如果有的話）
+                location_info = ""
+                if "page_number" in doc.metadata:
+                    location_info = f" (頁碼: {doc.metadata['page_number']})"
+                elif "block_number" in doc.metadata:
+                    location_info = f" (塊: {doc.metadata['block_number']})"
+                elif "sheet_name" in doc.metadata:
+                    location_info = f" (工作表: {doc.metadata['sheet_name']})"
+                
+                context_parts.append(f"相關內容 {i} (來源: {file_name}{location_info}):\n{content}\n")
                 current_length += len(content)
                 
                 if current_length >= max_total_length:
                     break
         
         return "\n".join(context_parts)
+    
+
     
     def _format_context(self, documents: List[Document]) -> str:
         """格式化上下文"""
@@ -789,6 +975,8 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             response = self.llm.invoke(prompt)
             result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
             
+
+            
             # 檢查回答長度，如果太短則使用回退方法
             if not result or len(result.strip()) < 5:
                 return self._get_general_fallback(question)
@@ -798,12 +986,22 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             
         except Exception as e:
             logger.error(f"生成回答過程中發生錯誤: {str(e)}")
-            return self._get_error_message()
+            return self._generate_fallback_answer(question, context)
+    
+
     
     def _generate_general_knowledge_answer(self, question: str) -> str:
         """生成常識回答 - 當找不到相關文檔時，基於常識提供回答（子類實現）"""
         # 默認實現，子類應該重寫此方法
         return f"抱歉，我在文檔中找不到與「{question}」相關的具體信息。這可能是因為相關文檔不在當前的檢索範圍內，或者問題涉及的內容需要更具體的關鍵詞。建議您嘗試使用更具體的關鍵詞重新提問。"
+    
+    def _ensure_language(self, result: str) -> str:
+        """確保輸出符合目標語言（子類可重寫）"""
+        return result
+    
+    def _get_error_message(self) -> str:
+        """獲取錯誤消息（子類可重寫）"""
+        return "處理問題時發生錯誤，請稍後再試。"
     
     def _get_general_fallback(self, query: str) -> str:
         """獲取通用回退回答（子類應該重寫此方法）"""

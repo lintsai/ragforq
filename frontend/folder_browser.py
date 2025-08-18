@@ -202,12 +202,29 @@ class FolderBrowser:
                                 help_text = f"選擇 {folder['name']} 作為搜索範圍"
                             
                             if st.button(button_text, key=f"select_{i}", help=help_text):
-                                st.session_state.selected_folder_path = folder["path"]
-                                st.success(f"🎯 已選擇：{folder['name']}")
+                                # 使用新的API驗證文件夾並獲取詳細信息
+                                folder_info = self._validate_folder_with_details(folder["path"])
                                 
-                                # 顯示警告信息（如果是大文件夾）
-                                if folder.get('is_large_folder', False):
-                                    st.warning("⚠️ 這是一個大文件夾，建議進入子文件夾以獲得更精確的搜索結果")
+                                if folder_info and folder_info.get("exists"):
+                                    st.session_state.selected_folder_path = folder["path"]
+                                    st.success(f"🎯 已選擇：{folder['name']}")
+                                    
+                                    # 顯示詳細的文件數量信息
+                                    file_count = folder_info.get("file_count", 0)
+                                    count_type = folder_info.get("count_type", "未知")
+                                    warning_level = folder_info.get("warning_level", "low")
+                                    suggestion = folder_info.get("suggestion", "")
+                                    
+                                    # 根據警告級別顯示不同的消息
+                                    if warning_level == "high":
+                                        st.warning(f"⚠️ {suggestion} ({count_type} {file_count} 個文件)")
+                                    elif warning_level == "medium":
+                                        st.info(f"ℹ️ {suggestion} ({count_type} {file_count} 個文件)")
+                                    else:
+                                        st.success(f"✅ {suggestion} ({count_type} {file_count} 個文件)")
+                                else:
+                                    st.error("❌ 無法驗證文件夾，請重新選擇")
+                                    return None
                                 
                                 return folder["path"]
                         else:
@@ -234,3 +251,21 @@ class FolderBrowser:
         """重置瀏覽器到根目錄"""
         st.session_state.folder_browser_path = ""
         st.session_state.selected_folder_path = None
+    
+    def _validate_folder_with_details(self, folder_path: str) -> Optional[Dict[str, Any]]:
+        """使用新的API驗證文件夾並獲取詳細信息"""
+        try:
+            response = requests.get(
+                f"{self.api_url}/api/validate-folder",
+                params={"folder_path": folder_path},
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return None
+                
+        except Exception as e:
+            st.error(f"驗證文件夾時出錯: {str(e)}")
+            return None

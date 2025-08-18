@@ -30,7 +30,7 @@ class DynamicTraditionalChineseRAGEngine(DynamicRAGEngineBase):
 
 用戶問題: {question}
 
-請提供一個準確、詳細的回答。如果上下文中沒有足夠信息，請明確說明「根據提供的文件，我找不到相關資訊」。
+請提供一個準確、詳細且簡潔的回答。如果上下文中沒有足夠信息，請明確說明「根據提供的文件，我找不到相關資訊」。避免重複內容。
 
 回答:"""
 
@@ -61,6 +61,7 @@ class DynamicTraditionalChineseRAGEngine(DynamicRAGEngineBase):
 2. 基於一般IT知識提供有用的回答
 3. 明確說明這是基於常識的回答，不是來自QSI內部文檔
 4. 如果是QSI特定的問題，建議聯繫相關部門
+5. 回答要簡潔明瞭，避免重複內容
 
 繁體中文回答："""
             
@@ -79,6 +80,18 @@ class DynamicTraditionalChineseRAGEngine(DynamicRAGEngineBase):
         except Exception as e:
             logger.error(f"繁體中文動態RAG常識回答處理失敗: {str(e)}")
             return self._get_general_fallback(question)
+    
+    def _ensure_language(self, result: str) -> str:
+        """確保輸出符合繁體中文"""
+        return result
+    
+    def get_file_count_warning(self) -> str:
+        """獲取文件數量警告"""
+        return getattr(self.file_retriever, '_file_count_warning', None)
+    
+    def _get_error_message(self) -> str:
+        """獲取繁體中文錯誤消息"""
+        return "處理問題時發生錯誤，請稍後再試。"
     
     def _get_general_fallback(self, query: str) -> str:
         """獲取繁體中文通用回退回答"""

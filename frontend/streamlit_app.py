@@ -144,7 +144,7 @@ def get_indexed_files() -> List[Dict[str, Any]]:
         return []
 
 # 更新聊天歷史
-def update_chat_history(question, answer, sources=None, rewritten_question=None):
+def update_chat_history(question, answer, sources=None, rewritten_question=None, file_count_warning=None):
     """更新聊天歷史"""
     if len(st.session_state.chat_history) >= 10:  # 限制歷史記錄數量
         st.session_state.chat_history.pop(0)
@@ -154,6 +154,7 @@ def update_chat_history(question, answer, sources=None, rewritten_question=None)
         "answer": answer,
         "sources": sources,
         "rewritten_question": rewritten_question,
+        "file_count_warning": file_count_warning,
         "timestamp": datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d %H:%M:%S")
     })
 
@@ -570,6 +571,10 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
                     
+                    # 顯示文件數量警告（如果有）
+                    if chat.get("file_count_warning"):
+                        st.warning(f"⚠️ {chat['file_count_warning']}")
+                    
                     # 顯示相關文件（如果有）
                     if "sources" in chat and chat["sources"]:
                         # 去重處理
@@ -634,9 +639,14 @@ def main():
                     answer_text = result.get("answer", "無法獲取答案")
                     sources = result.get("sources", [])
                     rewritten_question = result.get("rewritten_query")
+                    file_count_warning = result.get("file_count_warning")
+
+                    # 如果有文件數量警告，顯示警告消息
+                    if file_count_warning:
+                        st.warning(f"⚠️ {file_count_warning}")
 
                     # 更新聊天歷史
-                    update_chat_history(question, answer_text, sources, rewritten_question)
+                    update_chat_history(question, answer_text, sources, rewritten_question, file_count_warning)
 
                     # 重新運行以更新界面
                     st.rerun()
@@ -651,7 +661,7 @@ def main():
                         error_msg += "\n\n建議：\n- 檢查網路連接\n- 選擇較小的模型進行測試\n- 查看系統狀態確認模型是否就緒"
                     
                     logger.error(f"處理問題時發生錯誤: {error_str}")
-                    update_chat_history(question, error_msg, [])
+                    update_chat_history(question, error_msg, [], None, None)
                     st.rerun()
         
         # 頁腳

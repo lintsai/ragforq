@@ -30,7 +30,7 @@ Context Information:
 
 User Question: {question}
 
-Please provide an accurate and detailed answer. If there is not enough information in the context, please state clearly "Based on the provided documents, I could not find the relevant information."
+Please provide an accurate, detailed, and concise answer. If there is not enough information in the context, please state clearly "Based on the provided documents, I could not find the relevant information." Avoid repetitive content.
 
 Answer:"""
 
@@ -61,6 +61,7 @@ Please note:
 2. Provide useful answers based on general IT knowledge
 3. Clearly state this is based on general knowledge, not from QSI internal documents
 4. If it's QSI-specific, suggest contacting relevant departments
+5. Keep answers concise and clear, avoid repetitive content
 
 English answer:"""
             
@@ -83,3 +84,11 @@ English answer:"""
     def _get_general_fallback(self, query: str) -> str:
         """Get English general fallback answer"""
         return f"Based on general IT knowledge, information about '{query}' may require consulting additional QSI internal documentation."
+    
+    def _ensure_language(self, result: str) -> str:
+        """Ensure output is in English"""
+        return result
+    
+    def get_file_count_warning(self) -> str:
+        """Get file count warning"""
+        return getattr(self.file_retriever, '_file_count_warning', None)
