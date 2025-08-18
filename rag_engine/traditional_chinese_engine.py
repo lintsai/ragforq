@@ -48,11 +48,18 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
             logger.info(f"繁體中文RAG引擎初始化完成 (Ollama)，使用模型: {ollama_model}")
         else:
             # Hugging Face 平台
+            llm_params = {
+                "temperature": 0.1,
+                "max_new_tokens": 1024,
+                "top_p": 0.9,
+                "top_k": 50,
+                "repetition_penalty": 1.15
+            }
             self.llm = ChatHuggingFace(
                 model_name=ollama_model,
-                temperature=0.4
+                **llm_params
             )
-            logger.info(f"繁體中文RAG引擎初始化完成 (Hugging Face)，使用模型: {ollama_model}")
+            logger.info(f"繁體中文RAG引擎初始化完成 (Hugging Face)，使用模型: {ollama_model} with params: {llm_params}")
     
     def get_language(self) -> str:
         return "繁體中文"

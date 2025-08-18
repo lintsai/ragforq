@@ -43,6 +43,21 @@ Document Content:
 ---
 Relevance Reason:"""
 
+    BATCH_RELEVANCE_PROMPT_TEMPLATE = """Please generate a relevance reason for each document below in relation to the user's query. Each reason should be a single, concise sentence explaining the connection.
+
+User Query: {question}
+
+---
+{docs_text}
+---
+
+Please output in the following format, one line per document, without any extra explanations or headers:
+1. [Relevance reason for document 1]
+2. [Relevance reason for document 2]
+3. [Relevance reason for document 3]
+...
+"""
+
     def get_language(self) -> str:
         return "English"
     

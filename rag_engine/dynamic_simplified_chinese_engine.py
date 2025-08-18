@@ -43,6 +43,21 @@ class DynamicSimplifiedChineseRAGEngine(DynamicRAGEngineBase):
 ---
 相关性理由:"""
 
+    BATCH_RELEVANCE_PROMPT_TEMPLATE = """请为以下每个文档生成与用户查询的相关性理由。每个理由都应该是独立的一句话，简洁说明其关联性。
+
+用户查询: {question}
+
+---
+{docs_text}
+---
+
+请严格按照以下格式输出，每个文档一行，不要有任何额外的解释或标题：
+1. [文档1的相关性理由]
+2. [文档2的相关性理由]
+3. [文档3的相关性理由]
+...
+"""
+
     def get_language(self) -> str:
         return "简体中文"
     

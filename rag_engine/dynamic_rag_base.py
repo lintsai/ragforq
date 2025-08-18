@@ -39,49 +39,37 @@ class SmartFileRetriever:
     def retrieve_relevant_files(self, query: str, max_files: int = 10) -> List[str]:
         """
         根據查詢檢索相關文件
-        
-        Args:
-            query: 用戶查詢
-            max_files: 最大返回文件數
-            
-        Returns:
-            相關文件路徑列表
         """
-        # 更新文件緩存
         self._update_file_cache()
-
-        # 1. 文件緩存已根據 folder_path 進行了過濾
         working_file_cache = self.file_cache
 
         if not working_file_cache:
             logger.warning(f"在指定文件夾 '{self.folder_path}' 中沒有找到任何支持的文件")
             return []
 
-        # 2. 檢查文件數量並設置警告
         file_count = len(working_file_cache)
-        if file_count > 3000:
-            warning_message = f"檢測到處理文件數量過多 ({file_count} 個)，可能影響處理速度。建議縮小搜索範圍。"
-            logger.warning(warning_message)
-            self._file_count_warning = warning_message
-        else:
-            self._file_count_warning = None
+        
+        # 如果用戶指定了特定文件夾，我們假設他們希望在該範圍內進行全面搜索
+        # 因此，我們將處理該文件夾中的所有文件，而不是進行關鍵詞過濾。
+        # 文件數量警告已經在UI層面給出，用戶已知曉潛在的性能影響。
+        is_folder_limited = self.folder_path != self.base_path
+        
+        if is_folder_limited:
+            logger.info(f"檢索範圍已限定於 '{self.folder_path}'，將處理全部 {file_count} 個文件。")
+            return list(working_file_cache.keys())
 
-        # 3. 如果文件總數很少，則直接返回所有文件
+        # --- 原有的邏輯，適用於未限制文件夾的全局搜索 ---
         if file_count <= 50:
             logger.info(f"找到 {file_count} 個文件，將處理全部文件。")
             return list(working_file_cache.keys())
         
-        # 4. 在過濾後的文件中進行搜索
         keyword_matches = self._match_by_keywords(query, working_file_cache)
         path_matches = self._analyze_file_paths(query, working_file_cache)
         
-        # 合併和去重
         all_matches = list(set(keyword_matches + path_matches))
         
-        # 評分和排序
         scored_files = self._score_files(query, all_matches, working_file_cache)
         
-        # 返回前N個文件
         relevant_files = [file_path for file_path, score in scored_files[:max_files]]
         
         logger.info(f"在 {file_count} 個文件中找到 {len(relevant_files)} 個相關文件")
@@ -608,7 +596,8 @@ class DynamicRAGEngineBase(RAGEngineInterface):
     REWRITE_PROMPT_TEMPLATE = ""
     ANSWER_PROMPT_TEMPLATE = ""
     RELEVANCE_PROMPT_TEMPLATE = ""
-    
+    BATCH_RELEVANCE_PROMPT_TEMPLATE = "" # New template
+
     def __init__(self, ollama_model: str, ollama_embedding_model: str, platform: str = "ollama", folder_path: Optional[str] = None):
         self.ollama_model = ollama_model
         self.ollama_embedding_model = ollama_embedding_model
@@ -621,9 +610,20 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         self.vectorizer = RealTimeVectorizer(ollama_embedding_model, platform=self.platform)
         
         # 初始化語言模型
-        llm_params = {"temperature": 0.1}
-        if self.platform != "ollama":
-            llm_params["max_new_tokens"] = 4096
+        if self.platform == "ollama":
+            llm_params = {
+                "temperature": 0.1,
+                "timeout": OLLAMA_REQUEST_TIMEOUT,
+                "request_timeout": OLLAMA_REQUEST_TIMEOUT
+            }
+        else:  # Hugging Face
+            llm_params = {
+                "temperature": 0.1,
+                "max_new_tokens": 1024,
+                "top_p": 0.9,
+                "top_k": 50,
+                "repetition_penalty": 1.15  # 稍微增加重複懲罰
+            }
 
         try:
             if self.platform == "ollama":
@@ -632,23 +632,15 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                 self.llm = OllamaLLM(
                     model=ollama_model,
                     base_url=OLLAMA_HOST,
-                    temperature=llm_params["temperature"],
-                    timeout=OLLAMA_REQUEST_TIMEOUT,
-                    request_timeout=OLLAMA_REQUEST_TIMEOUT
+                    **llm_params
                 )
                 logger.info(f"使用 Ollama 語言模型: {ollama_model}")
-            else: # 默認為 huggingface
+            else:  # 默認為 huggingface
                 self.llm = ChatHuggingFace(
                     model_name=ollama_model,
                     **llm_params
                 )
-                logger.info(f"使用 Hugging Face 語言模型 (透過 ModelManager): {ollama_model}")
-        except ImportError:
-            logger.warning("langchain_ollama 未安裝，Ollama 模型將透過 Hugging Face 包裝器處理")
-            self.llm = ChatHuggingFace(
-                model_name=ollama_model,
-                **llm_params
-            )
+                logger.info(f"使用 Hugging Face 語言模型 (透過 ModelManager): {ollama_model} with params: {llm_params}")
         except Exception as e:
             logger.error(f"語言模型初始化失敗: {str(e)}")
             logger.info("回退到使用 ChatHuggingFace 作為最終方案")
@@ -963,11 +955,43 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             return "生成相關性理由失敗"
 
     def generate_batch_relevance_reasons(self, question: str, documents: List[Document]) -> List[str]:
-        """批量生成相關性理由"""
-        reasons = []
-        for doc in documents:
-            reasons.append(self.generate_relevance_reason(question, doc.page_content))
-        return reasons
+        """批量生成多個文檔的相關性理由，提高效能"""
+        doc_contents = [doc.page_content for doc in documents]
+        if not question or not question.strip() or not doc_contents:
+            return ["無法生成相關性理由"] * len(doc_contents)
+
+        # Check if the batch prompt is implemented in the subclass
+        if not self.BATCH_RELEVANCE_PROMPT_TEMPLATE or not self.BATCH_RELEVANCE_PROMPT_TEMPLATE.strip():
+            logger.warning("批量相關性理由模板未實現，退回至單個生成模式。")
+            return [self.generate_relevance_reason(question, content) for content in doc_contents]
+
+        try:
+            docs_text = ""
+            for i, content in enumerate(doc_contents, 1):
+                docs_text += f"文檔{i}: {content[:500]}...\n\n" # Limit content length
+
+            prompt = self.BATCH_RELEVANCE_PROMPT_TEMPLATE.format(question=question, docs_text=docs_text)
+            
+            response = self.llm.invoke(prompt)
+            batch_result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            
+            reasons = []
+            lines = batch_result.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and (line.startswith(('1.', '2.', '3.', '4.', '5.')) or '. ' in line[:4]):
+                    reason = line.split('.', 1)[1].strip()
+                    reasons.append(reason)
+            
+            if len(reasons) != len(doc_contents):
+                logger.warning(f"批量相關性理由解析失敗。預期 {len(doc_contents)} 個，得到 {len(reasons)} 個。退回至單個生成。")
+                return [self.generate_relevance_reason(question, content) for content in doc_contents]
+
+            return reasons
+
+        except Exception as e:
+            logger.error(f"批量生成相關性理由時出錯: {str(e)}。退回至單個生成。")
+            return [self.generate_relevance_reason(question, content) for content in doc_contents]
     
     def _get_no_docs_message(self) -> str:
         return "未找到相關文檔"

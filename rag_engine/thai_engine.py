@@ -43,11 +43,18 @@ class ThaiRAGEngine(RAGEngineInterface):
             logger.info(f"Thai RAG engine initialized (Ollama) with model: {ollama_model}")
         else:
             # Hugging Face 平台
+            llm_params = {
+                "temperature": 0.1,
+                "max_new_tokens": 1024,
+                "top_p": 0.9,
+                "top_k": 50,
+                "repetition_penalty": 1.15
+            }
             self.llm = ChatHuggingFace(
                 model_name=ollama_model,
-                temperature=0.4
+                **llm_params
             )
-            logger.info(f"Thai RAG engine initialized (Hugging Face) with model: {ollama_model}")
+            logger.info(f"Thai RAG engine initialized (Hugging Face) with model: {ollama_model} with params: {llm_params}")
     
     def get_language(self) -> str:
         return "ไทย"

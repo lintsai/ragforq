@@ -382,6 +382,13 @@ async def ask_question(request: QuestionRequest):
         # 調試：記錄請求參數
         logger.info(f"請求參數調試 - use_dynamic_rag: {request.use_dynamic_rag}, ollama_model: {request.ollama_model}, ollama_embedding_model: {request.ollama_embedding_model}")
         
+        # 文件數量警告
+        file_count_warning = None
+        if request.use_dynamic_rag and request.folder_path:
+            validation_result = _get_folder_validation_results(request.folder_path)
+            if validation_result.get("warning_level") == "high":
+                file_count_warning = validation_result.get("suggestion")
+
         # 獲取RAG引擎
         engine = get_rag_engine(
             selected_model=request.selected_model,
@@ -496,7 +503,8 @@ async def ask_question(request: QuestionRequest):
         response = {
             "answer": answer,
             "sources": source_info_list,
-            "language": engine.get_language()  # 從引擎獲取正確的語言
+            "language": engine.get_language(),  # 從引擎獲取正確的語言
+            "file_count_warning": file_count_warning
         }
         
         # 如果有改寫的查詢，添加到回應中
@@ -508,6 +516,7 @@ async def ask_question(request: QuestionRequest):
     except Exception as e:
         logger.error(f"處理問題時出錯: {str(e)}")
         raise HTTPException(status_code=500, detail=f"處理問題時出錯: {str(e)}")
+
 
 
 
@@ -674,114 +683,111 @@ async def get_usable_models():
         logger.error(f"獲取可用模型列表失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"獲取可用模型列表失敗: {str(e)}")
 
+def _get_folder_validation_results(folder_path: str) -> dict:
+    """
+    驗證文件夾路徑並估算文件數量，返回一個包含結果的字典。
+    """
+    try:
+        from config.config import Q_DRIVE_PATH, SUPPORTED_FILE_TYPES
+        
+        if not folder_path:
+            return {"exists": False, "message": "未提供文件夾路徑"}
+
+        folder_path_clean = folder_path.strip('/\\')
+        full_path = os.path.join(Q_DRIVE_PATH, folder_path_clean)
+        
+        if not (os.path.exists(full_path) and os.path.isdir(full_path)):
+            return {"exists": False, "message": "指定的文件夾不存在"}
+
+        estimated_count = 0
+        actual_count = 0
+        sampled_dirs = 0
+        max_sample_dirs = 10
+        max_quick_count = 500
+
+        try:
+            first_level_files = [f for f in os.listdir(full_path) 
+                               if os.path.isfile(os.path.join(full_path, f)) 
+                               and os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES]
+            
+            sample_total = 0
+            total_dirs_count = 0
+            
+            for root, dirs, files in os.walk(full_path):
+                depth = root.replace(full_path, '').count(os.sep)
+                if depth > 3:
+                    dirs[:] = []
+                    continue
+                
+                total_dirs_count += 1
+                
+                if sampled_dirs < max_sample_dirs:
+                    supported_files = [f for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES]
+                    sample_total += len(supported_files)
+                    sampled_dirs += 1
+                    
+                    if sampled_dirs <= 3:
+                        actual_count += len(supported_files)
+                
+                if sampled_dirs >= 3 and sample_total <= max_quick_count:
+                    for f in files:
+                        if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES:
+                            actual_count += 1
+                
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system', 'temp', 'tmp']]
+            
+            if actual_count > 0 and sample_total <= max_quick_count:
+                file_count = actual_count
+                count_type = "精確"
+            elif sampled_dirs > 0:
+                avg_files_per_dir = sample_total / sampled_dirs
+                estimated_count = int(avg_files_per_dir * total_dirs_count)
+                file_count = estimated_count
+                count_type = "估算"
+            else:
+                file_count = len(first_level_files)
+                count_type = "根目錄"
+            
+        except Exception as e:
+            logger.warning(f"計算文件數量時出錯: {str(e)}")
+            file_count = 0
+            count_type = "未知"
+        
+        suggestion = ""
+        warning_level = "low"
+        if file_count > 5000:
+            suggestion = f"檢測到處理文件數量過多 ({file_count} 個)，可能影響處理速度。建議縮小搜索範圍。"
+            warning_level = "high"
+        elif file_count > 1000:
+            suggestion = "文件數量適中，搜索效果應該不錯"
+            warning_level = "medium"
+        else:
+            suggestion = "文件數量較少，搜索效果會很好"
+            warning_level = "low"
+
+        return {
+            "exists": True,
+            "full_path": full_path,
+            "file_count": file_count,
+            "count_type": count_type,
+            "warning_level": warning_level,
+            "suggestion": suggestion,
+            "message": f"文件夾存在，{count_type}包含約 {file_count} 個支持的文件"
+        }
+
+    except Exception as e:
+        logger.error(f"驗證文件夾路徑失敗: {str(e)}")
+        return {"exists": False, "message": f"驗證過程中發生錯誤: {e}"}
+
 @app.get("/api/validate-folder")
 async def validate_folder_path(folder_path: str = Query(...)):
     """驗證文件夾路徑是否存在並快速估算文件數量"""
     try:
-        from config.config import Q_DRIVE_PATH, SUPPORTED_FILE_TYPES
-        
-        # 清理文件夾路徑
-        folder_path_clean = folder_path.strip('/\\')
-        full_path = os.path.join(Q_DRIVE_PATH, folder_path_clean)
-        
-        exists = os.path.exists(full_path) and os.path.isdir(full_path)
-        
-        if exists:
-            # 快速估算文件數量 - 使用採樣方法
-            estimated_count = 0
-            actual_count = 0
-            sampled_dirs = 0
-            max_sample_dirs = 10
-            max_quick_count = 500  # 如果文件少於500個，直接計算精確數量
-            
-            try:
-                # 先快速檢查是否文件很少
-                first_level_files = [f for f in os.listdir(full_path) 
-                                   if os.path.isfile(os.path.join(full_path, f)) 
-                                   and os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES]
-                
-                # 採樣估算
-                sample_total = 0
-                total_dirs_count = 0
-                
-                for root, dirs, files in os.walk(full_path):
-                    depth = root.replace(full_path, '').count(os.sep)
-                    if depth > 3:  # 限制深度避免太慢
-                        dirs[:] = []
-                        continue
-                    
-                    total_dirs_count += 1
-                    
-                    if sampled_dirs < max_sample_dirs:
-                        supported_files = [f for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES]
-                        sample_total += len(supported_files)
-                        sampled_dirs += 1
-                        
-                        # 如果總數還很少，繼續精確計算
-                        if sampled_dirs <= 3:
-                            actual_count += len(supported_files)
-                    
-                    # 如果採樣發現文件很少，切換到精確計算
-                    if sampled_dirs >= 3 and sample_total <= max_quick_count:
-                        for f in files:
-                            if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES:
-                                actual_count += 1
-                    
-                    # 跳過系統目錄
-                    dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system', 'temp', 'tmp']]
-                
-                # 決定返回精確數量還是估算數量
-                if actual_count > 0 and sample_total <= max_quick_count:
-                    file_count = actual_count
-                    count_type = "精確"
-                elif sampled_dirs > 0:
-                    avg_files_per_dir = sample_total / sampled_dirs
-                    estimated_count = int(avg_files_per_dir * total_dirs_count)
-                    file_count = estimated_count
-                    count_type = "估算"
-                else:
-                    file_count = len(first_level_files)
-                    count_type = "根目錄"
-                
-            except Exception as e:
-                logger.warning(f"計算文件數量時出錯: {str(e)}")
-                file_count = 0
-                count_type = "未知"
-            
-            # 根據文件數量提供建議
-            if file_count > 5000:
-                suggestion = "文件數量較多，建議進一步縮小搜索範圍"
-                warning_level = "high"
-            elif file_count > 1000:
-                suggestion = "文件數量適中，搜索效果應該不錯"
-                warning_level = "medium"
-            else:
-                suggestion = "文件數量較少，搜索效果會很好"
-                warning_level = "low"
-            
-            return {
-                "exists": True,
-                "full_path": full_path,
-                "file_count": file_count,
-                "count_type": count_type,
-                "warning_level": warning_level,
-                "suggestion": suggestion,
-                "message": f"文件夾存在，{count_type}包含約 {file_count} 個支持的文件"
-            }
-        else:
-            return {
-                "exists": False,
-                "full_path": full_path,
-                "file_count": 0,
-                "count_type": "none",
-                "warning_level": "none",
-                "suggestion": "請選擇存在的文件夾",
-                "message": "指定的文件夾不存在"
-            }
-    
+        return _get_folder_validation_results(folder_path)
     except Exception as e:
         logger.error(f"驗證文件夾路徑失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"驗證文件夾路徑失敗: {str(e)}")
+
 
 @app.get("/api/model-versions", response_model=List[Dict[str, Any]])
 async def get_model_versions(ollama_model: str = Query(...), ollama_embedding_model: str = Query(...)):
@@ -798,26 +804,33 @@ async def start_initial_training(request: Request, training_request: TrainingReq
     """開始初始訓練"""
     await check_admin(request)
     try:
-        # 先將模型資訊寫入暫存檔案，讓 initial_indexing 程序讀取
-        training_info = {
-            "ollama_model": training_request.ollama_model,
-            "ollama_embedding_model": training_request.ollama_embedding_model,
-            "version": training_request.version
-        }
+        # 獲取模型文件夾路徑
+        folder_name = vector_db_manager.get_model_folder_name(
+            training_request.ollama_model,
+            training_request.ollama_embedding_model,
+            training_request.version
+        )
+        model_path = vector_db_manager.base_path / folder_name
+        model_path.mkdir(parents=True, exist_ok=True)
+
+        # 立即創建鎖定文件以反映狀態
+        process_info = {"type": "initial", "status": "starting", "api_pid": os.getpid()}
+        vector_db_manager.create_lock_file(model_path, process_info)
+
+        # 先將模型資訊寫入暫存檔案
+        training_info = training_request.dict()
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 使用異步方式啟動訓練程序，避免阻塞API
-        cmd = [
-            sys.executable, "scripts/model_training_manager.py", "initial"
-        ]
+        cmd = [sys.executable, "scripts/model_training_manager.py", "initial"]
         process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # 不等待進程完成，立即返回
-        return {"status": "初始訓練已開始", "message": f"訓練進程已啟動 (PID: {process.pid})，請通過監控API查看進度"}
+        return {"status": "初始訓練已開始", "message": f"訓練進程已啟動 (PID: {process.pid})"}
         
     except Exception as e:
         logger.error(f"開始初始訓練失敗: {str(e)}")
+        if 'model_path' in locals() and vector_db_manager.is_training(model_path):
+            vector_db_manager.remove_lock_file(model_path)
         raise HTTPException(status_code=500, detail=f"開始訓練失敗: {str(e)}")
 
 @app.post("/admin/training/incremental")
@@ -825,26 +838,31 @@ async def start_incremental_training(request: Request, training_request: Trainin
     """開始增量訓練"""
     await check_admin(request)
     try:
-        # 先將模型資訊寫入暫存檔案，讓 incremental_indexing 程序讀取
-        training_info = {
-            "ollama_model": training_request.ollama_model,
-            "ollama_embedding_model": training_request.ollama_embedding_model,
-            "version": training_request.version
-        }
+        # 獲取模型文件夾路徑
+        folder_name = vector_db_manager.get_model_folder_name(
+            training_request.ollama_model,
+            training_request.ollama_embedding_model,
+            training_request.version
+        )
+        model_path = vector_db_manager.base_path / folder_name
+
+        # 立即創建鎖定文件
+        process_info = {"type": "incremental", "status": "starting", "api_pid": os.getpid()}
+        vector_db_manager.create_lock_file(model_path, process_info)
+
+        training_info = training_request.dict()
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 使用異步方式啟動訓練程序，避免阻塞API
-        cmd = [
-            sys.executable, "scripts/model_training_manager.py", "incremental"
-        ]
+        cmd = [sys.executable, "scripts/model_training_manager.py", "incremental"]
         process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # 不等待進程完成，立即返回
-        return {"status": "增量訓練已開始", "message": f"訓練進程已啟動 (PID: {process.pid})，請通過監控API查看進度"}
+        return {"status": "增量訓練已開始", "message": f"訓練進程已啟動 (PID: {process.pid})"}
         
     except Exception as e:
         logger.error(f"開始增量訓練失敗: {str(e)}")
+        if 'model_path' in locals() and vector_db_manager.is_training(model_path):
+            vector_db_manager.remove_lock_file(model_path)
         raise HTTPException(status_code=500, detail=f"開始增量訓練失敗: {str(e)}")
 
 @app.post("/admin/training/reindex")
@@ -852,26 +870,31 @@ async def start_reindex_training(request: Request, training_request: TrainingReq
     """開始重新索引"""
     await check_admin(request)
     try:
-        # 先將模型資訊寫入暫存檔案，讓 reindex_indexing 程序讀取
-        training_info = {
-            "ollama_model": training_request.ollama_model,
-            "ollama_embedding_model": training_request.ollama_embedding_model,
-            "version": training_request.version
-        }
+        # 獲取模型文件夾路徑
+        folder_name = vector_db_manager.get_model_folder_name(
+            training_request.ollama_model,
+            training_request.ollama_embedding_model,
+            training_request.version
+        )
+        model_path = vector_db_manager.base_path / folder_name
+
+        # 立即創建鎖定文件
+        process_info = {"type": "reindex", "status": "starting", "api_pid": os.getpid()}
+        vector_db_manager.create_lock_file(model_path, process_info)
+
+        training_info = training_request.dict()
         with open("temp_training_info.json", "w") as f:
             json.dump(training_info, f)
         
-        # 使用異步方式啟動訓練程序，避免阻塞API
-        cmd = [
-            sys.executable, "scripts/model_training_manager.py", "reindex"
-        ]
+        cmd = [sys.executable, "scripts/model_training_manager.py", "reindex"]
         process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # 不等待進程完成，立即返回
-        return {"status": "重新索引已開始", "message": f"訓練進程已啟動 (PID: {process.pid})，請通過監控API查看進度"}
+        return {"status": "重新索引已開始", "message": f"訓練進程已啟動 (PID: {process.pid})"}
         
     except Exception as e:
         logger.error(f"開始重新索引失敗: {str(e)}")
+        if 'model_path' in locals() and vector_db_manager.is_training(model_path):
+            vector_db_manager.remove_lock_file(model_path)
         raise HTTPException(status_code=500, detail=f"開始重新索引失敗: {str(e)}")
 
 @app.get("/admin/lock-status")

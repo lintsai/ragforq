@@ -115,27 +115,40 @@ except ImportError:
 class ChatHuggingFace(Runnable):
     """聊天式 Hugging Face 模型包裝器 - 完全兼容 LangChain Runnable"""
     
-    def __init__(self, model_name: Optional[str] = None, temperature: float = 0.1, max_new_tokens: int = 4096):
+    def __init__(self, model_name: Optional[str] = None, temperature: float = 0.1, 
+                 max_new_tokens: int = 1024, top_p: float = 0.9, 
+                 top_k: int = 50, repetition_penalty: float = 1.1):
         super().__init__()
         self.model_name = model_name
-        self.temperature = temperature
-        self.max_new_tokens = max_new_tokens
         self.model_manager = get_model_manager()
+        self.generation_params = {
+            "temperature": temperature,
+            "max_new_tokens": max_new_tokens,
+            "top_p": top_p,
+            "top_k": top_k,
+            "repetition_penalty": repetition_penalty
+        }
     
     def invoke(self, input_data, config=None, **kwargs) -> "AIMessage":
         """調用模型並返回 AIMessage 格式的響應 - 完全兼容 LangChain"""
         try:
-            # 處理不同類型的輸入
             if isinstance(input_data, dict):
                 prompt = input_data.get("question", str(input_data))
             else:
                 prompt = str(input_data)
             
+            # 合併參數，允許在 invoke 時覆蓋
+            final_params = self.generation_params.copy()
+            final_params.update(kwargs)
+            
+            # 將 max_length 映射到 max_new_tokens
+            if "max_length" in final_params:
+                final_params["max_new_tokens"] = final_params.pop("max_length")
+
             response = self.model_manager.generate_text(
                 prompt,
                 self.model_name,
-                temperature=kwargs.get("temperature", self.temperature),
-                max_length=kwargs.get("max_length", self.max_new_tokens)
+                **final_params
             )
             
             return AIMessage(content=response)

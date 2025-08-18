@@ -511,11 +511,39 @@ def main():
                     folder_browser = FolderBrowser(API_URL)
                     selected_folder_path = folder_browser.render()
                     
-                    # 顯示當前選擇
+                    # 顯示當前選擇和驗證結果
                     if selected_folder_path is not None:
                         display_path = selected_folder_path if selected_folder_path else "根目錄"
                         st.success(f"🎯 當前選擇的搜索範圍：{display_path}")
-                        
+
+                        # 調用API進行文件夾驗證
+                        try:
+                            validate_response = requests.get(
+                                f"{API_URL}/api/validate-folder",
+                                params={"folder_path": selected_folder_path},
+                                timeout=10  # 設置超時
+                            )
+                            if validate_response.status_code == 200:
+                                validation_result = validate_response.json()
+                                if validation_result.get("exists"):
+                                    count_type = validation_result.get('count_type', '估算')
+                                    file_count = validation_result.get('file_count', 0)
+                                    message = f"文件夾有效，{count_type}約 {file_count} 個文件。"
+                                    st.info(message)
+
+                                    warning_level = validation_result.get("warning_level")
+                                    if warning_level == "high":
+                                        st.error(f"⚠️ 警告: {validation_result.get('suggestion')}")
+                                    elif warning_level == "medium":
+                                        st.warning(f"💡 提示: {validation_result.get('suggestion')}")
+
+                                else:
+                                    st.error("選擇的文件夾不存在或無法訪問。")
+                            else:
+                                st.error("無法驗證文件夾，請稍後再試。")
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"驗證文件夾時出錯: {e}")
+
                         # 清除選擇按鈕
                         if st.button("🗑️ 清除選擇", key="clear_folder_selection"):
                             folder_browser.clear_selection()

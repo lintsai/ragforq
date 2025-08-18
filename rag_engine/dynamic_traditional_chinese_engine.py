@@ -43,6 +43,21 @@ class DynamicTraditionalChineseRAGEngine(DynamicRAGEngineBase):
 ---
 相關性理由:"""
 
+    BATCH_RELEVANCE_PROMPT_TEMPLATE = """請為以下每個文檔生成與用戶查詢的相關性理由。每個理由都應該是獨立的一句話，簡潔說明其關聯性。
+
+用戶查詢: {question}
+
+---
+{docs_text}
+---
+
+請嚴格按照以下格式輸出，每個文檔一行，不要有任何額外的解釋或標題：
+1. [文檔1的相關性理由]
+2. [文檔2的相關性理由]
+3. [文檔3的相關性理由]
+...
+"""
+
     def get_language(self) -> str:
         return "繁體中文"
     
