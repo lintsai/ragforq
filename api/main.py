@@ -464,17 +464,14 @@ async def ask_question(request: QuestionRequest):
             if request.show_relevance and source_info_list:
                 try:
                     # 統一使用批量生成方法
-                    doc_contents = []
+                    docs_for_relevance = []
                     for source_info in source_info_list:
                         file_path = source_info.file_path
                         if file_path in file_relevance_map:
-                            doc = file_relevance_map[file_path]['doc']
-                            doc_contents.append(doc.page_content[:500])  # 提取文本內容並限制長度
-                        else:
-                            doc_contents.append("") # 添加一個空的字符串作為占位符
+                            docs_for_relevance.append(file_relevance_map[file_path]['doc'])
 
-                    if doc_contents:
-                        batch_reasons = engine.generate_batch_relevance_reasons(request.question, doc_contents)
+                    if docs_for_relevance:
+                        batch_reasons = engine.generate_batch_relevance_reasons(request.question, docs_for_relevance)
                         
                         # 將生成的理由分配給對應的來源
                         for i, source_info in enumerate(source_info_list):

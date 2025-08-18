@@ -332,16 +332,14 @@ class ModelManager:
         
         return self._embedding_models[model_name]
     
-    def generate_text(self, prompt: str, model_name: Optional[str] = None, 
-                     max_length: int = 512, temperature: float = 0.1) -> str:
+    def generate_text(self, prompt: str, model_name: Optional[str] = None, **kwargs) -> str:
         """
         生成文本
         
         Args:
             prompt: 輸入提示
             model_name: 模型名稱
-            max_length: 最大生成長度
-            temperature: 溫度參數
+            **kwargs: 生成參數 (temperature, max_new_tokens, top_p, top_k, repetition_penalty)
             
         Returns:
             生成的文本
@@ -351,6 +349,12 @@ class ModelManager:
             from config.config import get_inference_engine
             current_inference_engine = get_inference_engine()
             
+            # 為 vLLM 和 transformers 準備參數
+            # vLLM uses max_tokens, transformers uses max_new_tokens
+            generation_params = kwargs.copy()
+            if "max_new_tokens" in generation_params:
+                generation_params["max_tokens"] = generation_params.pop("max_new_tokens")
+
             if current_inference_engine == "vllm":
                 from utils.vllm_manager import get_vllm_manager
                 vllm_manager = get_vllm_manager()
@@ -360,22 +364,21 @@ class ModelManager:
                     if not vllm_manager.initialize_model(model_name):
                         # 如果 vLLM 初始化失敗，回退到 transformers
                         logger.warning("vLLM 初始化失敗，回退到 transformers")
-                        return self._generate_with_transformers(prompt, model_name, max_length, temperature)
+                        return self._generate_with_transformers(prompt, model_name, **kwargs)
                 
                 return vllm_manager.generate_text(
                     prompt, 
-                    max_tokens=max_length,
-                    temperature=temperature
+                    **generation_params
                 )
             else:
-                return self._generate_with_transformers(prompt, model_name, max_length, temperature)
+                return self._generate_with_transformers(prompt, model_name, **kwargs)
                 
         except Exception as e:
             logger.error(f"文本生成失敗: {str(e)}")
             return "生成過程中發生錯誤，請稍後再試。"
     
     def _generate_with_transformers(self, prompt: str, model_name: Optional[str] = None,
-                                   max_length: int = 512, temperature: float = 0.1) -> str:
+                                   **kwargs) -> str:
         """使用 Transformers 生成文本（回退方案）"""
         try:
             if model_name is None:
@@ -387,39 +390,30 @@ class ModelManager:
                 
             model = self.get_llm_model(model_name)
             
-            # 根據模型類型調整生成參數 - 從根本上避免重複輸出
+            # 設置生成參數，允許從 kwargs 覆蓋預設值
             generation_kwargs = {
                 "pad_token_id": model.tokenizer.eos_token_id,
                 "eos_token_id": model.tokenizer.eos_token_id,
                 "repetition_penalty": 1.15,     # 適度的重複懲罰
                 "no_repeat_ngram_size": 2,      # 避免重複2-gram
                 "early_stopping": True,         # 早停機制
+                "max_new_tokens": 512, # Default value
+                "temperature": 0.1,
+                "top_p": 0.95,
+                "top_k": 50,
+                "do_sample": True,
             }
-            
-            # 根據溫度設置採樣策略
-            if temperature > 0:
-                generation_kwargs.update({
-                    "temperature": temperature,
-                    "do_sample": True,
-                    "top_p": 0.85,              # nucleus採樣
-                    "top_k": 40,                # 限制候選詞彙
-                })
-            else:
-                generation_kwargs.update({
-                    "temperature": 0.1,         # 最小溫度而非0，避免完全確定性
-                    "do_sample": True,
-                    "top_p": 0.95,
-                })
-            
-            if model_type == "seq2seq":
-                # T5 等 seq2seq 模型使用不同的參數
-                generation_kwargs["max_new_tokens"] = max_length
-                outputs = model(prompt, **generation_kwargs)
-            else:
-                # Causal LM 模型 - 使用max_new_tokens而不是max_length避免包含prompt
-                generation_kwargs["max_new_tokens"] = max_length
-                generation_kwargs["return_full_text"] = False  # 只返回生成的部分
-                outputs = model(prompt, **generation_kwargs)
+            generation_kwargs.update(kwargs)
+
+            # 確保 do_sample 為 True 如果 temperature > 0
+            if generation_kwargs.get("temperature", 0) > 0:
+                generation_kwargs["do_sample"] = True
+
+            # Causal LM 不應返回 prompt
+            if model_type == "causal":
+                generation_kwargs["return_full_text"] = False
+
+            outputs = model(prompt, **generation_kwargs)
             
             if outputs and len(outputs) > 0:
                 # 統一處理輸出格式
