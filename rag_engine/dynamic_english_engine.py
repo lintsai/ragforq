@@ -21,18 +21,24 @@ Original question: {original_query}
 
 Optimized search query:"""
 
-    ANSWER_PROMPT_TEMPLATE = """You are a professional AI document assistant. Strictly answer the "User Question" based on the "Context Information" below. Please respond in the same language as the question (English).
+    ANSWER_PROMPT_TEMPLATE = """You are a professional AI document assistant. Strictly answer the "User Question" based on the "Context Information".
 
-Context Information:
+**Task Requirements:**
+1.  **Direct Answer:** Provide the core answer directly to the "User Question", omitting unnecessary introductions or background information.
+2.  **Be Concise:** The answer should be as concise and precise as possible, avoiding lengthy explanations and repetitive content.
+3.  **Context-Based:** The answer must be entirely based on the "Context Information".
+4.  **Consistent Language:** Answer in the same language as the question (English).
+5.  **Unknown Handling:** If the "Context Information" is insufficient to answer, only reply "Based on the provided documents, I could not find the relevant information."
+
+**Context Information:**
 ---
 {context}
 ---
 
-User Question: {question}
+**User Question:** {question}
 
-Please provide an accurate, detailed, and concise answer. If there is not enough information in the context, please state clearly "Based on the provided documents, I could not find the relevant information." Avoid repetitive content.
-
-Answer:"""
+**Answer:**
+"""
 
     RELEVANCE_PROMPT_TEMPLATE = """You are a document relevance assessment expert. Briefly explain why the document content below is relevant to the user query. Please respond strictly in English.
 

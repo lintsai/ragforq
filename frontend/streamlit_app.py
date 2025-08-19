@@ -470,7 +470,12 @@ def main():
                             # 簡化狀態顯示
                             current_model = next((m for m in usable_models if m['display_name'] == selected_display_name), None)
                             if current_model:
-                                status_text = "✅ 可用" if current_model.get('has_data') and not current_model.get('is_training') else "⚠️ 不可用"
+                                if current_model.get('is_training'):
+                                    status_text = "🔄 訓練中"
+                                elif current_model.get('has_data'):
+                                    status_text = "✅ 可用"
+                                else:
+                                    status_text = "⚠️ 無數據"
                                 st.info(f"狀態: {status_text}")
                         else:
                             st.warning("沒有可用的向量模型")

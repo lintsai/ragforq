@@ -383,11 +383,11 @@ async def ask_question(request: QuestionRequest):
         logger.info(f"請求參數調試 - use_dynamic_rag: {request.use_dynamic_rag}, ollama_model: {request.ollama_model}, ollama_embedding_model: {request.ollama_embedding_model}")
         
         # 文件數量警告
-        file_count_warning = None
-        if request.use_dynamic_rag and request.folder_path:
-            validation_result = _get_folder_validation_results(request.folder_path)
-            if validation_result.get("warning_level") == "high":
-                file_count_warning = validation_result.get("suggestion")
+        # file_count_warning = None
+        # if request.use_dynamic_rag and request.folder_path:
+        #     validation_result = _get_folder_validation_results(request.folder_path)
+        #     if validation_result.get("warning_level") == "high":
+        #         file_count_warning = validation_result.get("suggestion")
 
         # 獲取RAG引擎
         engine = get_rag_engine(
@@ -501,7 +501,7 @@ async def ask_question(request: QuestionRequest):
             "answer": answer,
             "sources": source_info_list,
             "language": engine.get_language(),  # 從引擎獲取正確的語言
-            "file_count_warning": file_count_warning
+            "file_count_warning": None # 移除此處的警告，由前端validate-folder處理
         }
         
         # 如果有改寫的查詢，添加到回應中

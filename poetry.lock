@@ -251,6 +251,21 @@ typing_extensions = {version = ">=4.5", markers = "python_version < \"3.13\""}
 trio = ["trio (>=0.26.1)"]
 
 [[package]]
+name = "argcomplete"
+version = "3.6.2"
+description = "Bash tab completion for argparse"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "argcomplete-3.6.2-py3-none-any.whl", hash = "sha256:65b3133a29ad53fb42c48cf5114752c7ab66c1c38544fdf6460f450c09b42591"},
+    {file = "argcomplete-3.6.2.tar.gz", hash = "sha256:d0519b1bc867f5f4f4713c41ad0aba73a4a5f007449716b16f385f2166dc6adf"},
+]
+
+[package.extras]
+test = ["coverage", "mypy", "pexpect", "ruff", "wheel"]
+
+[[package]]
 name = "async-timeout"
 version = "4.0.3"
 description = "Timeout context manager for asyncio programs"
@@ -868,6 +883,34 @@ doq = ["aioquic (>=1.0.0)"]
 idna = ["idna (>=3.7)"]
 trio = ["trio (>=0.23)"]
 wmi = ["wmi (>=1.5.1)"]
+
+[[package]]
+name = "docx2txt"
+version = "0.9"
+description = "A pure python-based utility to extract text and images from docx files."
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "docx2txt-0.9-py3-none-any.whl", hash = "sha256:e3718c0653fd6f2fcf4b51b02a61452ad1c38a4c163bcf0a6fd9486cd38f529a"},
+    {file = "docx2txt-0.9.tar.gz", hash = "sha256:18013f6229b14909028b19aa7bf4f8f3d6e4632d7b089ab29f7f0a4d1f660e28"},
+]
+
+[[package]]
+name = "ebooklib"
+version = "0.19"
+description = "Ebook library which can handle EPUB2/EPUB3 and Kindle format"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "ebooklib-0.19-py3-none-any.whl", hash = "sha256:a790e280e1d5ef105e350e34cc88b83c9c987fa6bab8a63a7543410c313cfa31"},
+    {file = "ebooklib-0.19.tar.gz", hash = "sha256:07e9b4db0a30c73623b14e23b315634a450d2c13f23d1dba4b457a6ca16a58be"},
+]
+
+[package.dependencies]
+lxml = "*"
+six = "*"
 
 [[package]]
 name = "effdet"
@@ -2255,6 +2298,18 @@ layoutmodels = ["effdet", "torch", "torchvision"]
 ocr = ["google-cloud-vision (==1)", "pytesseract"]
 paddledetection = ["paddlepaddle (==2.1.0)"]
 tesseract = ["pytesseract"]
+
+[[package]]
+name = "lml"
+version = "0.2.0"
+description = "Load me later. A lazy plugin management system."
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "lml-0.2.0-py2.py3-none-any.whl", hash = "sha256:20c80728189e46e8d986f5d0cdf6d83c493471fc25b1c31a8cb3fa96e80b58f8"},
+    {file = "lml-0.2.0.tar.gz", hash = "sha256:8dd5afb4367a593d1cdb2144a05874cd9938f5266bebb0c9e1413200423c0d74"},
+]
 
 [[package]]
 name = "lxml"
@@ -4223,6 +4278,49 @@ carto = ["pydeck-carto"]
 jupyter = ["ipykernel (>=5.1.2) ; python_version >= \"3.4\"", "ipython (>=5.8.0) ; python_version < \"3.4\"", "ipywidgets (>=7,<8)", "traitlets (>=4.3.2)"]
 
 [[package]]
+name = "pyexcel"
+version = "0.7.3"
+description = "A wrapper library that provides one API to read, manipulate and writedata in different excel formats"
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "pyexcel-0.7.3-py2.py3-none-any.whl", hash = "sha256:394df2445364fa1960fed4a9bb04c62efdff5435026f3d1346f614a94fe5ba7a"},
+    {file = "pyexcel-0.7.3.tar.gz", hash = "sha256:57b3c3fb55dd09a62cbbf2ae9f1e78aa11b627c2bfc6072ff2d9587c022b06d4"},
+]
+
+[package.dependencies]
+lml = ">=0.2.0"
+pyexcel-io = ">=0.6.2"
+texttable = ">=0.8.2"
+
+[package.extras]
+ods = ["pyexcel-ods3 (>=0.6.0)"]
+xls = ["pyexcel-xls (>=0.6.0)"]
+xlsx = ["pyexcel-xlsx (>=0.6.0)"]
+
+[[package]]
+name = "pyexcel-io"
+version = "0.6.7"
+description = "A python library to read and write structured data in csv, zipped csvformat and to/from databases"
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "pyexcel_io-0.6.7-py2.py3-none-any.whl", hash = "sha256:add9f3c1489070ab0a3226bab7d23d4b84a364f5b44f3a14e2ce785ede88fcb3"},
+    {file = "pyexcel_io-0.6.7.tar.gz", hash = "sha256:2c33d8df505e21a13bed585ac6ab7d30ec826a9f156b758394af5d22359bddb9"},
+]
+
+[package.dependencies]
+lml = ">=0.0.4"
+
+[package.extras]
+extra = ["chardet"]
+ods = ["pyexcel-ods3 (>=0.6.0)"]
+xls = ["pyexcel-xls (>=0.6.0)"]
+xlsx = ["pyexcel-xlsx (>=0.6.0)"]
+
+[[package]]
 name = "pygments"
 version = "2.19.2"
 description = "Pygments is a syntax highlighting package written in Python."
@@ -4490,6 +4588,18 @@ files = [
     {file = "pywin32-311-cp39-cp39-win32.whl", hash = "sha256:aba8f82d551a942cb20d4a83413ccbac30790b50efb89a75e4f586ac0bb8056b"},
     {file = "pywin32-311-cp39-cp39-win_amd64.whl", hash = "sha256:e0c4cfb0621281fe40387df582097fd796e80430597cb9944f0ae70447bacd91"},
     {file = "pywin32-311-cp39-cp39-win_arm64.whl", hash = "sha256:62ea666235135fee79bb154e695f3ff67370afefd71bd7fea7512fc70ef31e3d"},
+]
+
+[[package]]
+name = "pywin32-ctypes"
+version = "0.2.3"
+description = "A (partial) reimplementation of pywin32 using ctypes/cffi"
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "pywin32-ctypes-0.2.3.tar.gz", hash = "sha256:d162dc04946d704503b2edc4d55f3dba5c1d539ead017afa00142c38b9885755"},
+    {file = "pywin32_ctypes-0.2.3-py3-none-any.whl", hash = "sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8"},
 ]
 
 [[package]]
@@ -5346,6 +5456,32 @@ files = [
 ]
 
 [[package]]
+name = "speechrecognition"
+version = "3.14.3"
+description = "Library for performing speech recognition, with support for several engines and APIs, online and offline."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "speechrecognition-3.14.3-py3-none-any.whl", hash = "sha256:1859fbb09ae23fa759200f5b0677307f1fb16e2c5c798f4259fcc41dd5399fe6"},
+    {file = "speechrecognition-3.14.3.tar.gz", hash = "sha256:bdd2000a9897832b33095e33adfa48580787255706092e1346d1c6c36adae0a4"},
+]
+
+[package.dependencies]
+typing-extensions = "*"
+
+[package.extras]
+assemblyai = ["requests"]
+audio = ["PyAudio (>=0.2.11)"]
+dev = ["numpy", "pytest", "pytest-randomly", "respx"]
+faster-whisper = ["faster-whisper"]
+google-cloud = ["google-cloud-speech"]
+groq = ["groq", "httpx (<0.28)"]
+openai = ["httpx (<0.28)", "openai"]
+pocketsphinx = ["pocketsphinx"]
+whisper-local = ["openai-whisper", "soundfile"]
+
+[[package]]
 name = "sqlalchemy"
 version = "2.0.43"
 description = "Database Abstraction Library"
@@ -5561,6 +5697,40 @@ files = [
 [package.extras]
 doc = ["reno", "sphinx"]
 test = ["pytest", "tornado (>=4.5)", "typeguard"]
+
+[[package]]
+name = "textract"
+version = "1.5.0"
+description = "extract text from any document. no muss. no fuss."
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "textract-1.5.0.tar.gz", hash = "sha256:0e73dd1679f817bf985dd08e9e8b7e34715bb116d6ec10285a9149a145c457d7"},
+]
+
+[package.dependencies]
+argcomplete = "*"
+beautifulsoup4 = "*"
+chardet = "*"
+docx2txt = "*"
+EbookLib = "*"
+python-pptx = ">=0.5.1"
+six = "*"
+SpeechRecognition = ">=3.1.0"
+xlrd = "*"
+
+[[package]]
+name = "texttable"
+version = "1.7.0"
+description = "module to create simple ASCII tables"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "texttable-1.7.0-py2.py3-none-any.whl", hash = "sha256:72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917"},
+    {file = "texttable-1.7.0.tar.gz", hash = "sha256:2d2068fb55115807d3ac77a4ca68fa48803e84ebb0ee2340f858107a36522638"},
+]
 
 [[package]]
 name = "threadpoolctl"
@@ -6957,4 +7127,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10, <3.11"
-content-hash = "f28108ab7bf855ebd8df8749469ef1c8c38e167360463e8a62af85bc1647b7a0"
+content-hash = "c3ef969d34ff017df0e30def55987aa63a777d8beb9071465d55ea28da75b4c6"

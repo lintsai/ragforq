@@ -54,10 +54,6 @@ class SmartFileRetriever:
         # 文件數量警告已經在UI層面給出，用戶已知曉潛在的性能影響。
         is_folder_limited = self.folder_path != self.base_path
         
-        if is_folder_limited:
-            logger.info(f"檢索範圍已限定於 '{self.folder_path}'，將處理全部 {file_count} 個文件。")
-            return list(working_file_cache.keys())
-
         # --- 原有的邏輯，適用於未限制文件夾的全局搜索 ---
         if file_count <= 50:
             logger.info(f"找到 {file_count} 個文件，將處理全部文件。")

@@ -142,18 +142,24 @@ Optimized search query:""",
     
     def _generate_answer(self, question: str, context: str) -> str:
         """Generate English answer"""
-        template = """You are a professional AI document assistant. Strictly answer the "User Question" based on the "Context Information" below. Please respond in the same language as the question (English).
+        template = """You are a professional AI document assistant. Strictly answer the "User Question" based on the "Context Information".
 
-Context Information:
+**Task Requirements:**
+1.  **Direct Answer:** Provide the core answer directly to the "User Question", omitting unnecessary introductions or background information.
+2.  **Be Concise:** The answer should be as concise and precise as possible, avoiding lengthy explanations and repetitive content.
+3.  **Context-Based:** The answer must be entirely based on the "Context Information".
+4.  **Consistent Language:** Answer in the same language as the question (English).
+5.  **Unknown Handling:** If the "Context Information" is insufficient to answer, only reply "Based on the provided documents, I could not find the relevant information."
+
+**Context Information:**
 ---
 {context}
 ---
 
-User Question: {question}
+**User Question:** {question}
 
-Please provide an accurate and detailed answer. If there is not enough information in the context, please state clearly "Based on the provided documents, I could not find the relevant information."
-
-Answer:"""
+**Answer:**
+"""
 
         prompt = PromptTemplate(
             template=template,
