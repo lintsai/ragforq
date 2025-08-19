@@ -66,6 +66,11 @@ class DynamicTraditionalChineseRAGEngine(DynamicRAGEngineBase):
 
     def get_language(self) -> str:
         return "繁體中文"
+
+    def get_concise_prefix(self) -> str:
+        return (
+            "你是一個精簡的企業文件助理。請直接回答問題，限制在 8 行以內；不要重複、不要自我修正、不要加結論性贅語或再次總結。僅輸出最有用的要點。\n\n"
+        )
     
     def _generate_general_knowledge_answer(self, question: str) -> str:
         """當找不到相關文檔時，基於常識提供繁體中文回答"""

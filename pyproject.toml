@@ -30,7 +30,7 @@ datasets = "^2.14.0"
 langchain-community = "^0.3.27"
 annotated-types = "^0.7.0"
 streamlit-autorefresh = "^1.0.1"
-xlrd = "^2.0.2"
+xlrd = "<2.0.0"  # 使用 1.x 支援 .xls 解析 (2.x 移除對xls支援)
 olefile = "^0.47"
 pytz = "^2025.2"
 psutil = "^7.0.0"
@@ -48,6 +48,7 @@ bitsandbytes = "^0.43.2"
 sentencepiece = "^0.1.99"
 textract = "*"
 pyexcel = "*"
+pyexcel-xls = "*"  # 支援 .xls 解析 (動態RAG 與文件解析需求)
 chardet = "*"
 pywin32-ctypes = "*"
 

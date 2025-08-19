@@ -66,6 +66,12 @@ Please output in the following format, one line per document, without any extra 
 
     def get_language(self) -> str:
         return "English"
+
+    def get_concise_prefix(self) -> str:
+        # Enforce concise, non-redundant English answers
+        return (
+            "You are a concise enterprise document assistant. Answer directly in under 8 lines; no repetition, no self-revisions, no meta commentary. Provide only the essential points.\n\n"
+        )
     
     def _generate_general_knowledge_answer(self, question: str) -> str:
         """Provide general knowledge answer in English when no relevant documents found"""

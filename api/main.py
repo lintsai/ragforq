@@ -3,6 +3,7 @@ import sys
 import logging
 import json
 from typing import List, Dict, Any, Optional
+from collections import deque
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Body, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -75,6 +76,69 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# === 依賴審計排程器 (Task 6 自動化) ===
+_AUDIT_THREAD_STARTED = False
+def _start_dependency_audit_scheduler():
+    """啟動背景執行緒定期寫入依賴審計 (避免過多 I/O, 預設每 6 小時)。
+
+    透過環境變數 DEP_AUDIT_INTERVAL_MIN 覆寫，最小 30 分鐘。
+    僅在主進程啟動一次，避免 uvicorn --reload 產生多重執行；簡易判斷使用 os.getpid().
+    """
+    global _AUDIT_THREAD_STARTED
+    if _AUDIT_THREAD_STARTED:
+        return
+    _AUDIT_THREAD_STARTED = True
+    import threading, time as _time, os as _os
+    interval_min = int(os.getenv('DEP_AUDIT_INTERVAL_MIN', '360') or '360')
+    if interval_min < 30:
+        interval_min = 30
+
+    def _worker():
+        while True:
+            try:
+                # 延遲首輪 2 分鐘，避免啟動競態
+                _time.sleep(120)
+                from importlib import metadata as importlib_metadata  # noqa
+                py_deps = _load_pyproject_deps(Path('pyproject.toml'))
+                req_versions = _load_requirements_versions(Path('requirements.txt'))
+                items: List[DependencyStatusItem] = []
+                for pkg in CORE_DEP_PACKAGES:
+                    py_ver=None
+                    for k,v in py_deps.items():
+                        if k.lower()==pkg:
+                            if isinstance(v, dict):
+                                py_ver=v.get('version')
+                            else:
+                                py_ver=v
+                            break
+                    req_ver = req_versions.get(pkg)
+                    try:
+                        inst_ver = importlib_metadata.version(pkg)
+                    except Exception:
+                        inst_ver = None
+                    status='aligned'
+                    want = req_ver or py_ver
+                    if not (py_ver or req_ver):
+                        status='missing'
+                    elif inst_ver and want and inst_ver != want:
+                        status='mismatch'
+                    elif not inst_ver:
+                        status='missing'
+                    items.append(DependencyStatusItem(package=pkg, pyproject=py_ver, requirements=req_ver, installed=inst_ver, status=status))
+                _dependency_audit_write(items)
+                logger.debug('[DependencyAuditScheduler] 寫入依賴審計完成')
+            except Exception as e:
+                logger.debug(f"[DependencyAuditScheduler] 失敗: {e}")
+            _time.sleep(interval_min * 60)
+
+    try:
+        t = threading.Thread(target=_worker, name='DepAuditScheduler', daemon=True)
+        t.start()
+    except Exception as e:
+        logger.warning(f"啟動依賴審計排程失敗: {e}")
+
+_start_dependency_audit_scheduler()
+
 # 添加CORS中間件
 app.add_middleware(
     CORSMiddleware,
@@ -112,11 +176,28 @@ class QuestionResponse(BaseModel):
     rewritten_query: Optional[str] = None
     language: Optional[str] = None # 新增語言欄位
     file_count_warning: Optional[str] = None # 文件數量警告
+    scope_info: Optional[Dict[str, Any]] = None  # 動態RAG範圍資訊（檔案估算、警告等）
+
+class ScopeInfoRequest(BaseModel):
+    """請求動態RAG檔案範圍與估算資訊"""
+    language: str = "繁體中文"
+    ollama_model: str
+    ollama_embedding_model: str
+    platform: Optional[str] = None
+    folder_path: Optional[str] = None
+
+class ScopeInfoResponse(BaseModel):
+    """回傳動態RAG範圍資訊與是否建議阻擋"""
+    scope_info: Dict[str, Any]
+    file_count_warning: Optional[str] = None
+    block_recommended: bool = False
+    blocking_reason: Optional[str] = None
 
 class StatusResponse(BaseModel):
     status: str
     q_drive_accessible: bool
     version: str = "1.0.0"
+    runtime_state: Optional[Dict[str, Any]] = None  # 新增：運行態索引與模型狀態
 
 class FileInfo(BaseModel):
     file_path: str
@@ -176,12 +257,33 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
     if not validate_language(language):
         logger.warning(f"不支持的語言: {language}，默認使用繁體中文")
         language = "繁體中文"
+
+    # 資料夾路徑安全處理（僅在 dynamic 模式使用）
+    if use_dynamic_rag and folder_path:
+        try:
+            from config.config import Q_DRIVE_PATH
+            base_root = Path(Q_DRIVE_PATH).resolve()
+            candidate = (base_root / folder_path).resolve()
+            if not str(candidate).startswith(str(base_root)):
+                logger.warning(f"[FolderScopeSecurity] 檢測到越界的 folder_path: {folder_path} -> {candidate}，改用根目錄")
+                folder_path = None
+            else:
+                # 將路徑儲存為相對於 base_root 的標準化形式，避免含有盤符
+                try:
+                    folder_path = str(candidate.relative_to(base_root)).replace('\\', '/')
+                except Exception:
+                    folder_path = None
+        except Exception as e:
+            logger.warning(f"[FolderScopeSecurity] 處理 folder_path 失敗 '{folder_path}': {e}，改用根目錄")
+            folder_path = None
     
     # 創建緩存鍵，包含語言和平台信息
     if use_dynamic_rag:
-        # Dynamic RAG 引擎需要根據平台和語言進行緩存
-        current_platform = platform or "ollama" # 如果未提供平台，默認為ollama
-        cache_key = f"dynamic_{current_platform}_{language}_{ollama_model}_{ollama_embedding_model}"
+        # Dynamic RAG 引擎需要根據平台、語言及 folder_path 進行緩存，避免不同範圍混用
+        current_platform = platform or "ollama"  # 如果未提供平台，默認為 ollama
+        # 將 folder_path 正規化，避免 None 與空字串衝突
+        folder_key = (folder_path.strip().replace('\\', '/')) if folder_path else "__root__"
+        cache_key = f"dynamic_{current_platform}_{language}_{ollama_model}_{ollama_embedding_model}_{folder_key}"
     else:
         # 對於非動態RAG，需要檢測平台來生成正確的緩存鍵
         if selected_model:
@@ -206,7 +308,7 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
                 dynamic_language_key = f"Dynamic_{language}"
                 current_platform = platform or "ollama"
                 rag_engines[cache_key] = get_rag_engine_for_language(
-                    dynamic_language_key, None, ollama_model, ollama_embedding_model, current_platform, folder_path
+                    dynamic_language_key, None, ollama_model, ollama_embedding_model, current_platform, folder_path=folder_path
                 )
                 
             elif selected_model:
@@ -354,11 +456,27 @@ async def check_admin(request: Request):
 async def get_status():
     """獲取API狀態"""
     q_drive_accessible = is_q_drive_accessible()
+    runtime_state = None
+    try:
+        from utils.state_manager import load_state
+        runtime_state = load_state()
+    except Exception:
+        runtime_state = None
     return {
         "status": "運行中",
         "q_drive_accessible": q_drive_accessible,
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "runtime_state": runtime_state
     }
+
+@app.get("/api/runtime-state")
+async def get_runtime_state():
+    """單獨獲取 runtime_state（提供前端輪詢顯示索引狀態）。"""
+    try:
+        from utils.state_manager import load_state
+        return load_state()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"無法讀取 runtime_state: {e}")
 
 @app.post("/ask", response_model=QuestionResponse)
 async def ask_question(request: QuestionRequest):
@@ -400,14 +518,72 @@ async def ask_question(request: QuestionRequest):
             folder_path=request.folder_path
         )
         
-        # 根據是否使用查詢改寫選擇函數
+        # 檢查動態檔案數警告（前面尚未阻擋且有範圍時，保留提示用於回傳）
+        scope_info = None
+        file_count_warning = None
+        if request.use_dynamic_rag:
+            if hasattr(engine, 'get_scope_info'):
+                try:
+                    scope_info = engine.get_scope_info()
+                except Exception:
+                    scope_info = None
+            if hasattr(engine, 'get_file_count_warning'):
+                file_count_warning = engine.get_file_count_warning()
+
+        # 若為動態RAG且範圍過大未限制 => 依新版信心與估算策略阻擋
+        if request.use_dynamic_rag and hasattr(engine, 'get_scope_info'):
+            try:
+                local_scope_info = scope_info or engine.get_scope_info()
+                if local_scope_info:
+                    warning_level = local_scope_info.get('file_count_warning_level')
+                    est_count = local_scope_info.get('estimated_file_count') or 0
+                    folder_limited = local_scope_info.get('folder_limited')
+                    est_conf = local_scope_info.get('estimation_confidence')
+                    sec_rate_flag = local_scope_info.get('security_rate_flag')
+                    block = False
+                    if not folder_limited:
+                        if warning_level == 'high':
+                            block = True
+                        elif est_count > 9000:
+                            block = True
+                        elif 7500 <= est_count <= 9000 and est_conf in ('high','medium'):
+                            block = True
+                    # 安全速率自動阻擋：critical 強制；elevated 若同時達高文件風險也阻擋
+                    if sec_rate_flag == 'critical':
+                        block = True
+                    elif sec_rate_flag == 'elevated' and not folder_limited and warning_level in ('high',) and not block:
+                        block = True
+                    if block:
+                        block_msg = (
+                            f"檢測到當前搜索範圍包含大量文件 (估算約 {est_count} 個，信心: {est_conf or '未知'})。\n"
+                            "為確保性能與回答品質，本次查詢已被暫停。\n\n"
+                            "請執行：\n"
+                            "1. 勾選『限制搜索範圍』\n"
+                            "2. 選擇較小或更聚焦的資料夾後再提問。\n\n"
+                            "如確需大範圍檢索，請分批次縮小範圍進行。"
+                        )
+                        if sec_rate_flag == 'critical':
+                            block_msg += "\n\n[安全自動阻擋] 最近出現大量可疑路徑事件，請確認路徑選擇或聯繫系統管理員。"
+                        elif sec_rate_flag == 'elevated':
+                            block_msg += "\n\n[安全提示] 最近路徑安全事件增加，建議縮小範圍並再次嘗試。"
+                        return QuestionResponse(
+                            answer=block_msg,
+                            sources=[],
+                            rewritten_query=None,
+                            language=engine.get_language(),
+                            file_count_warning=(local_scope_info.get('file_count_warning') or file_count_warning),
+                            scope_info=local_scope_info
+                        )
+            except Exception as _e:
+                logger.warning(f"取得動態範圍資訊失敗，跳過阻擋判斷: {_e}")
+
+        # 根據是否使用查詢改寫選擇函數取得回答與文件
         if request.use_query_rewrite:
             answer, sources, documents, rewritten_query = engine.get_answer_with_query_rewrite(request.question)
         else:
             answer, sources, documents = engine.get_answer_with_sources(request.question)
             rewritten_query = None
-        
-        # 處理來源 - 按相關度排序取得最高分的文件
+
         source_info_list = []
         if request.include_sources and documents:
             # 建立文件相關度映射 - 每個文件保留最高相關度的段落
@@ -497,22 +673,271 @@ async def ask_question(request: QuestionRequest):
                         else:
                             source_info.relevance_reason = f"相關文檔 {i+1}"
         
-        response = {
-            "answer": answer,
-            "sources": source_info_list,
-            "language": engine.get_language(),  # 從引擎獲取正確的語言
-            "file_count_warning": None # 移除此處的警告，由前端validate-folder處理
-        }
-        
-        # 如果有改寫的查詢，添加到回應中
-        if rewritten_query is not None:
-            response["rewritten_query"] = rewritten_query
-        
-        return response
+        return QuestionResponse(
+            answer=answer,
+            sources=source_info_list,
+            rewritten_query=rewritten_query,
+            language=engine.get_language(),
+            file_count_warning=file_count_warning,
+            scope_info=scope_info
+        )
         
     except Exception as e:
         logger.error(f"處理問題時出錯: {str(e)}")
         raise HTTPException(status_code=500, detail=f"處理問題時出錯: {str(e)}")
+
+@app.post("/api/dynamic/scope-info", response_model=ScopeInfoResponse)
+async def get_dynamic_scope_info(scope_req: ScopeInfoRequest):
+    """取得 Dynamic RAG 當前模型/範圍的檔案估算、警告與是否應阻擋查詢。
+
+    提供前端在尚未送出問題前即可提示使用者縮小搜索範圍。
+    """
+    try:
+        engine = get_rag_engine(
+            selected_model=None,
+            language=scope_req.language,
+            use_dynamic_rag=True,
+            ollama_model=scope_req.ollama_model,
+            ollama_embedding_model=scope_req.ollama_embedding_model,
+            platform=scope_req.platform,
+            folder_path=scope_req.folder_path
+        )
+
+        scope_info = None
+        file_count_warning = None
+        if hasattr(engine, 'get_scope_info'):
+            try:
+                scope_info = engine.get_scope_info()
+            except Exception as e:
+                logger.warning(f"取得 scope_info 失敗: {e}")
+        if hasattr(engine, 'get_file_count_warning'):
+            try:
+                file_count_warning = engine.get_file_count_warning()
+            except Exception:
+                pass
+
+        if not scope_info:
+            scope_info = {
+                "folder_limited": bool(scope_req.folder_path),
+                "estimated_file_count": None,
+                "file_count_warning_level": None,
+                "file_count_warning": file_count_warning,
+            }
+
+        warning_level = scope_info.get('file_count_warning_level')
+        est_count = scope_info.get('estimated_file_count') or 0
+        folder_limited = scope_info.get('folder_limited')
+        est_conf = scope_info.get('estimation_confidence')
+
+        block_recommended = False
+        blocking_reason = None
+        # 阻擋策略：
+        # 1. 高警告且未限制 => 一律阻擋
+        # 2. 估算超過 9000（高風險帶寬）且未限制 => 阻擋（無論信心）
+        # 3. 估算 7500~9000 且信心為 high/medium 且未限制 => 阻擋
+        if not folder_limited:
+            if warning_level == 'high':
+                block_recommended = True
+            elif est_count > 9000:
+                block_recommended = True
+            elif 7500 <= est_count <= 9000 and est_conf in ('high','medium'):
+                block_recommended = True
+        # 安全速率自動阻擋
+        sec_rate_flag = scope_info.get('security_rate_flag')
+        if sec_rate_flag == 'critical':
+            block_recommended = True
+            blocking_reason = (blocking_reason or '') + "\n[安全自動阻擋] 檢測到大量可疑路徑事件，請檢查使用者選擇的路徑或系統日誌。"
+        elif sec_rate_flag == 'elevated' and not block_recommended:
+            blocking_reason = (blocking_reason or '') + "\n[安全提示] 最近路徑安全事件增加，建議確認搜尋範圍。"
+
+        if block_recommended and not blocking_reason:
+            blocking_reason = (
+                f"檢測到當前搜索範圍包含大量文件 (估算約 {est_count} 個，信心: {est_conf or '未知'})。\n"
+                "為確保性能與品質，請勾選『限制搜索範圍』並選擇較小的資料夾後再提問。"
+            )
+
+        return ScopeInfoResponse(
+            scope_info=scope_info,
+            file_count_warning=file_count_warning or scope_info.get('file_count_warning'),
+            block_recommended=block_recommended,
+            blocking_reason=blocking_reason
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"取得動態範圍資訊失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"取得動態範圍資訊失敗: {e}")
+
+
+@app.get("/api/dynamic/estimation-stats")
+async def get_dynamic_estimation_stats(limit: int = Query(200, ge=10, le=2000), include_samples: bool = Query(True)):
+    """取得文件數量估算的近期統計，用於校準與觀察估算器表現。
+
+    來源: logs/estimation_audit.log 由 dynamic_rag_base 寫入的行。
+    每行格式: ts=... path=... est=... actual=... err_pct=... conf=... sampled=... total_dirs=... method=... truncated=...
+    """
+    try:
+        from config.config import LOGS_DIR
+        log_path = Path(LOGS_DIR) / 'estimation_audit.log'
+        if not log_path.exists():
+            return {
+                "total_samples": 0,
+                "limit": limit,
+                "mean_error_pct": None,
+                "mae_pct": None,
+                "mape_pct": None,
+                "mean_signed_error_pct": None,
+                "overestimate_rate": None,
+                "underestimate_rate": None,
+                "confidence_stats": {},
+                "recent_samples": [] if include_samples else None
+            }
+
+        # 高效讀取檔案尾部最後 N 行
+        lines = deque(maxlen=limit)
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                if line.strip():
+                    lines.append(line.strip())
+
+        samples = []
+        for line in lines:
+            parts = line.split()
+            record = {}
+            for p in parts:
+                if '=' not in p:
+                    continue
+                k, v = p.split('=', 1)
+                record[k] = v
+            try:
+                est = int(record.get('est')) if record.get('est') and record.get('est').isdigit() else None
+                actual = int(record.get('actual')) if record.get('actual') and record.get('actual').isdigit() else None
+                err_pct_raw = record.get('err_pct')
+                try:
+                    err_pct = float(err_pct_raw) if err_pct_raw not in (None, 'None') else None
+                except ValueError:
+                    err_pct = None
+                samples.append({
+                    'ts': int(record.get('ts')) if record.get('ts') and record.get('ts').isdigit() else None,
+                    'est': est,
+                    'actual': actual,
+                    'err_pct': err_pct,
+                    'conf': record.get('conf'),
+                    'method': record.get('method'),
+                    'truncated': record.get('truncated') in ('True', 'true', '1'),
+                })
+            except Exception:
+                continue
+
+        valid = [s for s in samples if s.get('err_pct') is not None]
+        total = len(valid)
+        if total == 0:
+            return {
+                "total_samples": 0,
+                "limit": limit,
+                "mean_error_pct": None,
+                "mae_pct": None,
+                "mape_pct": None,
+                "mean_signed_error_pct": None,
+                "overestimate_rate": None,
+                "underestimate_rate": None,
+                "confidence_stats": {},
+                "recent_samples": samples if include_samples else None
+            }
+
+        # 統計計算
+        import math
+        signed_errors = [s['err_pct'] for s in valid]
+        abs_errors = [abs(e) for e in signed_errors]
+        mean_signed = sum(signed_errors) / total
+        mae = sum(abs_errors) / total
+        # MAPE: 使用 actual 值再計算一次 (避免使用已記錄 err_pct 因其已是百分比)
+        ape_values = []
+        for s in valid:
+            est = s['est']
+            actual = s['actual']
+            if est is not None and actual and actual > 0:
+                ape_values.append(abs(est - actual) / actual * 100.0)
+        mape = sum(ape_values) / len(ape_values) if ape_values else None
+        mean_error_pct = sum(signed_errors) / total  # 與 mean_signed 同義，保留兩個欄位語意清晰
+
+        over_rate = sum(1 for e in signed_errors if e > 0) / total
+        under_rate = sum(1 for e in signed_errors if e < 0) / total
+
+        # 信心分組統計
+        conf_groups: Dict[str, Dict[str, Any]] = {}
+        for s in valid:
+            c = s.get('conf') or 'unknown'
+            conf_groups.setdefault(c, {"count": 0, "sum_signed": 0.0, "sum_abs": 0.0})
+            conf_groups[c]["count"] += 1
+            conf_groups[c]["sum_signed"] += s['err_pct']
+            conf_groups[c]["sum_abs"] += abs(s['err_pct'])
+        confidence_stats = {}
+        for c, g in conf_groups.items():
+            count = g['count']
+            confidence_stats[c] = {
+                "count": count,
+                "mean_error_pct": round(g['sum_signed'] / count, 2) if count else None,
+                "mae_pct": round(g['sum_abs'] / count, 2) if count else None,
+                "bias_direction": 'over' if g['sum_signed'] / count > 0 else ('under' if g['sum_signed'] / count < 0 else 'neutral')
+            }
+
+        response = {
+            "total_samples": total,
+            "limit": limit,
+            "mean_error_pct": round(mean_error_pct, 2),
+            "mae_pct": round(mae, 2),
+            "mape_pct": round(mape, 2) if mape is not None else None,
+            "mean_signed_error_pct": round(mean_signed, 2),
+            "overestimate_rate": round(over_rate, 3),
+            "underestimate_rate": round(under_rate, 3),
+            "confidence_stats": confidence_stats,
+            "recent_samples": samples if include_samples else None
+        }
+        return response
+    except Exception as e:
+        logger.error(f"取得估算統計失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"取得估算統計失敗: {e}")
+
+@app.get("/api/dynamic/security-events")
+async def get_dynamic_security_events(limit: int = Query(50, ge=1, le=200)):
+    """取得最近的動態RAG資料夾路徑安全事件（越界 / 解析失敗）。"""
+    try:
+        from rag_engine.dynamic_rag_base import SECURITY_EVENTS
+        events = SECURITY_EVENTS[-limit:]
+        return {"count": len(events), "limit": limit, "events": events}
+    except Exception as e:
+        logger.error(f"取得安全事件失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"取得安全事件失敗: {e}")
+
+@app.get("/api/dynamic/security-alerts")
+async def get_dynamic_security_alerts(limit: int = Query(50, ge=1, le=500)):
+    """讀取 security_alerts.log 最近的警報行 (語義：速率達 elevated/critical 時寫入)。"""
+    try:
+        from config.config import LOGS_DIR
+        log_path = Path(LOGS_DIR) / 'security_alerts.log'
+        if not log_path.exists():
+            return {"count": 0, "limit": limit, "alerts": []}
+        lines = []
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                if line.strip():
+                    lines.append(line.strip())
+        sliced = lines[-limit:]
+        # 解析成結構 (ts=xxx level=yyy ...)
+        parsed = []
+        for ln in sliced:
+            parts = ln.split()
+            rec = {"raw": ln}
+            for p in parts:
+                if '=' in p:
+                    k,v = p.split('=',1)
+                    rec[k]=v
+            parsed.append(rec)
+        return {"count": len(parsed), "limit": limit, "alerts": parsed}
+    except Exception as e:
+        logger.error(f"讀取 security_alerts 失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"讀取 security_alerts 失敗: {e}")
 
 
 
@@ -691,7 +1116,12 @@ def _get_folder_validation_results(folder_path: str) -> dict:
             return {"exists": False, "message": "未提供文件夾路徑"}
 
         folder_path_clean = folder_path.strip('/\\')
-        full_path = os.path.join(Q_DRIVE_PATH, folder_path_clean)
+        # 安全路徑解析與越界檢測
+        base_root = Path(Q_DRIVE_PATH).resolve()
+        candidate = (base_root / folder_path_clean).resolve()
+        if not str(candidate).startswith(str(base_root)):
+            return {"exists": False, "message": "指定的文件夾越界 (非法路徑)"}
+        full_path = str(candidate)
         
         if not (os.path.exists(full_path) and os.path.isdir(full_path)):
             return {"exists": False, "message": "指定的文件夾不存在"}
@@ -1301,23 +1731,18 @@ async def backup_vector_db(request: Request, backup_request: dict = Body(...)):
         folder_name = backup_request.get("folder_name")
         if not folder_name:
             raise HTTPException(status_code=400, detail="缺少 folder_name 參數")
-        
+
         models = vector_db_manager.list_available_models()
         target_model = None
-        
-        for model in models:
-            if model['folder_name'] == folder_name:
-                target_model = model
+        for m in models:
+            if m['folder_name'] == folder_name:
+                target_model = m
                 break
-        
         if not target_model:
             raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
-        
         model_path = Path(target_model['folder_path'])
-        
         if not model_path.exists():
             raise HTTPException(status_code=404, detail=f"模型路徑不存在: {model_path}")
-        
         # 創建備份
         import shutil
         import datetime
@@ -1966,6 +2391,308 @@ class ConfigUpdateRequest(BaseModel):
     language: Optional[str] = "dynamic"
     setup_completed: bool = True
 
+# === 依賴與版本鎖定 / 健康檢查 ===
+CORE_DEP_PACKAGES = [
+    'fastapi','uvicorn','langchain','langchain-community','langchain-core','langchain-huggingface',
+    'langchain-ollama','langchain-text-splitters','transformers','torch','sentence-transformers',
+    'numpy','pydantic','faiss-cpu','streamlit'
+]
+
+class DependencyPinResult(BaseModel):
+    package: str
+    old: Optional[str]
+    new: str
+
+class DependencyPinResponse(BaseModel):
+    changes: List[DependencyPinResult]
+    message: str
+    executed: bool
+
+class DependencyStatusItem(BaseModel):
+    package: str
+    pyproject: Optional[str]
+    requirements: Optional[str]
+    installed: Optional[str]
+    status: str  # aligned | mismatch | missing
+
+class DependencyStatusResponse(BaseModel):
+    items: List[DependencyStatusItem]
+    generated_at: int
+    mismatch_count: int | None = None
+
+class DependencyLockExportResponse(BaseModel):
+    success: bool
+    lock_ran: bool
+    export_ran: bool
+    message: str
+    changed_requirements: List[str] | None = None  # diff style lines
+    elapsed_seconds: float | None = None
+    last_audit_ts: Optional[int] = None
+
+class DependencyAuditEntry(BaseModel):
+    ts: int
+    mismatch_count: int
+    items: Optional[List[str]] = None  # package statuses summary
+
+class DependencyAuditLogResponse(BaseModel):
+    count: int
+    entries: List[DependencyAuditEntry]
+    limit: int
+    latest_ts: Optional[int] = None
+
+def _load_requirements_versions(req_path: Path) -> dict:
+    import re
+    versions = {}
+    if not req_path.exists():
+        return versions
+    pat = re.compile(r'^(?P<name>[A-Za-z0-9_.-]+)==(?P<ver>[^=]+)$')
+    for line in req_path.read_text(encoding='utf-8', errors='ignore').splitlines():
+        line=line.strip()
+        if not line or line.startswith('#'): continue
+        m = pat.match(line)
+        if m:
+            versions[m.group('name').lower()] = m.group('ver')
+    return versions
+
+def _load_pyproject_deps(py_path: Path) -> dict:
+    import re
+    try:
+        try:
+            import tomllib  # type: ignore  # py311+
+        except ModuleNotFoundError:  # pragma: no cover
+            import tomli as tomllib  # type: ignore
+        data = tomllib.loads(py_path.read_text(encoding='utf-8'))
+        return data.get('tool',{}).get('poetry',{}).get('dependencies',{}) or {}
+    except Exception:
+        # fallback 簡單解析
+        deps = {}
+        text = py_path.read_text(encoding='utf-8')
+        in_dep=False
+        for line in text.splitlines():
+            s=line.strip()
+            if s.startswith('[tool.poetry.dependencies]'):
+                in_dep=True; continue
+            if in_dep and s.startswith('['): break
+            if in_dep and '=' in s and not s.startswith('#'):
+                m=re.match(r'([A-Za-z0-9_.-]+)\s*=\s*"([^"]+)"', s)
+                if m:
+                    deps[m.group(1)] = m.group(2)
+        return deps
+
+def _dependency_audit_write(result_items: List['DependencyStatusItem']):
+    """將當前依賴狀態寫入審計日誌 (logs/dependency_audit.log)。
+
+    行格式: ts=<epoch> mismatch_count=<int> item=<pkg>:<status>:<py>:<req>:<inst> ...
+    僅保留最近 500 行（滾動截斷）。
+    """
+    try:
+        from config.config import LOGS_DIR
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        path = Path(LOGS_DIR) / 'dependency_audit.log'
+        mismatch = sum(1 for it in result_items if it.status in ('mismatch','missing'))
+        parts = [f"ts={int(__import__('time').time())}", f"mismatch_count={mismatch}"]
+        for it in result_items:
+            # 簡要表示，避免過長
+            parts.append(f"item={it.package}:{it.status}:{it.pyproject or '-'}:{it.requirements or '-'}:{it.installed or '-'}")
+        line = ' '.join(parts) + '\n'
+        # 追加
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(line)
+        # 截斷
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            if len(lines) > 500:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines[-500:])
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug(f"寫入依賴審計失敗: {e}")
+
+@app.post("/admin/dependencies/pin", response_model=DependencyPinResponse)
+async def admin_pin_core_dependencies(request: Request):
+    await check_admin(request)
+    try:
+        py_path = Path('pyproject.toml')
+        req_path = Path('requirements.txt')
+        if not py_path.exists():
+            raise HTTPException(status_code=400, detail='pyproject.toml 不存在')
+        req_versions = _load_requirements_versions(req_path)
+        deps = _load_pyproject_deps(py_path)
+        text = py_path.read_text(encoding='utf-8')
+        changes = []
+        import re
+        def _replace_line(pkg: str, new_ver: str, original: str) -> str:
+            pattern = re.compile(rf'^(\s*{re.escape(pkg)}\s*=\s*)"[^"]+"', re.MULTILINE)
+            return pattern.sub(lambda m: f"{m.group(1)}\"{new_ver}\"", original)
+        for pkg in CORE_DEP_PACKAGES:
+            # 查找 pyproject 中現有版本表示
+            match_key = None
+            for k in deps.keys():
+                if k.lower()==pkg:
+                    match_key = k; break
+            if not match_key: continue
+            req_ver = req_versions.get(pkg)
+            if not req_ver: continue
+            cur_val = deps[match_key]
+            if isinstance(cur_val, dict):
+                cur_ver = cur_val.get('version')
+                if cur_ver and cur_ver!=req_ver:
+                    cur_val['version']=req_ver
+                    changes.append((pkg, cur_ver, req_ver))
+            else:
+                if cur_val!=req_ver:
+                    text = _replace_line(match_key, req_ver, text)
+                    changes.append((pkg, cur_val, req_ver))
+        if changes:
+            py_path.write_text(text, encoding='utf-8')
+            logger.info(f"依賴鎖定更新: {changes}")
+        return DependencyPinResponse(
+            changes=[DependencyPinResult(package=pkg, old=old, new=new) for pkg,old,new in changes],
+            message = '已更新並建議重新執行 poetry lock --no-update' if changes else '無需更新，已對齊',
+            executed = True
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"執行依賴鎖定失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"執行依賴鎖定失敗: {e}")
+
+@app.get("/admin/dependencies/status", response_model=DependencyStatusResponse)
+async def admin_dependency_status(request: Request):
+    await check_admin(request)
+    try:
+        from importlib import metadata as importlib_metadata
+        py_deps = _load_pyproject_deps(Path('pyproject.toml'))
+        req_versions = _load_requirements_versions(Path('requirements.txt'))
+        items = []
+        mismatch = 0
+        for pkg in CORE_DEP_PACKAGES:
+            py_ver = None
+            for k,v in py_deps.items():
+                if k.lower()==pkg:
+                    if isinstance(v, dict):
+                        py_ver = v.get('version')
+                    else:
+                        py_ver = v
+                    break
+            req_ver = req_versions.get(pkg)
+            try:
+                inst_ver = importlib_metadata.version(pkg)
+            except Exception:
+                inst_ver = None
+            status = 'aligned'
+            # 判斷狀態
+            want = req_ver or py_ver
+            if not (py_ver or req_ver):
+                status = 'missing'
+            elif inst_ver and want and inst_ver != want:
+                status = 'mismatch'
+            elif not inst_ver:
+                status = 'missing'
+            if status in ('mismatch','missing'):
+                mismatch += 1
+            items.append(DependencyStatusItem(
+                package=pkg,
+                pyproject=py_ver,
+                requirements=req_ver,
+                installed=inst_ver,
+                status=status
+            ))
+        resp = DependencyStatusResponse(items=items, generated_at=int(__import__('time').time()), mismatch_count=mismatch)
+        # 可選即時審計: 若 query 參數 audit=true 則寫入審計
+        try:
+            if request.query_params.get('audit','false').lower() in ('1','true','yes'):
+                _dependency_audit_write(items)
+        except Exception:
+            pass
+        return resp
+    except Exception as e:
+        logger.error(f"取得依賴狀態失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"取得依賴狀態失敗: {e}")
+
+@app.post("/admin/dependencies/lock-export", response_model=DependencyLockExportResponse)
+async def admin_dependency_lock_export(request: Request):
+    """執行 poetry lock --no-update 以及 export requirements.txt，並返回差異摘要。
+
+    流程：
+      1. 讀取現有 requirements.txt 保存快照
+      2. 執行 lock (若可行)
+      3. 執行 export (覆寫 requirements.txt)
+      4. 產生差異行 (新增/修改/刪除)
+    """
+    await check_admin(request)
+    import time as _time, shutil, subprocess, difflib
+    start = _time.time()
+    req_path = Path('requirements.txt')
+    before_lines = []
+    if req_path.exists():
+        before_lines = req_path.read_text(encoding='utf-8', errors='ignore').splitlines()
+    # 決定 poetry 命令
+    poetry_cmd = shutil.which('poetry') or None
+    lock_ran = False
+    export_ran = False
+    messages = []
+    try:
+        if poetry_cmd:
+            # lock
+            try:
+                cp = subprocess.run([poetry_cmd, 'lock', '--no-update'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+                lock_ran = cp.returncode == 0
+                messages.append(f"lock rc={cp.returncode}")
+                if cp.returncode != 0:
+                    messages.append(cp.stderr[:400])
+            except Exception as e:
+                messages.append(f"lock 失敗: {e}")
+            # export
+            try:
+                cp2 = subprocess.run([poetry_cmd, 'export', '-f', 'requirements.txt', '--output', 'requirements.txt', '--without-hashes'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+                export_ran = cp2.returncode == 0
+                messages.append(f"export rc={cp2.returncode}")
+                if cp2.returncode != 0:
+                    messages.append(cp2.stderr[:400])
+            except Exception as e:
+                messages.append(f"export 失敗: {e}")
+        else:
+            messages.append('找不到 poetry 可執行檔 (未執行 lock/export)')
+        # 差異
+        after_lines = []
+        if req_path.exists():
+            after_lines = req_path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        diff = list(difflib.unified_diff(before_lines, after_lines, fromfile='before', tofile='after', lineterm=''))
+        # 過濾 header 只保留變動行
+        changed = [l for l in diff if l.startswith(('+','-')) and not l.startswith(('+++','---'))][:200]
+        elapsed = round(_time.time() - start, 2)
+        # 讀取最新審計時間
+        last_audit_ts = None
+        try:
+            from config.config import LOGS_DIR
+            ap = Path(LOGS_DIR)/'dependency_audit.log'
+            if ap.exists():
+                with open(ap,'r',encoding='utf-8',errors='ignore') as f:
+                    for line in reversed(f.readlines()):
+                        if line.strip().startswith('ts='):
+                            try:
+                                last_audit_ts=int(line.split()[0].split('=')[1])
+                            except Exception:
+                                pass
+                            break
+        except Exception:
+            pass
+        return DependencyLockExportResponse(
+            success = export_ran or lock_ran,
+            lock_ran = lock_ran,
+            export_ran = export_ran,
+            message=' | '.join(messages),
+            changed_requirements=changed or None,
+            elapsed_seconds=elapsed,
+            last_audit_ts=last_audit_ts
+        )
+    except Exception as e:
+        logger.error(f"執行 lock/export 失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"執行 lock/export 失敗: {e}")
+
 @app.post("/api/config/update")
 async def update_config(config: ConfigUpdateRequest):
     """更新系統配置"""
@@ -2019,6 +2746,132 @@ async def get_current_config():
     except Exception as e:
         logger.error(f"獲取配置失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"獲取配置失敗: {str(e)}")
+
+# === 依賴審計與安全度量附加端點 ===
+
+@app.post("/admin/dependencies/audit-run", response_model=DependencyAuditEntry)
+async def admin_dependency_audit_run(request: Request):
+    """立即執行依賴審計並寫入日誌，返回本次結果摘要。"""
+    await check_admin(request)
+    try:
+        # 重用狀態邏輯
+        from importlib import metadata as importlib_metadata
+        py_deps = _load_pyproject_deps(Path('pyproject.toml'))
+        req_versions = _load_requirements_versions(Path('requirements.txt'))
+        items: List[DependencyStatusItem] = []
+        for pkg in CORE_DEP_PACKAGES:
+            py_ver=None
+            for k,v in py_deps.items():
+                if k.lower()==pkg:
+                    if isinstance(v, dict):
+                        py_ver=v.get('version')
+                    else:
+                        py_ver=v
+                    break
+            req_ver = req_versions.get(pkg)
+            try:
+                inst_ver = importlib_metadata.version(pkg)
+            except Exception:
+                inst_ver = None
+            status='aligned'
+            want = req_ver or py_ver
+            if not (py_ver or req_ver):
+                status='missing'
+            elif inst_ver and want and inst_ver != want:
+                status='mismatch'
+            elif not inst_ver:
+                status='missing'
+            items.append(DependencyStatusItem(package=pkg, pyproject=py_ver, requirements=req_ver, installed=inst_ver, status=status))
+        _dependency_audit_write(items)
+        mismatch = sum(1 for it in items if it.status in ('mismatch','missing'))
+        return DependencyAuditEntry(ts=int(__import__('time').time()), mismatch_count=mismatch, items=[f"{it.package}:{it.status}" for it in items])
+    except Exception as e:
+        logger.error(f"依賴審計失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"依賴審計失敗: {e}")
+
+@app.get("/admin/dependencies/audit-log", response_model=DependencyAuditLogResponse)
+async def admin_dependency_audit_log(request: Request, limit: int = Query(100, ge=10, le=500)):
+    """取得最近依賴審計結果，供前端趨勢顯示。"""
+    await check_admin(request)
+    try:
+        from config.config import LOGS_DIR
+        path = Path(LOGS_DIR)/'dependency_audit.log'
+        if not path.exists():
+            return DependencyAuditLogResponse(count=0, entries=[], limit=limit, latest_ts=None)
+        lines=[]
+        with open(path,'r',encoding='utf-8',errors='ignore') as f:
+            for ln in f:
+                if ln.strip():
+                    lines.append(ln.strip())
+        entries=[]
+        for ln in lines[-limit:]:
+            parts=ln.split()
+            ts_val=None; mismatch=0; pkgs=[]
+            for p in parts:
+                if p.startswith('ts='):
+                    try: ts_val=int(p.split('=',1)[1])
+                    except: ts_val=None
+                elif p.startswith('mismatch_count='):
+                    try: mismatch=int(p.split('=',1)[1])
+                    except: mismatch=0
+                elif p.startswith('item='):
+                    pkgs.append(p.split('=',1)[1])
+            if ts_val:
+                entries.append(DependencyAuditEntry(ts=ts_val, mismatch_count=mismatch, items=pkgs))
+        latest_ts = entries[-1].ts if entries else None
+        return DependencyAuditLogResponse(count=len(entries), entries=entries, limit=limit, latest_ts=latest_ts)
+    except Exception as e:
+        logger.error(f"讀取依賴審計日誌失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"讀取依賴審計日誌失敗: {e}")
+
+@app.get('/api/dynamic/security-metrics')
+async def get_security_metrics(window_minutes: int = Query(60, ge=5, le=720)):
+    """安全事件統計: 回傳最近 window_minutes 內每分鐘計數、總數、速率旗標與最新事件。"""
+    try:
+        from rag_engine.dynamic_rag_base import SECURITY_EVENTS
+        now_ts = int(__import__('time').time())
+        window_seconds = window_minutes*60
+        buckets = {}
+        total=0
+        recent_10m=0
+        for ev in reversed(SECURITY_EVENTS):
+            delta = now_ts - ev['ts']
+            if delta > window_seconds:
+                break
+            minute_key = (ev['ts']//60)*60  # 對齊分鐘
+            buckets.setdefault(minute_key,0)
+            buckets[minute_key]+=1
+            total+=1
+            if delta <= 600:
+                recent_10m+=1
+        level=None
+        if recent_10m >= 15:
+            level='critical'
+        elif recent_10m >= 8:
+            level='elevated'
+        # 生成時間序列 (按時間遞增) 填補空洞為 0
+        if buckets:
+            start_min = min(buckets.keys())
+            end_min = (now_ts//60)*60
+            series=[]
+            cur = start_min
+            while cur <= end_min:
+                series.append({'minute_ts': cur, 'count': buckets.get(cur,0)})
+                cur += 60
+        else:
+            series=[]
+        latest = SECURITY_EVENTS[-1] if SECURITY_EVENTS else None
+        return {
+            'total_events_window': total,
+            'recent_10m': recent_10m,
+            'level': level,
+            'series': series,
+            'latest': latest,
+            'window_minutes': window_minutes
+        }
+    except Exception as e:
+        logger.error(f"取得安全事件統計失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"取得安全事件統計失敗: {e}")
 
 # 啟動應用
 if __name__ == "__main__":

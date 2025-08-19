@@ -66,6 +66,11 @@ class DynamicThaiRAGEngine(DynamicRAGEngineBase):
 
     def get_language(self) -> str:
         return "ไทย"
+
+    def get_concise_prefix(self) -> str:
+        return (
+            "คุณเป็นผู้ช่วยที่ตอบแบบกระชับ ตอบไม่เกิน 8 บรรทัด หลีกเลี่ยงการพูดซ้ำหรืออธิบายเกินจำเป็น ให้เฉพาะประเด็นสำคัญเท่านั้น\n\n"
+        )
     
     def _generate_general_knowledge_answer(self, question: str) -> str:
         """ให้คำตอบจากความรู้ทั่วไปเป็นภาษาไทยเมื่อไม่พบเอกสารที่เกี่ยวข้อง"""

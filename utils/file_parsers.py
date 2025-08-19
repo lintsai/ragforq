@@ -1575,7 +1575,8 @@ class ExcelOldParser(FileParser):
     
     def parse(self, file_path: str) -> List[Tuple[str, Dict[str, Any]]]:
         try:
-            results = []
+            # 統一的結果列表（不同方法成功時都向此追加）
+            results: List[Tuple[str, Dict[str, Any]]] = []
             metadata = self.extract_metadata(file_path)
             metadata.update({"document_type": "XLS"})
         
@@ -1591,8 +1592,10 @@ class ExcelOldParser(FileParser):
                     logger.info(f"使用xlrd {xlrd.__version__} 解析XLS文件")
                     try:
                         workbook = xlrd.open_workbook(file_path, formatting_info=False, on_demand=True)
-                        sheet_processed = self._process_xlrd_workbook(workbook, metadata)
-                        if sheet_processed:
+                        sheet_results = self._process_xlrd_workbook(workbook, metadata)
+                        if sheet_results:
+                            results.extend(sheet_results)
+                            workbook.release_resources()
                             return results
                     except Exception as open_error:
                         logger.warning(f"使用xlrd打開XLS文件失敗: {str(open_error)}")
@@ -1653,7 +1656,9 @@ class ExcelOldParser(FileParser):
             
                         workbook.Close(SaveChanges=False)
             
-                        if results:
+                        if text_content:
+                            sheet_content = "\n".join(text_content)
+                            results.append((sheet_content, metadata))
                             return results
                     except Exception as com_error:
                         logger.warning(f"Excel COM接口錯誤: {str(com_error)}")
@@ -1740,18 +1745,13 @@ class ExcelOldParser(FileParser):
             return [("XLS解析出錯，可能是文件格式問題或權限限制", metadata)]
         
     def _process_xlrd_workbook(self, workbook, metadata):
-        """處理xlrd工作簿並將結果添加到results列表中"""
-        results = []
-        sheet_processed = False
-        
+        """處理xlrd工作簿並返回結果列表"""
+        workbook_results: List[Tuple[str, Dict[str, Any]]] = []
+        max_rows = 5000
         for sheet_index in range(workbook.nsheets):
             try:
                 sheet = workbook.sheet_by_index(sheet_index)
                 sheet_text = []
-            
-                # 設置行數限制以防止超大表格
-                max_rows = 5000
-            
                 for row_idx in range(min(sheet.nrows, max_rows)):
                     try:
                         row_values = []
@@ -1762,29 +1762,21 @@ class ExcelOldParser(FileParser):
                                 row_values.append(str(int(cell)))
                             else:
                                 row_values.append(str(cell))
-            
-                        if any(filter(bool, row_values)):  # 如果行不為空
+                        if any(filter(bool, row_values)):
                             sheet_text.append(" | ".join(row_values))
                     except Exception as row_error:
                         logger.warning(f"處理XLS行 {row_idx+1} 時出錯: {str(row_error)}")
                         continue
-            
-                if row_idx >= max_rows - 1 and sheet.nrows > max_rows:
+                if sheet.nrows > max_rows:
                     sheet_text.append("... (表格過大，僅顯示前5000行)")
-            
                 if sheet_text:
                     sheet_content = "\n".join(sheet_text)
                     sheet_metadata = metadata.copy()
-                    sheet_metadata.update({
-                        "sheet_name": sheet.name
-                    })
-                    results.append((sheet_content, sheet_metadata))
-                    sheet_processed = True
+                    sheet_metadata.update({"sheet_name": sheet.name})
+                    workbook_results.append((sheet_content, sheet_metadata))
             except Exception as sheet_error:
                 logger.warning(f"處理XLS表格 {sheet_index} 時出錯: {str(sheet_error)}")
-                # 繼續處理下一個表格
-        
-        return sheet_processed
+        return workbook_results
 
 
 class PPTParser(FileParser):

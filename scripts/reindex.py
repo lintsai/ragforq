@@ -19,6 +19,7 @@ sys.path.append(project_root)
 from indexer.file_crawler import FileCrawler
 from indexer.document_indexer import DocumentIndexer
 from config.config import Q_DRIVE_PATH, VECTOR_DB_PATH, is_q_drive_accessible
+from utils.state_manager import record_full_index
 
 # 設置日誌
 logging.basicConfig(
@@ -103,6 +104,11 @@ def main():
         # 索引文件
         logger.info(f"開始索引 {len(file_paths)} 個文件...")
         success_count, fail_count = indexer.index_files(file_paths)
+        try:
+            record_full_index(success_count)
+            logger.info(f"State updated with full reindex count={success_count}")
+        except Exception as e:
+            logger.warning(f"Failed to record full index state: {e}")
         
         # 計算總耗時
         elapsed_time = time.time() - start_time

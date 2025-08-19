@@ -39,17 +39,20 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
             self.llm = OllamaLLM(
                 model=ollama_model,
                 base_url=OLLAMA_HOST,
-                temperature=0.4
+                temperature=0.4,  # 與英/繁/泰統一
+                top_p=0.9,
+                repeat_penalty=1.12,
+                num_predict=800
             )
             logger.info(f"简体中文RAG引擎初始化完成 (Ollama)，使用模型: {ollama_model}")
         else:
             # Hugging Face 平台
             llm_params = {
-                "temperature": 0.1,
-                "max_new_tokens": 1024,
+                "temperature": 0.3,  # 統一較低隨機性 + 簡潔
+                "max_new_tokens": 768,
                 "top_p": 0.9,
                 "top_k": 50,
-                "repetition_penalty": 1.15
+                "repetition_penalty": 1.18
             }
             self.llm = ChatHuggingFace(
                 model_name=ollama_model,
@@ -180,8 +183,8 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
                 
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)
-                
-                return answer.strip()
+                cleaned = self._clean_answer_text(answer.strip())
+                return cleaned
                 
             except concurrent.futures.TimeoutError:
                 logger.error("简体中文回答生成超时")
@@ -348,5 +351,51 @@ class SimplifiedChineseRAGEngine(RAGEngineInterface):
     
     def _get_general_fallback(self, query: str) -> str:
         return f"根据一般IT知识，关于「{query}」的相关信息可能需要查阅更多QSI内部文档。"
+
+    # --- 回答清理 (與英文/繁體邏輯一致，針對簡體) ---
+    def _clean_answer_text(self, text: str) -> str:
+        """清理生成回答：去除控制字符、重複段、免責重复、間隔字母、截斷過長內容。"""
+        try:
+            import re
+            original_len = len(text)
+            text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', text)
+            text = ''.join(ch for ch in text if (ch.isprintable() or ch in '\n\r\t'))
+            # 合併被空格分隔的字母 (K P I -> KPI)
+            text = re.sub(r'\b([A-Za-z])\s+([A-Za-z])\s+([A-Za-z])\b', lambda m: ''.join(m.groups()), text)
+            text = re.sub(r'\b([A-Za-z])\s+([A-Za-z])\b', lambda m: ''.join(m.groups()), text)
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            filtered = []
+            seen = set()
+            noise_markers = ['再次修正','最终版本','再一次修正','错误版本','已修正']
+            disclaimer_markers = ['以上回答','仅供参考','免责声明','注意：','Note:','Disclaimer']
+            for ln in lines:
+                low = ln.lower()
+                if any(nm in ln for nm in noise_markers):
+                    key = 'nm:' + ''.join(ch for ch in low if ch.isalnum())[:24]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                if any(dm.lower() in low for dm in disclaimer_markers):
+                    if 'disc' in seen:
+                        continue
+                    seen.add('disc')
+                filtered.append(ln)
+            text = '\n'.join(filtered)
+            paragraphs = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
+            dedup = []
+            prev = None
+            for p in paragraphs:
+                h = hash(p[:160])
+                if h == prev:
+                    continue
+                prev = h
+                dedup.append(p)
+            text = '\n\n'.join(dedup)
+            if len(text) > 1500:
+                text = text[:1500].rstrip() + '...'
+            logger.debug(f"[SimplifiedChineseRAGEngine] Cleaned answer {original_len} -> {len(text)} chars")
+            return text
+        except Exception:
+            return text
     
     

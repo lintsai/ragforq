@@ -147,6 +147,7 @@ pydantic_core==2.33.2
 pydeck==0.9.1
 pyexcel==0.7.3
 pyexcel-io==0.6.7
+pyexcel-xls==0.7.0
 Pygments==2.19.2
 PyMuPDF==1.26.3
 pyparsing==3.2.3

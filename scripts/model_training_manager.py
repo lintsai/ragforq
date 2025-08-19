@@ -61,34 +61,31 @@ class ModelTrainingManager:
         # 驗證模型
         if not self.validate_models(ollama_model, ollama_embedding_model):
             return False
-        
-        # 檢查是否已有數據
+
         if self.vector_db_manager.has_vector_data(model_path):
             logger.warning(f"模型 {ollama_model}+{ollama_embedding_model} 已有向量數據，請使用增量訓練或重新索引")
             return False
-        
+
         logger.info(f"開始初始訓練: {ollama_model} + {ollama_embedding_model}")
-        
-        # 創建文檔索引器
+        self._update_lock_stage(model_path, stage="initial:scanning_files")
+
         document_indexer = DocumentIndexer(
             vector_db_path=str(model_path),
             ollama_embedding_model=ollama_embedding_model
         )
-        
-        # 獲取所有文件
+
         file_crawler = FileCrawler(Q_DRIVE_PATH)
         all_files = list(file_crawler.crawl())
-        
         logger.info(f"找到 {len(all_files)} 個文件需要索引")
-        
-        # 開始索引
+
+        self._update_lock_stage(model_path, stage="initial:indexing")
         success_count, fail_count = document_indexer.index_files(all_files, show_progress=True)
-        
-        # 保存向量存儲
+
+        self._update_lock_stage(model_path, stage="initial:saving_store")
         document_indexer._save_vector_store()
-        
+
+        self._update_lock_stage(model_path, stage="initial:completed", meta={"success": success_count, "fail": fail_count})
         logger.info(f"初始訓練完成: 成功 {success_count} 個，失敗 {fail_count} 個")
-        
         return True
     
     def start_incremental_training(self, ollama_model: str, ollama_embedding_model: str, version: str = None, model_path: Path = None) -> bool:
@@ -98,43 +95,39 @@ class ModelTrainingManager:
         # 驗證模型
         if not self.validate_models(ollama_model, ollama_embedding_model):
             return False
-        
-        # 檢查是否存在向量數據
+
         if not self.vector_db_manager.has_vector_data(model_path):
             logger.error(f"模型 {ollama_model}+{ollama_embedding_model} 沒有向量數據，請先進行初始訓練")
             return False
-        
+
         logger.info(f"開始增量訓練: {ollama_model} + {ollama_embedding_model}")
-        
-        # 創建文檔索引器
+        self._update_lock_stage(model_path, stage="incremental:detect_changes")
+
         document_indexer = DocumentIndexer(
             vector_db_path=str(model_path),
             ollama_embedding_model=ollama_embedding_model
         )
-        
-        # 獲取所有文件
+
         file_crawler = FileCrawler(Q_DRIVE_PATH)
-        
-        # 檢查文件變更
         new_files, updated_files, deleted_files = file_crawler.get_file_changes(
             set(document_indexer.indexed_files.keys()) if hasattr(document_indexer, 'indexed_files') else set()
         )
-        
+
         total_changes = len(new_files) + len(updated_files) + len(deleted_files)
         logger.info(f"檢測到 {total_changes} 個文件變更: 新增 {len(new_files)}, 更新 {len(updated_files)}, 刪除 {len(deleted_files)}")
-        
+
         if total_changes == 0:
             logger.info("沒有文件變更，無需增量訓練")
+            self._update_lock_stage(model_path, stage="incremental:no_changes")
             return True
-        
-        # 處理文件變更
+
+        self._update_lock_stage(model_path, stage="incremental:processing_changes", meta={"new": len(new_files), "updated": len(updated_files), "deleted": len(deleted_files)})
         document_indexer.process_file_changes(new_files, updated_files, deleted_files)
-        
-        # 保存向量存儲
+
+        self._update_lock_stage(model_path, stage="incremental:saving_store")
         document_indexer._save_vector_store()
-        
+        self._update_lock_stage(model_path, stage="incremental:completed")
         logger.info("增量訓練完成")
-        
         return True
     
     def start_reindex(self, ollama_model: str, ollama_embedding_model: str, version: str = None, model_path: Path = None) -> bool:
@@ -144,50 +137,60 @@ class ModelTrainingManager:
         # 驗證模型
         if not self.validate_models(ollama_model, ollama_embedding_model):
             return False
-        
+
         logger.info(f"開始重新索引: {ollama_model} + {ollama_embedding_model}")
-        
-        # 清除現有數據
+        self._update_lock_stage(model_path, stage="reindex:clearing_old")
+
         if model_path.exists():
-            import shutil
-            # 保留 .model 文件
+            import shutil, json
             model_file = model_path / ".model"
             model_info = None
             if model_file.exists():
-                import json
                 with open(model_file, 'r', encoding='utf-8') as f:
                     model_info = json.load(f)
-            
-            # 清除文件夾內容
             shutil.rmtree(model_path)
             model_path.mkdir(parents=True, exist_ok=True)
-            
-            # 恢復 .model 文件
             if model_info:
                 with open(model_file, 'w', encoding='utf-8') as f:
                     json.dump(model_info, f, ensure_ascii=False, indent=2)
-        
-        # 創建文檔索引器
+
         document_indexer = DocumentIndexer(
             vector_db_path=str(model_path),
             ollama_embedding_model=ollama_embedding_model
         )
-        
-        # 獲取所有文件
+
         file_crawler = FileCrawler(Q_DRIVE_PATH)
         all_files = list(file_crawler.crawl())
-        
+        self._update_lock_stage(model_path, stage="reindex:indexing", meta={"total_files": len(all_files)})
         logger.info(f"找到 {len(all_files)} 個文件需要重新索引")
-        
-        # 開始索引
+
         success_count, fail_count = document_indexer.index_files(all_files, show_progress=True)
-        
-        # 保存向量存儲
+
+        self._update_lock_stage(model_path, stage="reindex:saving_store")
         document_indexer._save_vector_store()
-        
+
+        self._update_lock_stage(model_path, stage="reindex:completed", meta={"success": success_count, "fail": fail_count})
         logger.info(f"重新索引完成: 成功 {success_count} 個，失敗 {fail_count} 個")
-        
         return True
+
+    # ----------------- 輔助：更新鎖定文件中的階段信息 -----------------
+    def _update_lock_stage(self, model_path: Path, stage: str, meta: dict = None):
+        """在鎖定文件中寫入目前階段，供前端/監控輪詢顯示進度。"""
+        try:
+            lock_file = model_path / ".lock"
+            if not lock_file.exists():
+                return
+            import json, time
+            with open(lock_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            data['stage'] = stage
+            data['stage_ts'] = int(time.time())
+            if meta:
+                data.setdefault('stage_meta', {}).update(meta)
+            with open(lock_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.debug(f"更新鎖定階段失敗（忽略）: {e}")
 
 def main():
     """主函數"""
@@ -252,6 +255,7 @@ def main():
     }
     manager.vector_db_manager.create_lock_file(model_path, process_info)
     logger.info(f"已為模型 {folder_name} 創建鎖定文件")
+    manager._update_lock_stage(model_path, stage=f"{action}:init")
 
     try:
         if action == 'initial':
@@ -265,9 +269,11 @@ def main():
             sys.exit(1)
         
         if success:
+            manager._update_lock_stage(model_path, stage=f"{action}:success")
             logger.info(f"動作 {action} 執行成功")
             sys.exit(0)
         else:
+            manager._update_lock_stage(model_path, stage=f"{action}:failed")
             logger.error(f"動作 {action} 執行失敗")
             sys.exit(1)
             
@@ -275,6 +281,10 @@ def main():
         logger.error(f"執行動作 {action} 時發生未預期的錯誤: {str(e)}")
         import traceback
         logger.error(f"錯誤詳情: {traceback.format_exc()}")
+        try:
+            manager._update_lock_stage(model_path, stage=f"{action}:exception", meta={"error": str(e)})
+        except Exception:
+            pass
         sys.exit(1)
     finally:
         # 確保鎖定文件和臨時文件被清理

@@ -1,10 +1,13 @@
 import os
-import sys
+import os
+import re
+import json
+import queue
+import random
 import logging
+import time
+import sys
 import concurrent.futures
-from typing import List, Dict, Any, Tuple, Optional
-from pathlib import Path
-
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -43,17 +46,20 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
             self.llm = OllamaLLM(
                 model=ollama_model,
                 base_url=OLLAMA_HOST,
-                temperature=0.4
+                temperature=0.4,
+                top_p=0.9,
+                repeat_penalty=1.12,
+                num_predict=800
             )
             logger.info(f"繁體中文RAG引擎初始化完成 (Ollama)，使用模型: {ollama_model}")
         else:
             # Hugging Face 平台
             llm_params = {
-                "temperature": 0.1,
-                "max_new_tokens": 1024,
+                "temperature": 0.3,
+                "max_new_tokens": 768,
                 "top_p": 0.9,
                 "top_k": 50,
-                "repetition_penalty": 1.15
+                "repetition_penalty": 1.18
             }
             self.llm = ChatHuggingFace(
                 model_name=ollama_model,
@@ -180,8 +186,8 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
                 
                 if not answer or len(answer.strip()) < 5:
                     return self._get_general_fallback(question)
-                
-                return answer.strip()
+                cleaned = self._clean_answer_text(answer.strip())
+                return cleaned
                 
             except concurrent.futures.TimeoutError:
                 logger.error("繁體中文回答生成超時")
@@ -350,5 +356,50 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
     
     def _get_general_fallback(self, query: str) -> str:
         return f"根據一般IT知識，關於「{query}」的相關信息可能需要查閱更多QSI內部文檔。"
+
+    # --- 回答清理 ---
+    def _clean_answer_text(self, text: str) -> str:
+        """繁體中文回答清理：去除控制符/重複段/多次免責/間隔字元，縮短長度。"""
+        try:
+            import re
+            orig = len(text)
+            text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', text)
+            text = ''.join(ch for ch in text if (ch.isprintable() or ch in '\n\r\t'))
+            # 合併被空格拆開的詞 (英文字母場景)
+            text = re.sub(r'\b([A-Za-z])\s+([A-Za-z])\s+([A-Za-z])\b', lambda m: ''.join(m.groups()), text)
+            text = re.sub(r'\b([A-Za-z])\s+([A-Za-z])\b', lambda m: ''.join(m.groups()), text)
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            filtered = []
+            seen = set()
+            noise = ['再次修正','最終版本','再一次修正','錯誤版本','已修正']
+            disclaimers = ['以上回答','僅供參考','免責','注意：以上回答','注意:','Disclaimer','Note:']
+            for ln in lines:
+                if any(n in ln for n in noise):
+                    key = 'n:' + ''.join(ch for ch in ln if ch.isalnum())[:24]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                if any(d.lower() in ln.lower() for d in disclaimers):
+                    if 'disc' in seen:
+                        continue
+                    seen.add('disc')
+                filtered.append(ln)
+            text = '\n'.join(filtered)
+            paras = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
+            out = []
+            prev = None
+            for p in paras:
+                h = hash(p[:150])
+                if h == prev:
+                    continue
+                prev = h
+                out.append(p)
+            text = '\n\n'.join(out)
+            if len(text) > 1500:
+                text = text[:1500].rstrip() + '...'
+            logger.debug(f"[TraditionalChineseRAGEngine] Cleaned answer {orig} -> {len(text)} chars")
+            return text
+        except Exception:
+            return text
     
     

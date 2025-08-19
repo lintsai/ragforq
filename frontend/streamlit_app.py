@@ -69,6 +69,12 @@ if 'current_answer' not in st.session_state:
     st.session_state.current_answer = None
 if 'selected_language' not in st.session_state:
     st.session_state.selected_language = "繁體中文"
+if 'dynamic_scope_info' not in st.session_state:
+    st.session_state.dynamic_scope_info = None
+if 'dynamic_block_recommended' not in st.session_state:
+    st.session_state.dynamic_block_recommended = False
+if 'dynamic_block_reason' not in st.session_state:
+    st.session_state.dynamic_block_reason = None
 
 # 檢查API是否正常運行
 def check_api_status() -> bool:
@@ -131,6 +137,32 @@ def get_answer(question: str, include_sources: bool = True, max_sources: Optiona
     except requests.exceptions.RequestException as e:
         st.session_state.last_error = f"獲取答案時發生錯誤: {str(e)}"
         raise
+
+def fetch_dynamic_scope_info(language: str, ollama_model: str, embedding_model: str, platform: Optional[str], folder_path: Optional[str]):
+    """呼叫後端 scope-info 端點，取得動態RAG範圍資訊"""
+    try:
+        payload = {
+            "language": language,
+            "ollama_model": ollama_model,
+            "ollama_embedding_model": embedding_model,
+            "platform": platform,
+            "folder_path": folder_path
+        }
+        resp = requests.post(f"{API_URL}/api/dynamic/scope-info", json=payload, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            st.session_state.dynamic_scope_info = data.get('scope_info')
+            st.session_state.dynamic_block_recommended = data.get('block_recommended')
+            st.session_state.dynamic_block_reason = data.get('blocking_reason')
+        else:
+            st.session_state.dynamic_scope_info = None
+            st.session_state.dynamic_block_recommended = False
+            st.session_state.dynamic_block_reason = None
+    except Exception as e:
+        st.session_state.dynamic_scope_info = None
+        st.session_state.dynamic_block_recommended = False
+        st.session_state.dynamic_block_reason = None
+        logger.warning(f"取得動態範圍資訊失敗: {e}")
 
 def get_indexed_files() -> List[Dict[str, Any]]:
     """獲取已索引的文件列表"""
@@ -208,6 +240,61 @@ def main():
             st.success(f"✅ API 服務: {status.get('status', '未知')}")
             st.info(f"🗄️ Q槽訪問: {'✅ 可訪問' if status.get('q_drive_accessible') else '❌ 不可訪問'}")
             st.info(f"🔖 API 版本: {status.get('version', '未知')}")
+            # 顯示 runtime_state 基本索引資訊
+            rt = status.get('runtime_state') or {}
+            if rt:
+                with st.expander("📦 索引狀態", expanded=False):
+                    import datetime
+                    def _fmt(ts):
+                        if not ts:
+                            return '-'
+                        try:
+                            return datetime.datetime.fromtimestamp(int(ts), tz=pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')
+                        except Exception:
+                            return str(ts)
+                    st.write(f"最後全量索引時間: {_fmt(rt.get('last_index_full_ts'))}")
+                    st.write(f"最後增量索引時間: {_fmt(rt.get('last_index_incremental_ts'))}")
+                    st.write(f"最後索引文檔數: {rt.get('last_index_doc_count') or '-'}")
+                    if rt.get('language_model') or rt.get('embedding_model'):
+                        st.write(f"模型: {rt.get('language_model') or '-'} | 嵌入: {rt.get('embedding_model') or '-'}")
+            # 安全警報快速視圖
+            with st.expander("🔐 安全警報 (最近)", expanded=False):
+                try:
+                    import requests as _r
+                    alerts_resp = _r.get(f"{API_URL}/api/dynamic/security-alerts", params={"limit": 10}, timeout=4)
+                    if alerts_resp.status_code == 200:
+                        data = alerts_resp.json()
+                        alerts = data.get('alerts', [])
+                        if alerts:
+                            for a in alerts:
+                                ts = a.get('ts') or a.get('time') or ''
+                                level = a.get('level','?')
+                                recent_10m = a.get('recent_10m')
+                                st.write(f"[{level}] ts={ts} 10m={recent_10m} reason={a.get('last_event_reason')}")
+                        else:
+                            st.caption("無最近警報")
+                    else:
+                        st.caption("無法取得警報")
+                except Exception as _e:
+                    st.caption(f"讀取警報失敗: {_e}")
+            # 安全事件趨勢
+            with st.expander("📈 安全事件趨勢", expanded=False):
+                try:
+                    import requests as _r
+                    metrics_resp = _r.get(f"{API_URL}/api/dynamic/security-metrics", params={"window_minutes": 180}, timeout=5)
+                    if metrics_resp.status_code == 200:
+                        mdata = metrics_resp.json()
+                        series = mdata.get('series', [])
+                        if series:
+                            import pandas as pd, datetime as dt
+                            df = pd.DataFrame(series)
+                            df['time'] = df['minute_ts'].apply(lambda t: dt.datetime.fromtimestamp(t))
+                            st.line_chart(df.set_index('time')['count'])
+                        st.caption(f"最近10分鐘事件: {mdata.get('recent_10m')} 等級: {mdata.get('level') or 'normal'} 窗口分鐘: {mdata.get('window_minutes')}")
+                    else:
+                        st.caption("無法取得安全指標")
+                except Exception as e:
+                    st.caption(f"趨勢讀取失敗: {e}")
         
         st.markdown("---")
         
@@ -554,6 +641,116 @@ def main():
                             folder_browser.clear_selection()
                             selected_folder_path = None
                             st.rerun()
+                # 在動態模式下，只要模型或folder變更就抓取 scope info
+                dyn_lang_model = st.session_state.get('dynamic_language_model')
+                dyn_embed_model = st.session_state.get('dynamic_embedding_model')
+                dyn_platform = st.session_state.get('dynamic_platform')
+                # 使用一個觸發條件: 若 session 中尚無 scope info 或者 選擇改變
+                scope_cached = st.session_state.get('dynamic_scope_info')
+                cache_key_components = [dyn_lang_model, dyn_embed_model, dyn_platform, selected_folder_path or '__root__']
+                new_cache_key = '|'.join(str(c) for c in cache_key_components)
+                if 'dynamic_scope_cache_key' not in st.session_state or st.session_state.dynamic_scope_cache_key != new_cache_key:
+                    if dyn_lang_model and dyn_embed_model:
+                        fetch_dynamic_scope_info(selected_language, dyn_lang_model, dyn_embed_model, dyn_platform, selected_folder_path)
+                        st.session_state.dynamic_scope_cache_key = new_cache_key
+                # 顯示 scope info
+                scope_info = st.session_state.get('dynamic_scope_info')
+                if scope_info:
+                    est = scope_info.get('estimated_file_count')
+                    level = scope_info.get('file_count_warning_level')
+                    folder_limited = scope_info.get('folder_limited')
+                    warning_msg = scope_info.get('file_count_warning')
+                    if est is not None:
+                        st.info(f"📦 估算文件數: {est} | 範圍 {'已限制' if folder_limited else '未限制'} | 等級: {level}")
+                    if warning_msg:
+                        if level == 'high':
+                            st.error(f"⚠️ {warning_msg}")
+                        elif level == 'medium':
+                            st.warning(f"💡 {warning_msg}")
+                        else:
+                            st.caption(warning_msg)
+                    # 額外估算統計資訊
+                    conf = scope_info.get('estimation_confidence')
+                    method = scope_info.get('estimation_method')
+                    sampled_dirs = scope_info.get('estimation_sampled_dirs')
+                    total_dirs = scope_info.get('estimation_total_dirs')
+                    mean_per_dir = scope_info.get('estimation_mean_per_dir')
+                    ci_width = scope_info.get('estimation_ci_width')
+                    if conf or method:
+                        # 使用列顯示精簡統計
+                        st.markdown("#### 🔍 估算統計")
+                        meta_cols = st.columns(3)
+                        with meta_cols[0]:
+                            st.metric(label="信心", value=conf or '-')
+                        with meta_cols[1]:
+                            st.metric(label="採樣目錄", value=f"{sampled_dirs or 0}/{total_dirs or 0}")
+                        with meta_cols[2]:
+                            st.metric(label="每目錄文件均值", value=mean_per_dir if mean_per_dir is not None else '-')
+                        # 額外細節
+                        details = []
+                        if method:
+                            details.append(f"方法: {method}")
+                        if ci_width is not None:
+                            details.append(f"CI寬度≈±{ci_width}")
+                        if details:
+                            st.caption(" | ".join(details))
+                        # 信心提示
+                        if conf == 'low' and not folder_limited:
+                            st.info("🔎 估算信心較低，若臨界可考慮限制範圍或重試以獲得更準確估算。")
+                        elif conf == 'medium':
+                            st.caption("📏 中等信心：臨界值附近操作請留意阻擋規則。")
+                        elif conf == 'high':
+                            st.caption("✅ 高信心估算。")
+                    # Debug: 估算精度統計（僅在開發/調試時顯示）
+                    debug_toggle = st.checkbox("顯示估算精度分析 (Debug)", value=False, key="show_estimation_debug")
+                    if debug_toggle:
+                        try:
+                            stats_resp = requests.get(f"{API_URL}/api/dynamic/estimation-stats", params={"limit": 150, "include_samples": False}, timeout=5)
+                            if stats_resp.status_code == 200:
+                                stats = stats_resp.json()
+                                st.markdown("#### 🧪 估算精度分析")
+                                colA, colB, colC = st.columns(3)
+                                with colA:
+                                    st.metric("樣本數", stats.get('total_samples'))
+                                with colB:
+                                    st.metric("MAE%", stats.get('mae_pct'))
+                                with colC:
+                                    st.metric("MAPE%", stats.get('mape_pct'))
+                                colD, colE, colF = st.columns(3)
+                                with colD:
+                                    st.metric("平均誤差%", stats.get('mean_signed_error_pct'))
+                                with colE:
+                                    st.metric("Over估比率", stats.get('overestimate_rate'))
+                                with colF:
+                                    st.metric("Under估比率", stats.get('underestimate_rate'))
+                                conf_stats = stats.get('confidence_stats', {}) or {}
+                                if conf_stats:
+                                    with st.expander("信心分層統計", expanded=False):
+                                        for c_level, c_data in conf_stats.items():
+                                            st.write(f"- {c_level}: count={c_data.get('count')} MAE%={c_data.get('mae_pct')} bias={c_data.get('bias_direction')}")
+                                st.caption("MAE/MAPE 基於最近 N 行估算審計資料，用於校準阻擋與信心閾值。")
+                                # 顯示安全事件
+                                sec_count = scope_info.get('security_event_count')
+                                if sec_count:
+                                    st.markdown("##### 🔐 路徑安全")
+                                    st.write(f"越界/解析異常事件數: {sec_count}")
+                                    if st.checkbox("顯示最近安全事件詳情", value=False, key="show_sec_events"):
+                                        try:
+                                            sec_resp = requests.get(f"{API_URL}/api/dynamic/security-events", params={"limit": 20}, timeout=5)
+                                            if sec_resp.status_code == 200:
+                                                sec_data = sec_resp.json().get('events', [])
+                                                for ev in sec_data:
+                                                    st.caption(f"{ev.get('ts')} original={ev.get('original')} reason={ev.get('reason')}")
+                                            else:
+                                                st.warning("無法取得安全事件資料")
+                                        except Exception as se:
+                                            st.warning(f"安全事件請求失敗: {se}")
+                            else:
+                                st.warning("無法取得估算統計資料")
+                        except Exception as e:
+                            st.warning(f"估算統計請求失敗: {e}")
+                if st.session_state.get('dynamic_block_recommended'):
+                    st.error(st.session_state.get('dynamic_block_reason') or "搜索範圍過大，請縮小範圍後再試。")
             
             # 固定設置，不再提供用戶選項
             include_sources = True  # 總是包含相關文件
@@ -650,7 +847,15 @@ def main():
         st.markdown("---")
         
         # 使用 st.chat_input 以獲得更好的聊天體驗
-        if question := st.chat_input("請輸入您的問題，例如：ITPortal是什麼？"):
+        input_disabled = False
+        if rag_mode_main == "Dynamic RAG" and st.session_state.get('dynamic_block_recommended'):
+            input_disabled = True
+            st.info("🚫 已阻擋提問：請縮小搜索範圍。")
+
+        if question := st.chat_input("請輸入您的問題，例如：ITPortal是什麼？" if not input_disabled else "範圍過大，請先縮小範圍"):
+            if input_disabled:
+                st.warning("搜尋範圍過大，問題未送出。")
+                st.stop()
             with st.spinner("🤖 AI助手正在思考..."):
                 try:
                     # 直接調用問答API
@@ -1053,17 +1258,93 @@ def main():
                         status_text = data.get('status', '')
                         progress_text = data.get('progress', '')
                         realtime_text = data.get('realtime', '')
+                        st.markdown("#### 狀態 Console")
+                        st.code(status_text, language="bash")
+                        st.markdown("#### 進度 Console")
+                        st.code(progress_text, language="bash")
+                        st.markdown("#### 實時監控 Console")
+                        st.code(realtime_text, language="bash")
                     else:
-                        status_text = progress_text = realtime_text = f"(監控API回應異常: {resp.status_code})"
+                        st.error(f"監控API回應異常: {resp.status_code}")
                 except Exception as e:
-                    status_text = progress_text = realtime_text = f"監控API錯誤: {e}"
+                    st.error(f"監控API錯誤: {e}")
 
-                st.markdown("#### 狀態 Console")
-                st.code(status_text, language="bash")
-                st.markdown("#### 進度 Console")
-                st.code(progress_text, language="bash")
-                st.markdown("#### 實時監控 Console")
-                st.code(realtime_text, language="bash")
+                # 依賴狀態
+                st.markdown("---")
+                st.subheader("📦 依賴核心版本健康")
+                if st.button("刷新依賴狀態", key="refresh_dep_status"):
+                    st.session_state['_dep_status_reload'] = True
+                need_dep = st.session_state.get('_dep_status_reload', True)
+                if need_dep:
+                    try:
+                        dep_resp = requests.get(f"{API_URL}/admin/dependencies/status", headers={"admin_token": admin_token}, timeout=8)
+                        if dep_resp.status_code == 200:
+                            dep_data = dep_resp.json()
+                            items = dep_data.get('items', [])
+                            mismatch_cnt = dep_data.get('mismatch_count')
+                            if mismatch_cnt:
+                                st.warning(f"發現 {mismatch_cnt} 個未對齊 (mismatch/missing)")
+                            for it in items:
+                                icon = '✅' if it.get('status')=='aligned' else ('⚠️' if it.get('status')=='mismatch' else '❌')
+                                st.write(f"{icon} {it.get('package')} py:{it.get('pyproject') or '-'} req:{it.get('requirements') or '-'} inst:{it.get('installed') or '-'}")
+                            st.caption("對齊策略：requirements.txt 為真實鎖定來源。")
+                            # 觸發 lock & export
+                            if st.button("執行 lock + export (Poetry)", key="run_lock_export"):
+                                with st.spinner("執行中..."):
+                                    try:
+                                        resp_run = requests.post(f"{API_URL}/admin/dependencies/lock-export", headers={"admin_token": admin_token}, timeout=600)
+                                        if resp_run.status_code == 200:
+                                            run_data = resp_run.json()
+                                            st.success(f"完成: {run_data.get('message')} 用時 {run_data.get('elapsed_seconds')}s")
+                                            diff_lines = run_data.get('changed_requirements') or []
+                                            if diff_lines:
+                                                with st.expander("requirements.txt 變更 (diff)", expanded=False):
+                                                    st.code('\n'.join(diff_lines), language='diff')
+                                            st.session_state['_dep_status_reload'] = True
+                                        else:
+                                            st.error(f"操作失敗: {resp_run.text}")
+                                    except Exception as e:
+                                        st.error(f"操作錯誤: {e}")
+                            # 依賴審計區塊
+                            st.markdown("### 🧾 依賴審計")
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                if st.button("執行審計紀錄", key="run_dep_audit"):
+                                    try:
+                                        audit_run = requests.post(f"{API_URL}/admin/dependencies/audit-run", headers={"admin_token": admin_token}, timeout=20)
+                                        if audit_run.status_code == 200:
+                                            st.success("審計已寫入")
+                                        else:
+                                            st.error("審計執行失敗")
+                                    except Exception as e:
+                                        st.error(f"審計錯誤: {e}")
+                            with col_b:
+                                audit_limit = st.number_input("顯示最近紀錄數", min_value=10, max_value=200, value=60, step=10, key="audit_limit")
+                            try:
+                                audit_log = requests.get(f"{API_URL}/admin/dependencies/audit-log", headers={"admin_token": admin_token}, params={"limit": audit_limit}, timeout=8)
+                                if audit_log.status_code == 200:
+                                    adata = audit_log.json()
+                                    entries = adata.get('entries', [])
+                                    if entries:
+                                        import pandas as pd, datetime as dt
+                                        rows = []
+                                        for e in entries:
+                                            ts = e.get('ts')
+                                            mc = e.get('mismatch_count')
+                                            rows.append({'time': dt.datetime.fromtimestamp(ts), 'mismatch': mc})
+                                        df = pd.DataFrame(rows)
+                                        st.line_chart(df.set_index('time')['mismatch'])
+                                        st.caption(f"最近 {len(entries)} 次審計，最後時間: {entries[-1].get('ts')}")
+                                    else:
+                                        st.caption("無審計紀錄")
+                                else:
+                                    st.caption("無法取得審計紀錄")
+                            except Exception as e:
+                                st.caption(f"讀取審計紀錄失敗: {e}")
+                        else:
+                            st.warning("無法取得依賴狀態 (需要管理員權限)")
+                    except Exception as e:
+                        st.warning(f"依賴狀態讀取失敗: {e}")
             else:
                 st.info("請輸入Token以查看管理功能。")
 

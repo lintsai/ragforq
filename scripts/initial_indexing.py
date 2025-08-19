@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from indexer.file_crawler import FileCrawler
 from indexer.document_indexer import DocumentIndexer
 from config.config import Q_DRIVE_PATH, VECTOR_DB_PATH, FILE_BATCH_SIZE, MAX_WORKERS
+from utils.state_manager import record_full_index, save_state, load_state
 
 # 設置日誌
 logging.basicConfig(
@@ -91,6 +92,14 @@ def main():
                 import traceback
                 logger.error(traceback.format_exc())
         logger.info("全部批次處理完成")
+        # 記錄索引完成狀態
+        try:
+            indexed_files = indexer.list_indexed_files()
+            doc_count = len(indexed_files) if indexed_files else 0
+            record_full_index(doc_count)
+            logger.info(f"已更新 state: last_index_full_ts，文件數={doc_count}")
+        except Exception as rec_e:
+            logger.warning(f"寫入索引狀態失敗: {rec_e}")
         
         # 列出已索引的文件
         logger.info("正在獲取已索引文件列表...")

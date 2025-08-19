@@ -25,16 +25,87 @@ from config.config import (
 
 logger = logging.getLogger(__name__)
 
+# 安全事件追蹤 (目錄越界等)
+SECURITY_EVENTS: list[dict] = []  # [{ts:int, original:str, resolved:str, reason:str}]
+LAST_SECURITY_ALERT_TS: Optional[int] = None  # 最近一次已寫入警報時間（避免重複刷寫）
+
+def _write_security_alert(message: str):
+    """將安全警報寫入獨立日誌檔案。"""
+    try:
+        from config.config import LOGS_DIR
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        path = os.path.join(LOGS_DIR, 'security_alerts.log')
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(message + '\n')
+    except Exception:
+        pass
+
+def record_security_event(original: str, resolved: str, reason: str):
+    """記錄潛在的路徑安全事件（例如越界嘗試）。"""
+    try:
+        from time import time as _now
+        now_ts = int(_now())
+        SECURITY_EVENTS.append({
+            'ts': int(_now()),
+            'original': original,
+            'resolved': resolved,
+            'reason': reason
+        })
+        # 保持最近 200 筆
+        if len(SECURITY_EVENTS) > 200:
+            del SECURITY_EVENTS[:-200]
+        # 事件速率檢測：最近 10 分鐘達到 critical/elevated 觸發一次警報
+        recent_10m = 0
+        for ev in reversed(SECURITY_EVENTS):
+            if now_ts - ev['ts'] > 600:
+                break
+            recent_10m += 1
+        # 臨界條件
+        level = None
+        if recent_10m >= 15:
+            level = 'critical'
+        elif recent_10m >= 8:
+            level = 'elevated'
+        global LAST_SECURITY_ALERT_TS
+        if level:
+            # 僅當距離上次 alert 超過 120 秒才寫入，以降低噪音
+            if (LAST_SECURITY_ALERT_TS is None) or (now_ts - LAST_SECURITY_ALERT_TS > 120):
+                _write_security_alert(f"ts={now_ts} level={level} recent_10m={recent_10m} last_event_reason={reason} original={original} resolved={resolved}")
+                LAST_SECURITY_ALERT_TS = now_ts
+    except Exception:
+        pass
+
 class SmartFileRetriever:
     """智能文件檢索器 - 根據查詢內容智能選擇相關文件"""
-    
+
     def __init__(self, base_path: str = Q_DRIVE_PATH, folder_path: Optional[str] = None):
+        """初始化文件檢索器"""
+        # 基本屬性
         self.base_path = Path(base_path).resolve()
-        self.folder_path = Path(self.base_path, folder_path).resolve() if folder_path else self.base_path
-        self.file_cache = {}  # 文件元數據緩存
+        # 安全化處理 folder_path，防止越界（目錄穿越）
+        if folder_path:
+            try:
+                candidate = Path(self.base_path, folder_path).resolve()
+                if not str(candidate).startswith(str(self.base_path)):
+                    logger.warning(f"[FolderScopeSecurity] 非法的資料夾路徑越界嘗試: {folder_path} -> {candidate}; 回退至根目錄")
+                    record_security_event(str(folder_path), str(candidate), 'out_of_base_root')
+                    self.folder_path = self.base_path
+                else:
+                    self.folder_path = candidate
+            except Exception as e:
+                logger.warning(f"[FolderScopeSecurity] 解析資料夾路徑失敗 '{folder_path}': {e}; 回退至根目錄")
+                record_security_event(str(folder_path), 'N/A', f'parse_error:{e}')
+                self.folder_path = self.base_path
+        else:
+            self.folder_path = self.base_path
+        self.file_cache = {}
         self.last_scan_time = 0
         self.cache_duration = 300  # 5分鐘緩存
+        # 文件數量估算與警告資訊
         self._file_count_warning = None
+        self._file_count_warning_level = None  # high / medium / low
+        self._estimated_file_count = None
+        self._estimation_meta = {}
     
     def retrieve_relevant_files(self, query: str, max_files: int = 10) -> List[str]:
         """
@@ -48,13 +119,19 @@ class SmartFileRetriever:
             return []
 
         file_count = len(working_file_cache)
-        
-        # 如果用戶指定了特定文件夾，我們假設他們希望在該範圍內進行全面搜索
-        # 因此，我們將處理該文件夾中的所有文件，而不是進行關鍵詞過濾。
-        # 文件數量警告已經在UI層面給出，用戶已知曉潛在的性能影響。
+
+        # 是否限制在子資料夾
         is_folder_limited = self.folder_path != self.base_path
-        
-        # --- 原有的邏輯，適用於未限制文件夾的全局搜索 ---
+
+        # 若限制範圍且文件數適中(<=1500) 直接全量處理，避免漏檔；否則仍使用關鍵詞篩選
+        if is_folder_limited:
+            if file_count <= 1500:
+                logger.info(f"[FolderScope] 限制範圍下找到 {file_count} 個文件，直接使用全部文件以確保召回率。")
+                return list(working_file_cache.keys())
+            else:
+                logger.info(f"[FolderScope] 限制範圍但文件過多 {file_count} 個，啟用關鍵詞篩選。")
+
+        # 全域或大量文件時策略
         if file_count <= 50:
             logger.info(f"找到 {file_count} 個文件，將處理全部文件。")
             return list(working_file_cache.keys())
@@ -71,44 +148,131 @@ class SmartFileRetriever:
         logger.info(f"在 {file_count} 個文件中找到 {len(relevant_files)} 個相關文件")
         return relevant_files
     
-    def _quick_estimate_file_count(self, scan_path: str, max_sample_dirs: int = 20) -> int:
-        """快速估算文件數量，避免完整掃描"""
+    def _quick_estimate_file_count(self, scan_path: str, max_sample_dirs: int = 25) -> Dict[str, Any]:
+        """雙階段快速估算文件數量，並提供估算信心資訊。
+
+        返回: {
+            'estimated_total': int,          # 估算總數
+            'sampled_dirs': int,             # 採樣目錄數
+            'total_dirs_seen': int,          # 走訪的目錄數 (含未採樣)
+            'stdev': float,
+            'mean_per_dir': float,
+            'ci_width': float,               # 近似 80% 區間寬度
+            'confidence': str,               # high/medium/low
+            'method': str                    # 'dual-phase' | 'fallback'
+        }
+        """
+        result = {
+            'estimated_total': 0,
+            'sampled_dirs': 0,
+            'total_dirs_seen': 0,
+            'stdev': 0.0,
+            'mean_per_dir': 0.0,
+            'ci_width': 0.0,
+            'confidence': 'low',
+            'method': 'dual-phase'
+        }
         try:
-            # 採樣估算法：只掃描部分目錄來估算總數
-            sample_count = 0
+            import statistics
+            sample_counts = []
+            depth_adjusted = []
             total_dirs = 0
-            sampled_dirs = 0
-            
-            # 第一層目錄採樣
+            sampled = 0
+            max_depth = 4
+
             for root, dirs, files in os.walk(scan_path):
-                # 只處理前幾層目錄
                 depth = root.replace(scan_path, '').count(os.sep)
-                if depth > 3:  # 限制深度
+                if depth > max_depth:
                     dirs[:] = []
                     continue
-                
                 total_dirs += 1
-                if sampled_dirs < max_sample_dirs:
-                    # 計算當前目錄的支持文件數量
+
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system','temp','tmp','$recycle.bin']]
+
+                if sampled < max_sample_dirs:
                     supported_files = sum(1 for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES)
-                    sample_count += supported_files
-                    sampled_dirs += 1
-                
-                # 跳過系統目錄
-                dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system', 'temp', 'tmp', '$recycle.bin']]
-            
-            # 根據採樣結果估算總數
-            if sampled_dirs > 0:
-                avg_files_per_dir = sample_count / sampled_dirs
-                estimated_total = int(avg_files_per_dir * total_dirs)
-                logger.info(f"快速估算：採樣 {sampled_dirs} 個目錄，平均每目錄 {avg_files_per_dir:.1f} 個文件，估算總數 {estimated_total}")
-                return estimated_total
-            
-            return 0
-            
+                    sample_counts.append(supported_files)
+                    if depth <= 1:
+                        depth_adjusted.append(supported_files * 1.15)
+                    elif depth == 2:
+                        depth_adjusted.append(supported_files * 1.0)
+                    else:
+                        depth_adjusted.append(supported_files * 0.85)
+                    sampled += 1
+
+            if sampled == 0 or total_dirs == 0:
+                return result
+
+            mean_raw = sum(sample_counts) / sampled
+            mean_adj = sum(depth_adjusted) / sampled
+            try:
+                stdev = statistics.pstdev(sample_counts)
+            except Exception:
+                stdev = 0.0
+            ci_width = 1.28 * stdev
+            estimated_total = int(mean_adj * total_dirs)
+
+            # 大變異保守修正
+            if stdev > mean_raw * 1.5 and estimated_total > mean_raw * total_dirs * 1.4:
+                estimated_total = int(mean_raw * total_dirs * 1.4)
+
+            # 第二階段：若估算接近阻擋臨界 (例如 7000-9000) 且信心低，進行限額補充掃描以調整
+            high_band_lower = 6500
+            high_band_upper = 9500
+            if high_band_lower <= estimated_total <= high_band_upper and sampled < total_dirs:
+                refine_dirs = 0
+                refine_limit = 10  # 最多再補 10 個目錄
+                for root, dirs, files in os.walk(scan_path):
+                    if refine_dirs >= refine_limit:
+                        break
+                    depth = root.replace(scan_path, '').count(os.sep)
+                    if depth > max_depth:
+                        dirs[:] = []
+                        continue
+                    # 跳過已在第一階段採樣過的 (粗略: 取樣數足夠後不再加)
+                    if refine_dirs + sampled >= max_sample_dirs + refine_limit:
+                        break
+                    supported_files = sum(1 for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES)
+                    sample_counts.append(supported_files)
+                    refine_dirs += 1
+                # 重新計算
+                sampled_total = len(sample_counts)
+                mean_raw = sum(sample_counts) / sampled_total
+                try:
+                    stdev = statistics.pstdev(sample_counts)
+                except Exception:
+                    stdev = 0.0
+                ci_width = 1.28 * stdev
+                estimated_total = int(mean_raw * total_dirs)  # 第二輪不用深度權重，以平均近似
+                result['method'] = 'dual-phase-refined'
+
+            # 信心評估：相對誤差 proxy = ci_width / (mean_raw + 1)
+            rel_ci_ratio = ci_width / (mean_raw + 1)
+            if rel_ci_ratio < 0.5 and sampled >= 10:
+                confidence = 'high'
+            elif rel_ci_ratio < 1.0 and sampled >= 5:
+                confidence = 'medium'
+            else:
+                confidence = 'low'
+
+            result.update({
+                'estimated_total': estimated_total,
+                'sampled_dirs': sampled,
+                'total_dirs_seen': total_dirs,
+                'stdev': round(stdev, 2),
+                'mean_per_dir': round(mean_raw, 2),
+                'ci_width': round(ci_width, 2),
+                'confidence': confidence
+            })
+
+            logger.info(
+                f"文件數估算: est={estimated_total} dirs={sampled}/{total_dirs} mean={mean_raw:.2f} σ={stdev:.2f} ci≈±{ci_width:.1f} conf={confidence} method={result['method']}"
+            )
+            return result
         except Exception as e:
             logger.error(f"快速估算文件數量失敗: {str(e)}")
-            return 0
+            result['method'] = 'error'
+            return result
 
     def _update_file_cache(self):
         """更新文件緩存 - 性能優化版本"""
@@ -119,38 +283,103 @@ class SmartFileRetriever:
         # 確定掃描路徑
         scan_path = str(self.folder_path)
         logger.info(f"更新文件緩存，掃描路徑: {scan_path}")
+        # 快速估算文件數量 (含信心與方法)
+        estimation = self._quick_estimate_file_count(scan_path)
+        estimated_count = estimation.get('estimated_total', 0)
+        self._estimated_file_count = estimated_count
+        self._estimation_meta = estimation  # 保存詳細元數據供 scope_info 使用
         
-        # 快速估算文件數量
-        estimated_count = self._quick_estimate_file_count(scan_path)
-        
-        # 根據估算結果決定掃描策略
-        if estimated_count > 10000:
-            logger.warning(f"估算文件數量過多 ({estimated_count} 個)，使用快速掃描模式")
-            self._file_count_warning = f"檢測到大量文件 (估算約 {estimated_count} 個)，建議縮小搜索範圍以提高檢索效率"
-            # 使用更激進的限制
+        # --- 自適應閾值校準 ---
+        # 讀取最近 N 條 estimation_audit.log 計算 MAE% / 偏差，動態調整分段閾值
+        high_cut = 12000
+        fast_cut = 8000
+        medium_cut = 5000
+        try:
+            from config.config import LOGS_DIR
+            audit_path = os.path.join(LOGS_DIR, 'estimation_audit.log')
+            if os.path.exists(audit_path):
+                with open(audit_path, 'r', encoding='utf-8') as f:
+                    recent = f.readlines()[-80:]  # 最近 80 條
+                errs = []
+                for line in recent:
+                    # err_pct=XX.X
+                    if 'err_pct=' in line:
+                        try:
+                            part = line.split('err_pct=')[1].split()[0]
+                            val = float(part)
+                            if abs(val) < 500:  # 過濾異常值
+                                errs.append(val)
+                        except Exception:
+                            continue
+                if len(errs) >= 8:
+                    import statistics
+                    mae = statistics.mean(abs(e) for e in errs)
+                    bias = statistics.mean(errs)
+                    # 若 MAE 極低 (<15%) 且偏差不超過 +-10%，放寬閾值 8-12% 以減少不必要的高風險標記
+                    if mae < 15 and abs(bias) < 10:
+                        medium_cut = int(medium_cut * 1.08)
+                        fast_cut = int(fast_cut * 1.1)
+                        high_cut = int(high_cut * 1.12)
+                    # 若 MAE 過高 (>40%) 或 偏差幅度大 (>30%)，收緊閾值 5-10% 以更保守
+                    elif mae > 40 or abs(bias) > 30:
+                        medium_cut = int(medium_cut * 0.93)
+                        fast_cut = int(fast_cut * 0.9)
+                        high_cut = int(high_cut * 0.88)
+                    logger.debug(f"[AdaptiveThreshold] mae={mae:.1f}% bias={bias:.1f}% -> cuts medium={medium_cut} fast={fast_cut} high={high_cut}")
+        except Exception:
+            pass
+
+        # 根據（可能調整後的）估算結果決定掃描策略
+        if estimated_count > high_cut:
+            logger.warning(f"估算文件數量極大 ({estimated_count} 個)，啟動最小掃描並標記為高風險 (cut={high_cut})")
+            self._file_count_warning = f"檢測到極大量文件 (估算約 {estimated_count} 個)"
+            self._file_count_warning_level = "high"
+            max_files = 1500
+            max_depth = 4
+        elif estimated_count > fast_cut:
+            logger.warning(f"估算文件數量過多 ({estimated_count} 個)，使用快速掃描模式 (cut={fast_cut})")
+            self._file_count_warning = f"檢測到大量文件 (估算約 {estimated_count} 個)"
+            self._file_count_warning_level = "high"
             max_files = 2000
             max_depth = 5
-        elif estimated_count > 5000:
-            logger.info(f"估算文件數量較多 ({estimated_count} 個)，使用中等掃描模式")
+        elif estimated_count > medium_cut:
+            logger.info(f"估算文件數量較多 ({estimated_count} 個)，使用中等掃描模式 (cut={medium_cut})")
+            self._file_count_warning = f"檢測到較多文件 (估算約 {estimated_count} 個)"
+            self._file_count_warning_level = "medium"
             max_files = 3000
             max_depth = 6
         else:
             logger.info(f"估算文件數量適中 ({estimated_count} 個)，使用完整掃描模式")
+            self._file_count_warning = None
+            self._file_count_warning_level = "low"
             max_files = 5000
             max_depth = 8
         
         self.file_cache = {}
         
         try:
-            
-            file_count = 0
-            
+            file_count = 0  # 保留計數器以便未來擴展
             # 使用更高效的掃描策略
             self._scan_directories_efficiently(scan_path, max_files, max_depth)
-            
+            actual_count = len(self.file_cache)
             self.last_scan_time = current_time
-            logger.info(f"文件緩存更新完成，共 {len(self.file_cache)} 個文件")
-            
+            # 是否達到上限（可能截斷）
+            truncated = actual_count >= max_files and estimated_count > actual_count
+            self._scan_truncated = truncated
+            self._actual_file_cache_size = actual_count
+            logger.info(f"文件緩存更新完成，共 {actual_count} 個文件 (估算 {estimated_count}，截斷={truncated})")
+            # 寫入估算審計日誌（附帶誤差百分比）
+            try:
+                from config.config import LOGS_DIR
+                os.makedirs(LOGS_DIR, exist_ok=True)
+                audit_path = os.path.join(LOGS_DIR, 'estimation_audit.log')
+                err_pct = None
+                if estimated_count and actual_count:
+                    err_pct = round((estimated_count - actual_count) / max(actual_count, 1) * 100, 2)
+                with open(audit_path, 'a', encoding='utf-8') as f:
+                    f.write(f"ts={int(current_time)} path={scan_path} est={estimated_count} actual={actual_count} err_pct={err_pct} conf={estimation.get('confidence')} sampled={estimation.get('sampled_dirs')} total_dirs={estimation.get('total_dirs_seen')} method={estimation.get('method')} truncated={truncated}\n")
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"更新文件緩存失敗: {str(e)}")
             # 如果掃描失敗，至少嘗試掃描根目錄的前50個文件
@@ -607,8 +836,9 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         
         # 初始化語言模型
         if self.platform == "ollama":
+            # 與傳統 English RAG 對齊溫度 (0.4) 以提升回答靈活度
             llm_params = {
-                "temperature": 0.1,
+                "temperature": 0.4,
                 "timeout": OLLAMA_REQUEST_TIMEOUT,
                 "request_timeout": OLLAMA_REQUEST_TIMEOUT
             }
@@ -620,6 +850,29 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                 "top_k": 50,
                 "repetition_penalty": 1.15  # 稍微增加重複懲罰
             }
+
+        # 通用生成參數微調：統一的「精簡、避免重複、控制長度」策略（移除模型特定判斷）
+        # 目的：
+        # 1. 避免個別模型特化造成維護負擔
+        # 2. 為所有模型提供一致的簡潔輸出傾向
+        # 3. 控制最大生成長度減少無關贅述與成本
+        try:
+            if self.platform == "ollama":
+                # 若未指定，給出保守上限與適度多樣性
+                llm_params.setdefault("num_predict", 800)  # 通用上限
+                llm_params.setdefault("top_p", 0.9)
+                llm_params.setdefault("repeat_penalty", 1.12)
+            else:  # Hugging Face / transformers 推理
+                llm_params.setdefault("max_new_tokens", 768)  # 適度限制
+                llm_params.setdefault("repetition_penalty", 1.18)
+                llm_params.setdefault("top_p", 0.9)
+                # 適中溫度：兼顧覆述與多樣性
+                if "temperature" in llm_params and llm_params["temperature"] < 0.15:
+                    llm_params["temperature"] = 0.3
+                else:
+                    llm_params.setdefault("temperature", 0.3)
+        except Exception:
+            pass
 
         try:
             if self.platform == "ollama":
@@ -726,6 +979,49 @@ class DynamicRAGEngineBase(RAGEngineInterface):
     def get_file_count_warning(self) -> str:
         """獲取文件數量警告"""
         return getattr(self.file_retriever, '_file_count_warning', None)
+
+    def get_scope_info(self) -> Dict[str, Any]:
+        """返回目前檢索範圍的統計與警告資訊"""
+        fr = self.file_retriever
+        meta = getattr(fr, '_estimation_meta', {}) if hasattr(fr, '_estimation_meta') else {}
+        from .dynamic_rag_base import SECURITY_EVENTS  # self import safe for runtime
+        sec_count = len(SECURITY_EVENTS)
+        last_sec = SECURITY_EVENTS[-1] if sec_count else None
+        # 安全事件速率監控 (最近10分鐘)
+        recent_10m = 0
+        rate_flag = None
+        now_ts = int(time.time())
+        try:
+            for ev in reversed(SECURITY_EVENTS):
+                if now_ts - ev['ts'] > 600:
+                    break
+                recent_10m += 1
+            if recent_10m >= 15:
+                rate_flag = 'critical'
+            elif recent_10m >= 8:
+                rate_flag = 'elevated'
+        except Exception:
+            pass
+        return {
+            "folder_limited": fr.folder_path != fr.base_path,
+            "estimated_file_count": fr._estimated_file_count,
+            "file_count_warning": fr._file_count_warning,
+            "file_count_warning_level": fr._file_count_warning_level,
+            "effective_folder": str(fr.folder_path),
+            "base_path": str(fr.base_path),
+            "estimation_confidence": meta.get('confidence'),
+            "estimation_method": meta.get('method'),
+            "estimation_sampled_dirs": meta.get('sampled_dirs'),
+            "estimation_total_dirs": meta.get('total_dirs_seen'),
+            "estimation_mean_per_dir": meta.get('mean_per_dir'),
+            "estimation_ci_width": meta.get('ci_width'),
+            "actual_cached_files": getattr(fr, '_actual_file_cache_size', None),
+            "scan_truncated": getattr(fr, '_scan_truncated', None),
+            "security_event_count": sec_count,
+            "last_security_event": last_sec,
+            "security_recent_10m": recent_10m,
+            "security_rate_flag": rate_flag
+        }
     
     def answer_question(self, question: str) -> str:
         """回答問題 - 動態RAG流程（優化版本）"""
@@ -762,6 +1058,15 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             
             # 5. 使用更智能的文檔選擇策略
             top_docs = self._select_best_documents(similarities, question)
+            # 5.1 進行語義冗餘裁剪：移除高度相似的文檔以壓縮上下文（避免多份近似段落）
+            try:
+                if top_docs and len(top_docs) > 2:
+                    pruned = self._prune_redundant_documents(top_docs)
+                    if pruned and len(pruned) < len(top_docs):
+                        logger.info(f"Semantic redundancy pruning: {len(top_docs)} -> {len(pruned)} docs")
+                        top_docs = pruned
+            except Exception as _prune_e:
+                logger.debug(f"Pruning skipped due to error: {_prune_e}")
             
             if not top_docs:
                 return self._generate_general_knowledge_answer(question)
@@ -775,6 +1080,77 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         except Exception as e:
             logger.error(f"動態RAG處理失敗: {str(e)}")
             return self._get_error_message()
+
+    def _prune_redundant_documents(self, documents: List[Document], similarity_threshold: Optional[float] = None) -> List[Document]:
+        """基於向量相似度去除語義高度重複的文檔（自適應）。
+
+        自適應策略：
+        1. 嵌入所有候選文本前 512 字。
+        2. 若未指定 similarity_threshold，計算全部向量兩兩餘弦相似度分佈（上三角）。
+           - 取得均值 μ 與標準差 σ
+           - 建議閾值 = clamp( μ + 0.35 * σ , 0.82, 0.92 )
+           - 用於兼顧集中/分散語料：聚集性強 -> 閾值稍高減少刪除過多；分散 -> 閾值降低提升裁剪。
+        3. 迭代保序過濾：與已保留集合最高相似度 >= 閾值 -> 視為冗餘跳過。
+        4. 保留至少 2 個文檔，避免過度裁剪。
+        Args:
+            documents: 初步選擇的文檔列表。
+            similarity_threshold: 若提供，使用固定值；否則自適應。
+        """
+        if len(documents) <= 2:  # 不裁剪極少量
+            return documents
+        try:
+            import numpy as _np
+            texts = [d.page_content[:512] for d in documents]
+            vectors = self.vectorizer.embeddings.embed_documents(texts)
+            vectors_np = [_np.array(v) for v in vectors]
+            # 自適應閾值計算
+            if similarity_threshold is None:
+                sims_all = []
+                for i in range(len(vectors_np)):
+                    vi = vectors_np[i]
+                    n1 = _np.linalg.norm(vi) or 1.0
+                    for j in range(i+1, len(vectors_np)):
+                        vj = vectors_np[j]
+                        denom = (n1 * (_np.linalg.norm(vj) or 1.0)) or 1.0
+                        sims_all.append(float(_np.dot(vi, vj) / denom))
+                if sims_all:
+                    mu = float(_np.mean(sims_all))
+                    sigma = float(_np.std(sims_all))
+                    adaptive = mu + 0.35 * sigma
+                    similarity_threshold = min(0.92, max(0.82, adaptive))
+                else:
+                    similarity_threshold = 0.9
+                try:
+                    logger.debug(f"[AdaptivePrune] sims_count={len(sims_all)} mu={mu:.3f} σ={sigma:.3f} threshold={similarity_threshold:.3f}")
+                except Exception:
+                    pass
+            kept_indices: List[int] = []
+            kept_vecs: List[_np.ndarray] = []
+            for idx, v in enumerate(vectors_np):
+                if not kept_vecs:
+                    kept_indices.append(idx)
+                    kept_vecs.append(v)
+                    continue
+                # 計算與已保留最大相似度
+                n_v = _np.linalg.norm(v) or 1.0
+                max_sim = -1.0
+                for kv in kept_vecs:
+                    denom = (n_v * (_np.linalg.norm(kv) or 1.0)) or 1.0
+                    sim = float(_np.dot(v, kv) / denom)
+                    if sim > max_sim:
+                        max_sim = sim
+                        if max_sim >= (similarity_threshold or 0.9):
+                            break
+                if max_sim < (similarity_threshold or 0.9):
+                    kept_indices.append(idx)
+                    kept_vecs.append(v)
+            # 保證至少 2 個
+            if len(kept_indices) < 2 and len(documents) >= 2:
+                kept_indices = [0, 1]
+            return [documents[i] for i in kept_indices]
+        except Exception as _e:
+            logger.debug(f"Adaptive pruning error: {_e}")
+            return documents
     
     def _select_best_documents(self, similarities: List[Tuple[Document, float]], question: str) -> List[Document]:
         """
@@ -896,6 +1272,13 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                 return f"根據文檔內容，關於「{question}」的信息如下：\n\n{context[:500]}...\n\n注意：Dynamic RAG 語言模型暫時禁用，這是基於檢索內容的簡化回答。"
             
             prompt = self.ANSWER_PROMPT_TEMPLATE.format(context=context, question=question)
+            # 語言精簡指令改為由子類提供（避免共用耦合）
+            try:
+                prefix = self.get_concise_prefix()
+                if prefix:
+                    prompt = prefix + prompt
+            except Exception:
+                pass
             
             response = self.llm.invoke(prompt)
             result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
@@ -904,8 +1287,9 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             if not result or len(result.strip()) < 5:
                 return self._get_general_fallback(question)
             
-            # 嘗試確保輸出符合目標語言
-            return self._ensure_language(result)
+            # 清理與壓縮回答，移除模型產生的雜訊/重複/校正段落
+            cleaned = self._clean_answer_text(result)
+            return self._ensure_language(cleaned)
             
         except Exception as e:
             logger.error(f"生成回答過程中發生錯誤: {str(e)}")
@@ -934,6 +1318,15 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         """獲取通用回退回答（子類應該重寫此方法）"""
         # 默認實現，子類應該重寫此方法
         return f"根據一般IT知識，關於「{query}」的相關信息可能需要查閱更多QSI內部文檔。"
+
+    # ---- 新增：由子類覆寫的精簡回答前綴鉤子 ----
+    def get_concise_prefix(self) -> str:
+        """返回語言/場景專屬的精簡指令前綴。
+
+        子類可覆寫以提供：限制行數、避免重複/自我修正/贅語 等策略。
+        默認返回空字串代表不添加額外前綴。
+        """
+        return ""
     
     def generate_relevance_reason(self, question: str, doc_content: str) -> str:
         """生成相關性理由"""
@@ -1043,7 +1436,7 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                 try:
                     translate_prompt = f"{to_lang_prompt}\n\n———\n{text}\n———\n只輸出翻譯結果。"
                     resp = self.llm.invoke(translate_prompt)
-                    return resp.content.strip() if hasattr(response, 'content') else str(response).strip()
+                    return resp.content.strip() if hasattr(resp, 'content') else str(resp).strip()
                 except Exception:
                     return text
 
@@ -1067,5 +1460,53 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             return text
         except Exception:
             return text
+
+    def _clean_answer_text(self, text: str) -> str:
+        """通用回答清理：移除異常符號、重複修正段、破碎字元與冗餘尾註（模型無關）。"""
+        import re
+        original_len = len(text)
+        # 移除奇怪的分隔/零寬/控制字符
+        text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', text)
+        text = ''.join(ch for ch in text if (ch.isprintable() or ch in '\n\r\t'))
+        # 合併被空格拆開的英文字母（K P I -> KPI）
+        text = re.sub(r'\b([A-Za-z])\s+([A-Za-z])\s+([A-Za-z])\b', lambda m: ''.join(m.groups()), text)
+        text = re.sub(r'\b([A-Za-z])\s+([A-Za-z])\b', lambda m: ''.join(m.groups()), text)
+        # 移除多次「再次修正」「最終版本」等重複說明段落，只保留第一次
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        filtered = []
+        seen_tags = set()
+        noise_markers = ['再次修正', '最終版本', '再一次修正', '錯誤版本', '已修正', '（最終版本）']
+        disclaimer_markers = [
+            '以上回答', '僅供參考', 'Note:', 'The above answer', 'Disclaimer', '免責', '注意：以上回答']
+        for ln in lines:
+            if any(tag in ln for tag in noise_markers):
+                key = ''.join(ch for ch in ln if ch.isalnum())[:30]
+                if key in seen_tags:
+                    continue
+                seen_tags.add(key)
+            # 合併多次免責/說明性尾段，只保留第一個
+            if any(dm.lower() in ln.lower() for dm in disclaimer_markers):
+                key = 'disc'
+                if key in seen_tags:
+                    continue
+                seen_tags.add(key)
+            filtered.append(ln)
+        text = '\n'.join(filtered)
+        # 去除連續重複段落
+        paragraphs = [p.strip() for p in re.split(r'\n{2,}', text) if p.strip()]
+        dedup = []
+        prev_hash = None
+        for p in paragraphs:
+            h = hash(p[:120])
+            if h == prev_hash:
+                continue
+            prev_hash = h
+            dedup.append(p)
+        text = '\n\n'.join(dedup)
+        # 若清理後過長，截斷於 1200 字符並標註
+        if len(text) > 1200:
+            text = text[:1200].rstrip() + '...'
+        logger.debug(f"Answer cleaned from {original_len} -> {len(text)} chars")
+        return text
     
     
