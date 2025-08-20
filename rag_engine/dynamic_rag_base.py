@@ -109,7 +109,7 @@ class SmartFileRetriever:
     
     def retrieve_relevant_files(self, query: str, max_files: int = 10) -> List[str]:
         """
-        根據查詢檢索相關文件
+        根據查詢檢索相關文件 - 強化搜索範圍限制
         """
         self._update_file_cache()
         working_file_cache = self.file_cache
@@ -120,19 +120,40 @@ class SmartFileRetriever:
 
         file_count = len(working_file_cache)
 
-        # 是否限制在子資料夾
+        # 強化文件夾限制檢查
         is_folder_limited = self.folder_path != self.base_path
-
-        # 若限制範圍且文件數適中(<=1500) 直接全量處理，避免漏檔；否則仍使用關鍵詞篩選
         if is_folder_limited:
-            if file_count <= 1500:
-                logger.info(f"[FolderScope] 限制範圍下找到 {file_count} 個文件，直接使用全部文件以確保召回率。")
+            logger.info(f"🔒 搜索範圍已限制在: {self.folder_path}")
+            # 驗證所有緩存文件都在限制範圍內
+            filtered_cache = {}
+            folder_str = str(self.folder_path)
+            for file_path, metadata in working_file_cache.items():
+                if str(Path(file_path).resolve()).startswith(folder_str):
+                    filtered_cache[file_path] = metadata
+                else:
+                    logger.debug(f"排除範圍外文件: {file_path}")
+            
+            working_file_cache = filtered_cache
+            file_count = len(working_file_cache)
+            logger.info(f"🔒 範圍限制後找到 {file_count} 個文件")
+
+        # 檢查是否需要提示用戶限制範圍
+        warning_threshold = 15000  # 1.5萬檔案以上建議限制範圍
+        if not is_folder_limited and file_count > warning_threshold:
+            logger.warning(f"⚠️  檢測到大量文件 ({file_count} 個)，強烈建議選擇特定資料夾限制搜索範圍以提高精度")
+            self._file_count_warning = f"檢測到大量文件 ({file_count} 個)，強烈建議選擇特定資料夾限制搜索範圍以提高搜索精度和速度。"
+            self._file_count_warning_level = "critical"
+
+        # 若限制範圍且文件數適中(<=3000) 直接全量處理，避免漏檔；否則仍使用關鍵詞篩選
+        if is_folder_limited:
+            if file_count <= 3000:  # 提高閾值
+                logger.info(f"🔒 限制範圍下找到 {file_count} 個文件，直接使用全部文件以確保召回率。")
                 return list(working_file_cache.keys())
             else:
-                logger.info(f"[FolderScope] 限制範圍但文件過多 {file_count} 個，啟用關鍵詞篩選。")
+                logger.info(f"🔒 限制範圍但文件仍較多 {file_count} 個，啟用智能篩選。")
 
         # 全域或大量文件時策略
-        if file_count <= 50:
+        if file_count <= 100:  # 提高小檔案數的閾值
             logger.info(f"找到 {file_count} 個文件，將處理全部文件。")
             return list(working_file_cache.keys())
         
@@ -148,8 +169,8 @@ class SmartFileRetriever:
         logger.info(f"在 {file_count} 個文件中找到 {len(relevant_files)} 個相關文件")
         return relevant_files
     
-    def _quick_estimate_file_count(self, scan_path: str, max_sample_dirs: int = 25) -> Dict[str, Any]:
-        """雙階段快速估算文件數量，並提供估算信心資訊。
+    def _quick_estimate_file_count(self, scan_path: str, max_sample_dirs: int = 50) -> Dict[str, Any]:
+        """增強版雙階段快速估算文件數量，提高深度掃描準確性。
 
         返回: {
             'estimated_total': int,          # 估算總數
@@ -159,7 +180,7 @@ class SmartFileRetriever:
             'mean_per_dir': float,
             'ci_width': float,               # 近似 80% 區間寬度
             'confidence': str,               # high/medium/low
-            'method': str                    # 'dual-phase' | 'fallback'
+            'method': str                    # 'enhanced-dual-phase' | 'fallback'
         }
         """
         result = {
@@ -170,7 +191,7 @@ class SmartFileRetriever:
             'mean_per_dir': 0.0,
             'ci_width': 0.0,
             'confidence': 'low',
-            'method': 'dual-phase'
+            'method': 'enhanced-dual-phase'
         }
         try:
             import statistics
@@ -178,8 +199,10 @@ class SmartFileRetriever:
             depth_adjusted = []
             total_dirs = 0
             sampled = 0
-            max_depth = 4
+            max_depth = 8  # 增加掃描深度從4到8
+            deep_dirs_sampled = 0  # 深層目錄採樣計數
 
+            # 第一階段：廣度優先掃描
             for root, dirs, files in os.walk(scan_path):
                 depth = root.replace(scan_path, '').count(os.sep)
                 if depth > max_depth:
@@ -187,18 +210,39 @@ class SmartFileRetriever:
                     continue
                 total_dirs += 1
 
-                dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system','temp','tmp','$recycle.bin']]
+                # 過濾系統目錄
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d.lower() not in ['system','temp','tmp','$recycle.bin','windows.old','recovery']]
 
-                if sampled < max_sample_dirs:
+                # 根據深度調整採樣策略
+                should_sample = False
+                if depth <= 2:
+                    # 淺層目錄：高採樣率
+                    should_sample = sampled < max_sample_dirs * 0.6
+                elif depth <= 5:
+                    # 中層目錄：中等採樣率
+                    should_sample = sampled < max_sample_dirs * 0.8 and total_dirs % 2 == 0
+                else:
+                    # 深層目錄：確保有足夠深層採樣
+                    should_sample = (deep_dirs_sampled < max_sample_dirs * 0.3 and 
+                                   total_dirs % 3 == 0 and sampled < max_sample_dirs)
+
+                if should_sample:
                     supported_files = sum(1 for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES)
                     sample_counts.append(supported_files)
+                    
+                    # 根據深度調整權重
                     if depth <= 1:
-                        depth_adjusted.append(supported_files * 1.15)
-                    elif depth == 2:
-                        depth_adjusted.append(supported_files * 1.0)
+                        depth_adjusted.append(supported_files * 1.2)  # 根目錄權重稍高
+                    elif depth <= 3:
+                        depth_adjusted.append(supported_files * 1.0)  # 標準權重
+                    elif depth <= 6:
+                        depth_adjusted.append(supported_files * 0.95)  # 稍低權重
                     else:
-                        depth_adjusted.append(supported_files * 0.85)
+                        depth_adjusted.append(supported_files * 0.9)   # 深層權重
+                    
                     sampled += 1
+                    if depth > 5:
+                        deep_dirs_sampled += 1
 
             if sampled == 0 or total_dirs == 0:
                 return result
@@ -210,47 +254,61 @@ class SmartFileRetriever:
             except Exception:
                 stdev = 0.0
             ci_width = 1.28 * stdev
+
+            # 基於深度分佈的估算修正
             estimated_total = int(mean_adj * total_dirs)
+            
+            # 如果深層目錄採樣不足，應用保守修正係數
+            if deep_dirs_sampled < max_sample_dirs * 0.1 and total_dirs > 100:
+                estimated_total = int(estimated_total * 1.15)  # 增加15%保守估計
+                result['method'] = 'enhanced-dual-phase-corrected'
 
             # 大變異保守修正
             if stdev > mean_raw * 1.5 and estimated_total > mean_raw * total_dirs * 1.4:
-                estimated_total = int(mean_raw * total_dirs * 1.4)
+                estimated_total = int(mean_raw * total_dirs * 1.3)
 
-            # 第二階段：若估算接近阻擋臨界 (例如 7000-9000) 且信心低，進行限額補充掃描以調整
-            high_band_lower = 6500
-            high_band_upper = 9500
+            # 第二階段：針對估算接近臨界值時的補充掃描
+            high_band_lower = 8000   # 降低下限
+            high_band_upper = 15000  # 提高上限
             if high_band_lower <= estimated_total <= high_band_upper and sampled < total_dirs:
+                logger.info(f"估算值 {estimated_total} 接近臨界值，啟動補充深度掃描")
                 refine_dirs = 0
-                refine_limit = 10  # 最多再補 10 個目錄
+                refine_limit = 20  # 增加補充掃描數量
+                additional_samples = []
+                
+                # 重新走訪，重點採樣之前漏掉的深層目錄
                 for root, dirs, files in os.walk(scan_path):
                     if refine_dirs >= refine_limit:
                         break
                     depth = root.replace(scan_path, '').count(os.sep)
-                    if depth > max_depth:
+                    if depth > max_depth or depth < 3:  # 重點掃描中深層
                         dirs[:] = []
                         continue
-                    # 跳過已在第一階段採樣過的 (粗略: 取樣數足夠後不再加)
-                    if refine_dirs + sampled >= max_sample_dirs + refine_limit:
-                        break
-                    supported_files = sum(1 for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES)
-                    sample_counts.append(supported_files)
-                    refine_dirs += 1
-                # 重新計算
-                sampled_total = len(sample_counts)
-                mean_raw = sum(sample_counts) / sampled_total
-                try:
-                    stdev = statistics.pstdev(sample_counts)
-                except Exception:
-                    stdev = 0.0
-                ci_width = 1.28 * stdev
-                estimated_total = int(mean_raw * total_dirs)  # 第二輪不用深度權重，以平均近似
-                result['method'] = 'dual-phase-refined'
+                    
+                    # 只採樣之前沒有採樣過的區域 (簡化判斷)
+                    if refine_dirs < refine_limit:
+                        supported_files = sum(1 for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES)
+                        additional_samples.append(supported_files)
+                        refine_dirs += 1
+
+                if additional_samples:
+                    # 合併樣本重新計算
+                    all_samples = sample_counts + additional_samples
+                    sampled_total = len(all_samples)
+                    mean_raw = sum(all_samples) / sampled_total
+                    try:
+                        stdev = statistics.pstdev(all_samples)
+                    except Exception:
+                        stdev = 0.0
+                    ci_width = 1.28 * stdev
+                    estimated_total = int(mean_raw * total_dirs)
+                    result['method'] = 'enhanced-dual-phase-refined'
 
             # 信心評估：相對誤差 proxy = ci_width / (mean_raw + 1)
             rel_ci_ratio = ci_width / (mean_raw + 1)
-            if rel_ci_ratio < 0.5 and sampled >= 10:
+            if rel_ci_ratio < 0.4 and sampled >= 20 and deep_dirs_sampled >= 5:
                 confidence = 'high'
-            elif rel_ci_ratio < 1.0 and sampled >= 5:
+            elif rel_ci_ratio < 0.8 and sampled >= 10:
                 confidence = 'medium'
             else:
                 confidence = 'low'
@@ -262,15 +320,16 @@ class SmartFileRetriever:
                 'stdev': round(stdev, 2),
                 'mean_per_dir': round(mean_raw, 2),
                 'ci_width': round(ci_width, 2),
-                'confidence': confidence
+                'confidence': confidence,
+                'deep_dirs_sampled': deep_dirs_sampled
             })
 
             logger.info(
-                f"文件數估算: est={estimated_total} dirs={sampled}/{total_dirs} mean={mean_raw:.2f} σ={stdev:.2f} ci≈±{ci_width:.1f} conf={confidence} method={result['method']}"
+                f"文件數估算(增強版): est={estimated_total} dirs={sampled}/{total_dirs} deep={deep_dirs_sampled} mean={mean_raw:.2f} σ={stdev:.2f} ci≈±{ci_width:.1f} conf={confidence} method={result['method']}"
             )
             return result
         except Exception as e:
-            logger.error(f"快速估算文件數量失敗: {str(e)}")
+            logger.error(f"增強版快速估算文件數量失敗: {str(e)}")
             result['method'] = 'error'
             return result
 
@@ -291,9 +350,10 @@ class SmartFileRetriever:
         
         # --- 自適應閾值校準 ---
         # 讀取最近 N 條 estimation_audit.log 計算 MAE% / 偏差，動態調整分段閾值
-        high_cut = 12000
-        fast_cut = 8000
-        medium_cut = 5000
+        high_cut = 60000   # 提高到6萬，對應用戶實際的檔案數量
+        fast_cut = 40000   # 4萬以上使用快速掃描
+        medium_cut = 20000 # 2萬以上使用中等掃描
+        low_cut = 10000    # 1萬以上給出提示
         try:
             from config.config import LOGS_DIR
             audit_path = os.path.join(LOGS_DIR, 'estimation_audit.log')
@@ -331,28 +391,34 @@ class SmartFileRetriever:
 
         # 根據（可能調整後的）估算結果決定掃描策略
         if estimated_count > high_cut:
-            logger.warning(f"估算文件數量極大 ({estimated_count} 個)，啟動最小掃描並標記為高風險 (cut={high_cut})")
-            self._file_count_warning = f"檢測到極大量文件 (估算約 {estimated_count} 個)"
-            self._file_count_warning_level = "high"
-            max_files = 1500
+            logger.warning(f"檢測到極大量文件 (估算約 {estimated_count} 個)，建議縮小搜索範圍以提高性能")
+            self._file_count_warning = f"檢測到極大量文件 (估算約 {estimated_count} 個)，建議縮小搜索範圍以獲得更好的搜索效果。"
+            self._file_count_warning_level = "critical"
+            max_files = 2000
             max_depth = 4
         elif estimated_count > fast_cut:
-            logger.warning(f"估算文件數量過多 ({estimated_count} 個)，使用快速掃描模式 (cut={fast_cut})")
-            self._file_count_warning = f"檢測到大量文件 (估算約 {estimated_count} 個)"
+            logger.warning(f"檢測到大量文件 (估算約 {estimated_count} 個)，使用快速掃描模式")
+            self._file_count_warning = f"檢測到大量文件 (估算約 {estimated_count} 個)，建議選擇特定資料夾範圍以提高搜索精度。"
             self._file_count_warning_level = "high"
-            max_files = 2000
+            max_files = 3000
             max_depth = 5
         elif estimated_count > medium_cut:
-            logger.info(f"估算文件數量較多 ({estimated_count} 個)，使用中等掃描模式 (cut={medium_cut})")
-            self._file_count_warning = f"檢測到較多文件 (估算約 {estimated_count} 個)"
+            logger.info(f"檢測到較多文件 (估算約 {estimated_count} 個)，使用中等掃描模式")
+            self._file_count_warning = f"檢測到較多文件 (估算約 {estimated_count} 個)，若搜索結果不理想可考慮限制搜索範圍。"
             self._file_count_warning_level = "medium"
-            max_files = 3000
-            max_depth = 6
-        else:
-            logger.info(f"估算文件數量適中 ({estimated_count} 個)，使用完整掃描模式")
-            self._file_count_warning = None
-            self._file_count_warning_level = "low"
             max_files = 5000
+            max_depth = 6
+        elif estimated_count > low_cut:
+            logger.info(f"檢測到文件數量較多 (估算約 {estimated_count} 個)，建議考慮限制搜索範圍")
+            self._file_count_warning = f"檢測到文件數量較多 (估算約 {estimated_count} 個)，可考慮限制搜索範圍以獲得更精確的結果。"
+            self._file_count_warning_level = "low"
+            max_files = 8000
+            max_depth = 7
+        else:
+            logger.info(f"文件數量適中 ({estimated_count} 個)，使用完整掃描模式")
+            self._file_count_warning = None
+            self._file_count_warning_level = "none"
+            max_files = 10000
             max_depth = 8
         
         self.file_cache = {}
@@ -906,21 +972,24 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}，語言: {lang_info}，引擎: {self.__class__.__name__}")
 
     def rewrite_query(self, original_query: str) -> str:
-        """查詢重寫 - 參照傳統RAG的重試機制"""
+        """查詢重寫 - 參照傳統RAG的重試機制和策略"""
         try:
             if len(original_query.strip()) <= 3:
                 return original_query
             
-            # 參照傳統RAG的重試機制
-            from config.config import OLLAMA_MAX_RETRIES, OLLAMA_RETRY_DELAY
+            # 參照傳統RAG的重試機制和配置
+            from config.config import (
+                OLLAMA_MAX_RETRIES, OLLAMA_RETRY_DELAY, 
+                OLLAMA_QUERY_OPTIMIZATION_TIMEOUT
+            )
             import time
+            import concurrent.futures
             
-            for attempt in range(OLLAMA_MAX_RETRIES if hasattr(__import__('config.config'), 'OLLAMA_MAX_RETRIES') else 3):
+            for attempt in range(OLLAMA_MAX_RETRIES):
                 try:
+                    # 使用與傳統RAG相同的優化策略和模板格式
                     prompt = self.REWRITE_PROMPT_TEMPLATE.format(original_query=original_query)
                     
-                    # 使用超時控制
-                    import concurrent.futures
                     def _invoke_rewrite():
                         response = self.llm.invoke(prompt)
                         return response.content.strip() if hasattr(response, 'content') else str(response).strip()
@@ -928,43 +997,60 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(_invoke_rewrite)
                         try:
-                            rewritten_query = future.result(timeout=30)  # 30秒超時
+                            # 使用配置文件中的超時時間
+                            rewritten_query = future.result(timeout=OLLAMA_QUERY_OPTIMIZATION_TIMEOUT)
                             
-                            # 質量檢查
-                            if not rewritten_query or len(rewritten_query) < 2:
-                                if attempt < 2:
+                            # 增強的質量檢查，參照傳統RAG
+                            if not rewritten_query or len(rewritten_query.strip()) < 2:
+                                if attempt < OLLAMA_MAX_RETRIES - 1:
+                                    logger.warning(f"查詢重寫結果過短，第 {attempt + 1} 次重試...")
+                                    time.sleep(OLLAMA_RETRY_DELAY)
                                     continue
                                 return original_query
                             
-                            # 檢查是否過多標點符號
+                            # 檢查是否包含原查詢的關鍵概念
+                            orig_words = set(original_query.lower().split())
+                            rewrite_words = set(rewritten_query.lower().split())
+                            if len(orig_words & rewrite_words) == 0 and len(orig_words) > 1:
+                                logger.warning(f"重寫查詢與原查詢關聯度低，嘗試 {attempt + 1} 次重試...")
+                                if attempt < OLLAMA_MAX_RETRIES - 1:
+                                    time.sleep(OLLAMA_RETRY_DELAY) 
+                                    continue
+                                return original_query
+                            
+                            # 檢查標點符號過多的問題
                             punctuation_count = sum(1 for char in rewritten_query if char in '，,。.！!？?；;：:')
                             if punctuation_count > len(rewritten_query) * 0.3:
-                                if attempt < 2:
+                                if attempt < OLLAMA_MAX_RETRIES - 1:
+                                    logger.warning(f"重寫查詢標點過多，第 {attempt + 1} 次重試...")
+                                    time.sleep(OLLAMA_RETRY_DELAY)
                                     continue
                                 return original_query
                             
-                            # 檢查長度是否合理
+                            # 檢查長度是否合理 (不超過原查詢的3倍)
                             if len(rewritten_query) > len(original_query) * 3:
-                                if attempt < 2:
+                                if attempt < OLLAMA_MAX_RETRIES - 1:
+                                    logger.warning(f"重寫查詢過長，第 {attempt + 1} 次重試...")
+                                    time.sleep(OLLAMA_RETRY_DELAY)
                                     continue
                                 return original_query
 
-                            logger.info(f"優化後查詢: {rewritten_query}")
+                            logger.info(f"🔍 優化後查詢: {rewritten_query}")
                             return rewritten_query
                             
                         except concurrent.futures.TimeoutError:
-                            if attempt < 2:
+                            if attempt < OLLAMA_MAX_RETRIES - 1:
                                 logger.warning(f"查詢重寫超時，第 {attempt + 1} 次重試...")
-                                time.sleep(1)
+                                time.sleep(OLLAMA_RETRY_DELAY)
                                 continue
                             else:
                                 logger.error("查詢重寫多次超時，使用原始查詢")
                                 return original_query
                 
                 except Exception as e:
-                    if attempt < 2:
+                    if attempt < OLLAMA_MAX_RETRIES - 1:
                         logger.warning(f"查詢重寫出錯，第 {attempt + 1} 次重試: {str(e)}")
-                        time.sleep(1)
+                        time.sleep(OLLAMA_RETRY_DELAY)
                         continue
                     else:
                         logger.error(f"查詢重寫多次失敗: {str(e)}")
@@ -1024,25 +1110,36 @@ class DynamicRAGEngineBase(RAGEngineInterface):
         }
     
     def answer_question(self, question: str) -> str:
-        """回答問題 - 動態RAG流程（優化版本）"""
+        """回答問題 - 動態RAG流程（優化版本，增加檔案數量控制）"""
         try:
             logger.info(f"開始動態RAG處理: {question}")
             
+            # 檢查文件數量警告
+            warning = self.get_file_count_warning()
+            if warning and self._file_count_warning_level in ["critical", "high"]:
+                # 對於大量檔案，提前返回建議
+                return f"⚠️  {warning}\n\n為了獲得更好的搜索效果，請：\n1. 在前端介面選擇「限制搜索範圍」\n2. 選擇特定的資料夾進行搜索\n3. 使用更具體的關鍵詞\n\n若要強制搜索全部範圍，請重新提問並使用更精確的關鍵詞。"
+            
             # 記錄文件夾限制信息
             if self.folder_path:
-                logger.info(f"搜索範圍限制在文件夾: {self.folder_path}")
+                logger.info(f"🔒 搜索範圍限制在文件夾: {self.folder_path}")
             
             # 1. 查詢重寫優化
             optimized_query = self.rewrite_query(question)
             
             # 2. 檢索相關文件（增加數量）
-            relevant_files = self.file_retriever.retrieve_relevant_files(optimized_query, max_files=12)
+            relevant_files = self.file_retriever.retrieve_relevant_files(optimized_query, max_files=15)
             
             # 記錄文件夾限制的結果
             if self.folder_path:
-                logger.info(f"文件夾限制 '{self.folder_path}' 已在檢索階段生效，找到 {len(relevant_files)} 個相關文件")
+                logger.info(f"🔒 文件夾限制 '{self.folder_path}' 已在檢索階段生效，找到 {len(relevant_files)} 個相關文件")
             
             if not relevant_files:
+                # 檢查是否因為沒有限制範圍而無結果
+                if not self.folder_path and hasattr(self.file_retriever, '_file_count_warning_level'):
+                    if self.file_retriever._file_count_warning_level in ["critical", "high"]:
+                        return f"在大量文件中未找到明確相關的文檔。\n\n建議：\n1. 選擇特定資料夾限制搜索範圍\n2. 使用更具體的關鍵詞\n3. 檢查關鍵詞是否正確"
+                
                 return self._generate_general_knowledge_answer(question)
             
             # 3. 處理文件內容

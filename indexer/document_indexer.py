@@ -865,7 +865,7 @@ class DocumentIndexer:
 
     def parallel_index_files(self, file_paths):
         """
-        並行索引多個文件 - 優化版本，減少內存使用
+        並行索引多個文件 - 增強錯誤恢復版本，防止訓練中斷
         
         Args:
             file_paths: 文件路徑列表
@@ -876,46 +876,91 @@ class DocumentIndexer:
             memory = psutil.virtual_memory()
             # 如果內存使用率超過70%，減少線程數
             if memory.percent > 70:
-                max_workers = min(4, len(file_paths))
+                max_workers = min(3, len(file_paths))  # 進一步減少線程數
             else:
-                max_workers = min(8, len(file_paths))  # 減少最大線程數
+                max_workers = min(6, len(file_paths))  # 減少最大線程數避免過載
         except ImportError:
-            max_workers = min(8, len(file_paths))
+            max_workers = min(4, len(file_paths))  # 保守的默認值
         
         if max_workers <= 0:
             max_workers = 1
         
         logger.info(f"使用 {max_workers} 個工作線程進行並行索引處理")
         
-        # 使用線程池處理，但限制並發數
+        # 使用線程池處理，但限制並發數並增加錯誤恢復
         success_count = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 分批提交任務，避免一次性提交太多任務
-            batch_size = max_workers * 2
-            for i in range(0, len(file_paths), batch_size):
-                batch = file_paths[i:i + batch_size]
-                
-                # 提交批次任務
-                future_to_file = {
-                    executor.submit(self._process_file_with_com_init, file_path): file_path 
-                    for file_path in batch
-                }
-                
-                # 處理完成的任務
-                for future in concurrent.futures.as_completed(future_to_file):
-                    file_path = future_to_file[future]
+        retry_files = []  # 記錄需要重試的文件
+        
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 分批提交任務，避免一次性提交太多任務
+                batch_size = max_workers * 2
+                for i in range(0, len(file_paths), batch_size):
+                    batch = file_paths[i:i + batch_size]
+                    
+                    # 提交批次任務，增加超時控制
+                    future_to_file = {
+                        executor.submit(self._process_file_with_com_init, file_path): file_path 
+                        for file_path in batch
+                    }
+                    
+                    # 處理完成的任務，增加超時和錯誤處理
+                    for future in concurrent.futures.as_completed(future_to_file, timeout=300):  # 5分鐘超時
+                        file_path = future_to_file[future]
+                        try:
+                            result = future.result(timeout=60)  # 單個文件60秒超時
+                            if result:
+                                success_count += 1
+                            else:
+                                logger.warning(f"文件處理失敗，加入重試列表: {file_path}")
+                                retry_files.append(file_path)
+                        except concurrent.futures.TimeoutError:
+                            logger.error(f"文件處理超時，加入重試列表: {file_path}")
+                            retry_files.append(file_path)
+                        except Exception as e:
+                            logger.error(f"處理文件 {file_path} 時出錯，加入重試列表: {str(e)}")
+                            retry_files.append(file_path)
+                    
+                    # 每批次後進行垃圾回收和狀態檢查
+                    import gc
+                    gc.collect()
+                    
+                    # 檢查系統資源，如果內存過高則暫停一下
                     try:
-                        result = future.result()
-                        if result:
-                            success_count += 1
-                    except Exception as e:
-                        logger.error(f"處理文件 {file_path} 時出錯: {str(e)}")
-                
-                # 每批次後進行垃圾回收
-                import gc
-                gc.collect()
+                        if psutil:
+                            memory = psutil.virtual_memory()
+                            if memory.percent > 85:
+                                logger.warning(f"內存使用率過高 ({memory.percent}%)，暫停5秒")
+                                import time
+                                time.sleep(5)
+                                gc.collect()
+                    except Exception:
+                        pass
+        
+        except Exception as executor_error:
+            logger.error(f"線程池執行出錯: {str(executor_error)}")
+            # 將剩餘未處理的文件添加到重試列表
+            retry_files.extend([f for f in file_paths if f not in retry_files])
+        
+        # 重試失敗的文件（單線程，更保守）
+        if retry_files:
+            logger.info(f"開始重試 {len(retry_files)} 個失敗的文件（單線程模式）")
+            for file_path in retry_files:
+                try:
+                    result = self._process_file_with_com_init(file_path)
+                    if result:
+                        success_count += 1
+                        logger.info(f"重試成功: {file_path}")
+                    else:
+                        logger.error(f"重試仍然失敗: {file_path}")
+                except Exception as e:
+                    logger.error(f"重試文件 {file_path} 時出錯: {str(e)}")
         
         logger.info(f"已完成 {len(file_paths)} 個文件的索引，其中 {success_count} 個成功")
+        
+        # 最終垃圾回收
+        import gc
+        gc.collect()
 
     def index_batch(self, file_paths: List[str], force_reindex: bool = False) -> None:
         """

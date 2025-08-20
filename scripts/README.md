@@ -14,6 +14,28 @@
 python scripts/check_dependencies.py
 ```
 
+### check_gpu.py
+**GPU 支援檢查**
+- 檢查 PyTorch GPU 支援狀況
+- 驗證 CUDA 可用性
+- 提供 GPU 配置資訊
+
+```bash
+python scripts/check_gpu.py
+```
+
+## 🔧 診斷工具
+
+### rag_diagnostic_tool.py
+**RAG 系統診斷和修復工具**
+- 檢測和解決常見的 RAG 問題
+- 系統健康狀況檢查
+- 自動修復功能
+
+```bash
+python scripts/rag_diagnostic_tool.py
+```
+
 ## 📚 索引管理腳本
 
 ### initial_indexing.py
@@ -23,24 +45,6 @@ python scripts/check_dependencies.py
 
 ```bash
 python scripts/initial_indexing.py
-```
-
-### resume_indexing.py
-**索引恢復**
-- 從中斷點恢復索引建立
-- 標準恢復模式
-
-```bash
-python scripts/resume_indexing.py
-```
-
-### stable_resume_indexing.py
-**穩定索引恢復**
-- 更穩定的索引恢復機制
-- 推薦使用的恢復方式
-
-```bash
-python scripts/stable_resume_indexing.py
 ```
 
 ### reindex.py
@@ -120,7 +124,7 @@ python scripts/model_training_manager.py reindex \
 2. `python scripts/monitor_indexing.py --status` - 檢查狀態
 
 ### 故障恢復
-1. `python scripts/stable_resume_indexing.py` - 穩定恢復
+1. `python scripts/rag_diagnostic_tool.py` - 系統診斷和修復
 2. `python scripts/monitor_indexing.py --progress` - 檢查進度
 
 ### 完全重建

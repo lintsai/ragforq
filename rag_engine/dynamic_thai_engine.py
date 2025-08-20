@@ -118,3 +118,7 @@ class DynamicThaiRAGEngine(DynamicRAGEngineBase):
     def get_file_count_warning(self) -> str:
         """รับคำเตือนจำนวนไฟล์"""
         return getattr(self.file_retriever, '_file_count_warning', None)
+    
+    def _get_error_message(self) -> str:
+        """รับข้อความข้อผิดพลาดภาษาไทย"""
+        return "เกิดข้อผิดพลาดในระหว่างการประมวลผลคำถามของคุณ กรุณาลองใหม่อีกครั้งในภายหลัง"

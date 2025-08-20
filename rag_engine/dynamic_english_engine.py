@@ -119,3 +119,7 @@ English answer:"""
     def get_file_count_warning(self) -> str:
         """Get file count warning"""
         return getattr(self.file_retriever, '_file_count_warning', None)
+    
+    def _get_error_message(self) -> str:
+        """Get English error message"""
+        return "An error occurred while processing your question. Please try again later."

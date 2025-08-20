@@ -69,7 +69,7 @@ class DynamicSimplifiedChineseRAGEngine(DynamicRAGEngineBase):
 
     def get_concise_prefix(self) -> str:
         return (
-            "你是一個精簡的企業文件助理。請直接回答問題，限制在 8 行以內；不要重複、不要自我修正、不要加結論性贅語或再次總結。僅輸出最有用的要點。\n\n"
+            "你是一个精简的企业文件助理。请直接回答问题，限制在 8 行以内；不要重复、不要自我修正、不要加结论性赘语或再次总结。仅输出最有用的要点。\n\n"
         )
     
     def _generate_general_knowledge_answer(self, question: str) -> str:
@@ -112,9 +112,13 @@ class DynamicSimplifiedChineseRAGEngine(DynamicRAGEngineBase):
         return f"根据一般IT知识，关于「{query}」的相关信息可能需要查阅更多QSI内部文档。"
     
     def _ensure_language(self, result: str) -> str:
-        """確保輸出符合簡體中文"""
+        """确保输出符合简体中文"""
         return result
     
     def get_file_count_warning(self) -> str:
-        """獲取文件數量警告"""
+        """获取文件数量警告"""
         return getattr(self.file_retriever, '_file_count_warning', None)
+    
+    def _get_error_message(self) -> str:
+        """获取简体中文错误消息"""
+        return "处理问题时发生错误，请稍后再试。"
