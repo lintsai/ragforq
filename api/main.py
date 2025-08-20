@@ -2849,29 +2849,69 @@ async def get_security_metrics(window_minutes: int = Query(60, ge=5, le=720)):
             level='critical'
         elif recent_10m >= 8:
             level='elevated'
-        # 生成時間序列 (按時間遞增) 填補空洞為 0
-        if buckets:
-            start_min = min(buckets.keys())
-            end_min = (now_ts//60)*60
-            series=[]
-            cur = start_min
-            while cur <= end_min:
-                series.append({'minute_ts': cur, 'count': buckets.get(cur,0)})
-                cur += 60
-        else:
-            series=[]
-        latest = SECURITY_EVENTS[-1] if SECURITY_EVENTS else None
-        return {
-            'total_events_window': total,
-            'recent_10m': recent_10m,
-            'level': level,
-            'series': series,
-            'latest': latest,
-            'window_minutes': window_minutes
-        }
+        series = [{'minute_ts': k, 'count': v} for k, v in sorted(buckets.items())]
+        return {'total':total,'recent_10m':recent_10m,'level':level,'window_minutes':window_minutes,'series':series}
     except Exception as e:
-        logger.error(f"取得安全事件統計失敗: {e}")
-        raise HTTPException(status_code=500, detail=f"取得安全事件統計失敗: {e}")
+        logger.error(f"取得安全指標失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"取得安全指標失敗: {e}")
+
+@app.get('/api/dynamic/file-check')
+async def dynamic_file_check(folder_path: Optional[str] = None):
+    """檢查動態RAG檔案數量，返回是否應該阻擋處理"""
+    try:
+        from rag_engine.dynamic_rag_base import SmartFileRetriever
+        
+        retriever = SmartFileRetriever(folder_path=folder_path)
+        scope_info = retriever._quick_estimate_file_count(str(retriever.folder_path))
+        
+        estimated_count = scope_info.get('estimated_total', 0)
+        warning_level = "none"
+        should_block = False
+        warning_message = None
+        
+        # 使用與動態RAG相同的閾值邏輯
+        high_cut = 60000
+        fast_cut = 40000
+        medium_cut = 20000
+        low_cut = 10000
+        
+        if estimated_count > high_cut:
+            warning_level = "critical_blocked"
+            should_block = True
+            warning_message = f"檢測到極大量文件 (估算約 {estimated_count} 個)，系統已停止處理以確保穩定性。請選擇特定資料夾限制搜索範圍後重試。"
+        elif estimated_count > fast_cut:
+            warning_level = "high"
+            warning_message = f"檢測到大量文件 (估算約 {estimated_count} 個)，強烈建議選擇特定資料夾範圍以提高搜索精度和速度。"
+        elif estimated_count > medium_cut:
+            warning_level = "medium"
+            warning_message = f"檢測到較多文件 (估算約 {estimated_count} 個)，若搜索結果不理想可考慮限制搜索範圍。"
+        elif estimated_count > low_cut:
+            warning_level = "low"
+            warning_message = f"檢測到文件數量較多 (估算約 {estimated_count} 個)，可考慮限制搜索範圍以獲得更精確的結果。"
+            
+        return {
+            "estimated_file_count": estimated_count,
+            "warning_level": warning_level,
+            "should_block": should_block,
+            "warning_message": warning_message,
+            "folder_limited": retriever.folder_path != retriever.base_path,
+            "effective_folder": str(retriever.folder_path),
+            "confidence": scope_info.get('confidence', 'low'),
+            "method": scope_info.get('method', 'unknown')
+        }
+        
+    except Exception as e:
+        logger.error(f"動態檔案檢查失敗: {str(e)}")
+        return {
+            "estimated_file_count": 0,
+            "warning_level": "error",
+            "should_block": True,
+            "warning_message": f"檔案檢查失敗: {str(e)}",
+            "folder_limited": False,
+            "effective_folder": "",
+            "confidence": "error",
+            "method": "error"
+        }
 
 # 啟動應用
 if __name__ == "__main__":

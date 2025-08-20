@@ -641,10 +641,47 @@ def main():
                             folder_browser.clear_selection()
                             selected_folder_path = None
                             st.rerun()
-                # 在動態模式下，只要模型或folder變更就抓取 scope info
+                # 在動態模式下，檢查文件數量並決定是否阻擋
                 dyn_lang_model = st.session_state.get('dynamic_language_model')
                 dyn_embed_model = st.session_state.get('dynamic_embedding_model')
                 dyn_platform = st.session_state.get('dynamic_platform')
+                
+                # 檢查是否應該阻擋用戶輸入
+                if rag_mode_main == "Dynamic RAG":
+                    try:
+                        file_check_response = requests.get(
+                            f"{API_URL}/api/dynamic/file-check",
+                            params={"folder_path": selected_folder_path} if selected_folder_path else {},
+                            timeout=10
+                        )
+                        if file_check_response.status_code == 200:
+                            file_check_data = file_check_response.json()
+                            should_block = file_check_data.get('should_block', False)
+                            warning_level = file_check_data.get('warning_level', 'none')
+                            warning_message = file_check_data.get('warning_message')
+                            estimated_count = file_check_data.get('estimated_file_count', 0)
+                            
+                            # 更新session state
+                            st.session_state.dynamic_should_block = should_block
+                            st.session_state.dynamic_warning_level = warning_level
+                            st.session_state.dynamic_warning_message = warning_message
+                            st.session_state.dynamic_estimated_count = estimated_count
+                            
+                            # 如果需要阻擋，顯示警告
+                            if should_block:
+                                st.error(f"⛔ **系統保護機制已啟動**\n\n{warning_message}")
+                                st.info("**解決方案：**\n1. 選擇「🔒 限制搜索範圍」\n2. 選擇特定的資料夾進行搜索\n3. 使用更具體的關鍵詞")
+                            elif warning_level in ["high", "medium"]:
+                                st.warning(f"⚠️ {warning_message}")
+                                
+                        else:
+                            # API調用失敗，保守起見不阻擋
+                            st.session_state.dynamic_should_block = False
+                    except Exception as e:
+                        # 網絡錯誤等，保守起見不阻擋
+                        st.session_state.dynamic_should_block = False
+                        logger.error(f"動態文件檢查失敗: {e}")
+                
                 # 使用一個觸發條件: 若 session 中尚無 scope info 或者 選擇改變
                 scope_cached = st.session_state.get('dynamic_scope_info')
                 cache_key_components = [dyn_lang_model, dyn_embed_model, dyn_platform, selected_folder_path or '__root__']
@@ -848,14 +885,29 @@ def main():
         
         # 使用 st.chat_input 以獲得更好的聊天體驗
         input_disabled = False
-        if rag_mode_main == "Dynamic RAG" and st.session_state.get('dynamic_block_recommended'):
-            input_disabled = True
-            st.info("🚫 已阻擋提問：請縮小搜索範圍。")
+        block_reason = ""
+        
+        # 檢查是否應該阻擋輸入
+        if rag_mode_main == "Dynamic RAG":
+            should_block = st.session_state.get('dynamic_should_block', False)
+            warning_level = st.session_state.get('dynamic_warning_level', 'none')
+            
+            if should_block:
+                input_disabled = True
+                block_reason = "系統已阻擋：檔案數量過多，請縮小搜索範圍"
+            elif warning_level == "high":
+                # 高風險但不完全阻擋，顯示警告但允許輸入
+                pass
 
-        if question := st.chat_input("請輸入您的問題，例如：ITPortal是什麼？" if not input_disabled else "範圍過大，請先縮小範圍"):
+        placeholder_text = "請輸入您的問題，例如：ITPortal是什麼？"
+        if input_disabled:
+            placeholder_text = f"🚫 {block_reason}"
+
+        if question := st.chat_input(placeholder_text, disabled=input_disabled):
             if input_disabled:
-                st.warning("搜尋範圍過大，問題未送出。")
+                st.warning(f"🚫 {block_reason}")
                 st.stop()
+            
             with st.spinner("🤖 AI助手正在思考..."):
                 try:
                     # 直接調用問答API
@@ -925,11 +977,31 @@ def main():
                         ollama_models = ollama_models_resp.json()
                         model_names = [model['name'] for model in ollama_models]
                         
+                        # 檢查是否有保持的模型選擇狀態
+                        preserved_selection = st.session_state.get('preserve_model_selection')
+                        default_ollama_index = 0
+                        default_embedding_index = 0
+                        
+                        if preserved_selection:
+                            # 如果保持狀態未過期（5分鐘內），使用保存的選擇
+                            if time.time() - preserved_selection.get('timestamp', 0) < 300:
+                                try:
+                                    if preserved_selection['ollama_model'] in model_names:
+                                        default_ollama_index = model_names.index(preserved_selection['ollama_model'])
+                                    if preserved_selection['embedding_model'] in model_names:
+                                        default_embedding_index = model_names.index(preserved_selection['embedding_model'])
+                                except (ValueError, KeyError):
+                                    pass
+                            else:
+                                # 過期後清除保持狀態
+                                del st.session_state.preserve_model_selection
+                        
                         col1, col2 = st.columns(2)
                         with col1:
                             selected_ollama_model = st.selectbox(
                                 "選擇 Ollama 語言模型：",
                                 options=model_names,
+                                index=default_ollama_index,
                                 help="用於問答的語言模型",
                                 key="admin_ollama_model_selector"
                             )
@@ -937,6 +1009,7 @@ def main():
                             selected_embedding_model = st.selectbox(
                                 "選擇 Ollama 嵌入模型：",
                                 options=model_names,
+                                index=default_embedding_index,
                                 help="用於文本嵌入的模型",
                                 key="admin_embedding_model_selector"
                             )
@@ -1065,6 +1138,16 @@ def main():
                                     )
                                     if resp.status_code == 200:
                                         st.success(f"✅ 重新索引已開始 (PID: {resp.json().get('pid')})")
+                                        # 保持模型選擇狀態，避免被清除
+                                        st.session_state.preserve_model_selection = {
+                                            "ollama_model": selected_ollama_model,
+                                            "embedding_model": selected_embedding_model,
+                                            "version": final_version,
+                                            "timestamp": time.time()
+                                        }
+                                        # 延遲刷新，讓用戶看到成功消息
+                                        time.sleep(1)
+                                        st.rerun()
                                     else:
                                         st.error(f"❌ 重新索引失敗: {resp.text}")
                                 except Exception as e:
