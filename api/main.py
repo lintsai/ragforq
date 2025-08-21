@@ -3010,47 +3010,57 @@ import asyncio
 import uuid
 from typing import Dict
 from datetime import datetime
+import threading
+
+# 針對背景任務的執行緒鎖，避免多執行緒同時讀寫 background_tasks
+_bg_tasks_lock = threading.Lock()
 
 # 存儲背景任務的字典
 background_tasks: Dict[str, Dict] = {}
 
 @app.post('/api/dynamic/background-estimate')
 async def start_background_estimate(request_data: dict = Body(...)):
-    """啟動背景文件估算任務
-    
-    返回任務ID，前端可以用來查詢進度
+    """啟動背景文件估算任務 (非阻塞, 以 session 隔離)
+
+    Dedupe 僅在相同 session_id + 相同 canonical_key 下重用；不同瀏覽器分頁或不同使用者可同時獨立估算。
+    前端需在呼叫時傳遞 session_id (UUID)。
     """
+    folder_path = request_data.get('folder_path') or None
+    session_id = request_data.get('session_id') or 'global'
+    canonical_key = (folder_path or '__root__')
     try:
-        folder_path = request_data.get('folder_path')
-        estimation_id = str(uuid.uuid4())
-        
-        # 創建任務記錄
-        background_tasks[estimation_id] = {
-            "id": estimation_id,
-            "folder_path": folder_path,
-            "status": "running",
-            "progress": 0,
-            "result": None,
-            "error": None,
-            "started_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }
-        
-        # 啟動背景任務
-        asyncio.create_task(run_background_estimation(estimation_id, folder_path))
-        
-        return {
-            "estimation_id": estimation_id,
-            "status": "started",
-            "message": "背景估算已啟動"
-        }
-        
+        with _bg_tasks_lock:
+            for task in background_tasks.values():
+                if (task.get('canonical_key') == canonical_key and
+                    task.get('session_id') == session_id and
+                    task.get('status') in ("running", "starting")):
+                    return {
+                        "estimation_id": task['id'],
+                        "status": task['status'],
+                        "message": "同一 session 下已有進行中的估算任務，重用現有ID"
+                    }
+
+            estimation_id = str(uuid.uuid4())
+            background_tasks[estimation_id] = {
+                "id": estimation_id,
+                "session_id": session_id,
+                "folder_path": folder_path,
+                "canonical_key": canonical_key,
+                "status": "starting",
+                "progress": 0,
+                "result": None,
+                "error": None,
+                "started_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }
+
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, run_background_estimation_sync, estimation_id, folder_path)
+
+        return {"estimation_id": estimation_id, "status": "started", "message": "背景估算已啟動"}
     except Exception as e:
         logger.error(f"啟動背景估算失敗: {str(e)}")
-        return {
-            "error": f"啟動背景估算失敗: {str(e)}",
-            "status": "error"
-        }
+        return {"error": f"啟動背景估算失敗: {str(e)}", "status": "error"}
 
 @app.get('/api/dynamic/background-estimate/{estimation_id}')
 async def get_background_estimate_status(estimation_id: str):
@@ -3085,100 +3095,95 @@ async def cancel_background_estimate(estimation_id: str):
     
     return {"message": "任務已取消", "estimation_id": estimation_id}
 
-async def run_background_estimation(estimation_id: str, folder_path: str):
-    """執行背景估算任務"""
+def run_background_estimation_sync(estimation_id: str, folder_path: str):
+    """(同步版本) 在執行緒中執行重型估算，避免阻塞事件迴圈"""
     try:
-        task = background_tasks[estimation_id]
-        
-        # 檢查任務是否被取消
-        if task["status"] == "cancelled":
-            return
-            
-        task["progress"] = 10
-        
+        with _bg_tasks_lock:
+            task = background_tasks.get(estimation_id)
+            if not task or task.get('status') == 'cancelled':
+                return
+            task['status'] = 'running'
+            task['progress'] = 5
+            task['updated_at'] = datetime.now().isoformat()
+
         from rag_engine.dynamic_rag_base import SmartFileRetriever
-        
         retriever = SmartFileRetriever(folder_path=folder_path)
-        
-        # 檢查任務是否被取消
-        if task["status"] == "cancelled":
-            return
-            
-        task["progress"] = 30
-        
-        # 執行估算
+
+        # 中期進度
+        with _bg_tasks_lock:
+            task = background_tasks.get(estimation_id)
+            if not task or task.get('status') == 'cancelled':
+                return
+            task['progress'] = 25
+            task['updated_at'] = datetime.now().isoformat()
+
+        # 執行估算 (可能較慢)
         scope_info = retriever._quick_estimate_file_count(str(retriever.folder_path))
-        
-        # 檢查任務是否被取消
-        if task["status"] == "cancelled":
-            return
-            
-        task["progress"] = 70
-        
-        # 計算警告等級
+
+        with _bg_tasks_lock:
+            task = background_tasks.get(estimation_id)
+            if not task or task.get('status') == 'cancelled':
+                return
+            task['progress'] = 70
+            task['updated_at'] = datetime.now().isoformat()
+
         estimated_count = scope_info.get('estimated_total', 0)
         confidence = scope_info.get('confidence', 'low')
         method = scope_info.get('method', 'sampling')
-        
-        warning_level = "none"
-        warning_message = None
-        should_block = False
-        
+
+        # 警告等級
         if estimated_count > 60000:
-            warning_level = "critical"
-            should_block = True
-            warning_message = f"檔案數量過多 (約 {estimated_count:,} 個)，請縮小搜索範圍"
+            warning_level, should_block, warning_message = 'critical', True, f"檔案數量過多 (約 {estimated_count:,} 個)，請縮小搜索範圍"
         elif estimated_count > 40000:
-            warning_level = "high"
-            warning_message = f"檔案數量較多 (約 {estimated_count:,} 個)，建議限制搜索範圍"
+            warning_level, should_block, warning_message = 'high', False, f"檔案數量較多 (約 {estimated_count:,} 個)，建議限制搜索範圍"
         elif estimated_count > 20000:
-            warning_level = "medium"
-            warning_message = f"檔案數量中等 (約 {estimated_count:,} 個)，可考慮限制範圍"
+            warning_level, should_block, warning_message = 'medium', False, f"檔案數量中等 (約 {estimated_count:,} 個)，可考慮限制範圍"
         elif estimated_count > 10000:
-            warning_level = "low"
-            warning_message = f"檔案數量較多 (約 {estimated_count:,} 個)"
+            warning_level, should_block, warning_message = 'low', False, f"檔案數量較多 (約 {estimated_count:,} 個)"
         else:
-            warning_level = "safe"
-            warning_message = f"檔案數量適中 (約 {estimated_count:,} 個)"
-        
-        # 檢查任務是否被取消
-        if task["status"] == "cancelled":
-            return
-            
-        task["progress"] = 100
-        task["status"] = "completed"
-        task["result"] = {
-            "estimated_file_count": estimated_count,
-            "warning_level": warning_level,
-            "warning_message": warning_message,
-            "should_block": should_block,
-            "folder_limited": bool(folder_path),
-            "effective_folder": str(retriever.folder_path),
-            "confidence": confidence,
-            "method": method,
-            "estimation_details": {
-                "sampled_dirs": scope_info.get('sampled_dirs', 0),
-                "total_dirs": scope_info.get('total_dirs_seen', 0),
-                "mean_files_per_dir": scope_info.get('mean_per_dir', 0),
-                "confidence_interval_width": scope_info.get('ci_width'),
-                "stdev": scope_info.get('stdev', 0)
+            warning_level, should_block, warning_message = 'safe', False, f"檔案數量適中 (約 {estimated_count:,} 個)"
+
+        with _bg_tasks_lock:
+            task = background_tasks.get(estimation_id)
+            if not task or task.get('status') == 'cancelled':
+                return
+            task['progress'] = 100
+            task['status'] = 'completed'
+            task['result'] = {
+                'estimated_file_count': estimated_count,
+                'warning_level': warning_level,
+                'warning_message': warning_message,
+                'should_block': should_block,
+                'folder_limited': bool(folder_path),
+                'effective_folder': str(retriever.folder_path),
+                'confidence': confidence,
+                'method': method,
+                'estimation_details': {
+                    'sampled_dirs': scope_info.get('sampled_dirs', 0),
+                    'total_dirs': scope_info.get('total_dirs_seen', 0),
+                    'mean_files_per_dir': scope_info.get('mean_per_dir', 0),
+                    'confidence_interval_width': scope_info.get('ci_width'),
+                    'stdev': scope_info.get('stdev', 0)
+                }
             }
-        }
-        
-        # 自動清理任務（30分鐘後）
-        async def auto_cleanup():
-            await asyncio.sleep(1800)  # 30分鐘
-            if estimation_id in background_tasks:
-                del background_tasks[estimation_id]
-        
-        asyncio.create_task(auto_cleanup())
-        
+            task['updated_at'] = datetime.now().isoformat()
+
+        # 延遲清理
+        def _delayed_cleanup():
+            import time as _t
+            _t.sleep(1800)
+            with _bg_tasks_lock:
+                if estimation_id in background_tasks:
+                    del background_tasks[estimation_id]
+        threading.Thread(target=_delayed_cleanup, daemon=True).start()
+
     except Exception as e:
-        logger.error(f"背景估算任務失敗: {str(e)}")
-        if estimation_id in background_tasks:
-            background_tasks[estimation_id]["status"] = "error"
-            background_tasks[estimation_id]["error"] = str(e)
-            background_tasks[estimation_id]["progress"] = 0
+        logger.error(f"背景估算任務失敗: {e}")
+        with _bg_tasks_lock:
+            if estimation_id in background_tasks:
+                background_tasks[estimation_id]['status'] = 'error'
+                background_tasks[estimation_id]['error'] = str(e)
+                background_tasks[estimation_id]['progress'] = 0
 
 @app.post('/api/dynamic/folder-stats')
 async def get_folder_detailed_stats(request_data: dict = Body(...)):

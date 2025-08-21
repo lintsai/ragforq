@@ -19,6 +19,12 @@ frontend_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(frontend_dir)
 sys.path.append(project_root)
 
+import uuid
+
+# 為每個前端 session 建立唯一 ID
+if 'frontend_session_id' not in st.session_state:
+    st.session_state.frontend_session_id = str(uuid.uuid4())
+
 from config.config import APP_HOST, APP_PORT, STREAMLIT_PORT, API_BASE_URL, is_q_drive_accessible, Q_DRIVE_PATH, DISPLAY_DRIVE_NAME
 from frontend.help_system import render_help_sidebar, show_help_modal
 from frontend.model_selector import render_model_selector, is_setup_completed
@@ -656,54 +662,44 @@ def main():
                     current_cache_key = st.session_state.get('dynamic_cache_key')
                     current_estimation_id = st.session_state.get('dynamic_estimation_id')
                     
-                    if (current_cache_key != new_cache_key or 
-                        'dynamic_estimated_count' not in st.session_state):
-                        
-                        # 取消之前的估算任務（如果存在）
+                    # 僅在使用者手動觸發時才啟動估算
+                    need_new_task = (current_cache_key != new_cache_key)
+                    trigger_col1, trigger_col2 = st.columns([3,1])
+                    with trigger_col2:
+                        if st.button("📊 估算檔案", key="trigger_estimation"):
+                            st.session_state.dynamic_manual_triggered = True
+                            need_new_task = True
+                    
+                    if need_new_task and st.session_state.get('dynamic_manual_triggered'):
+                        # 取消舊任務
                         if current_estimation_id:
                             try:
-                                cancel_resp = requests.delete(
+                                requests.delete(
                                     f"{API_URL}/api/dynamic/background-estimate/{current_estimation_id}",
-                                    timeout=5
+                                    timeout=3
                                 )
-                                if cancel_resp.status_code == 200:
-                                    logger.info(f"已取消之前的估算任務: {current_estimation_id}")
-                            except Exception as e:
-                                logger.warning(f"取消之前估算任務失敗: {e}")
-                        
-                        # 啟動新的背景估算任務
+                            except Exception:
+                                pass
+                        # 啟動新任務
                         try:
-                            start_resp = requests.post(
+                            resp = requests.post(
                                 f"{API_URL}/api/dynamic/background-estimate",
-                                json={"folder_path": selected_folder_path},
-                                timeout=10
+                                json={
+                                    "folder_path": selected_folder_path,
+                                    "session_id": st.session_state.frontend_session_id
+                                },
+                                timeout=5
                             )
-                            
-                            if start_resp.status_code == 200:
-                                start_data = start_resp.json()
-                                estimation_id = start_data.get('estimation_id')
-                                
-                                # 儲存新的估算ID和緩存key
-                                st.session_state.dynamic_estimation_id = estimation_id
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                st.session_state.dynamic_estimation_id = data.get('estimation_id')
                                 st.session_state.dynamic_cache_key = new_cache_key
-                                st.session_state.dynamic_estimation_status = "running"
-                                
-                                # 重新運行以開始輪詢
-                                st.rerun()
+                                st.session_state.dynamic_estimation_status = data.get('status','running')
+                                st.session_state.last_estimation_check_time = 0
                             else:
-                                # 背景估算啟動失敗，設置錯誤狀態
-                                st.session_state.dynamic_estimated_count = 0
-                                st.session_state.dynamic_should_block = True
-                                st.session_state.dynamic_warning_level = 'error'
-                                st.session_state.dynamic_warning_message = "背景估算服務無法啟動"
-                                
+                                st.warning("無法啟動估算任務")
                         except Exception as e:
-                            # 網絡錯誤等，設置默認值但不阻擋
-                            st.session_state.dynamic_estimated_count = 0
-                            st.session_state.dynamic_should_block = True
-                            st.session_state.dynamic_warning_level = 'error'
-                            st.session_state.dynamic_warning_message = f"估算服務連接失敗: {str(e)}"
-                            logger.error(f"啟動背景估算失敗: {e}")
+                            st.error(f"估算啟動失敗: {e}")
                     
                     # 檢查背景估算進度 - 使用手動刷新避免無限循環
                     estimation_id = st.session_state.get('dynamic_estimation_id')
