@@ -667,8 +667,16 @@ def main():
                     trigger_col1, trigger_col2 = st.columns([3,1])
                     with trigger_col2:
                         if st.button("📊 估算檔案", key="trigger_estimation"):
+                            # 使用者手動觸發估算
                             st.session_state.dynamic_manual_triggered = True
                             need_new_task = True
+                            # 啟動前清除舊結果避免顯示上一輪的警告或數量
+                            st.session_state.dynamic_estimated_count = 0
+                            st.session_state.dynamic_warning_level = 'none'
+                            st.session_state.dynamic_warning_message = None
+                            st.session_state.dynamic_partial_estimate = None
+                            st.session_state.dynamic_estimation_progress = 0
+                            st.session_state.dynamic_estimation_status = 'running'
                     
                     if need_new_task and st.session_state.get('dynamic_manual_triggered'):
                         # 取消舊任務
@@ -767,7 +775,8 @@ def main():
                                         # 更新進度與暫估值
                                         st.session_state.dynamic_estimation_progress = progress
                                         partial_estimate = status_data.get('partial_estimate') or (status_data.get('result', {}) or {}).get('estimated_file_count')
-                                        if partial_estimate:
+                                        # 即使為 0 也記錄，None 則保留前次（若有）
+                                        if partial_estimate is not None:
                                             st.session_state.dynamic_partial_estimate = partial_estimate
                                         
                             except Exception as e:
@@ -825,6 +834,10 @@ def main():
                         folder_status = "已限制" if selected_folder_path else "全範圍"
                         st.error(f"⚠️ 估算失敗 | 範圍: {folder_status}")
                         should_block = True  # 估算失敗時阻擋輸入
+                    else:
+                        # 尚未估算過（或無結果）時的提示
+                        st.info("🛈 尚未估算，請按『📊 估算檔案』開始。估算完成後才能開始對話。")
+                        should_block = True
                     
                     # 更新should_block狀態到session state
                     # 強制 gating：只有 estimation_status==completed 且 should_block=False 才放行

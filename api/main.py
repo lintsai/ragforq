@@ -3072,6 +3072,9 @@ async def get_background_estimate_status(estimation_id: str):
     task = background_tasks[estimation_id]
     task["updated_at"] = datetime.now().isoformat()
     
+    # 若已完成且仍有最終 partial_estimate_final，補充回傳為 partial_estimate 方便前端一致處理
+    if 'partial_estimate' not in task and 'partial_estimate_final' in task:
+        task['partial_estimate'] = task.get('partial_estimate_final')
     return task
 
 @app.delete('/api/dynamic/background-estimate/{estimation_id}')
@@ -3193,9 +3196,8 @@ def run_background_estimation_sync(estimation_id: str, folder_path: str):
                     'stdev': scope_info.get('stdev', 0)
                 }
             }
-            # 移除暫存的 partial_estimate
-            if 'partial_estimate' in task:
-                task.pop('partial_estimate', None)
+            # 保留最後一次 partial_estimate 直到前端下一輪輪詢後再被清理
+            task['partial_estimate_final'] = task.get('partial_estimate')
             task['updated_at'] = datetime.now().isoformat()
 
         # 延遲清理
