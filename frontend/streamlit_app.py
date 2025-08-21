@@ -790,7 +790,7 @@ def main():
                             progress_container = st.container()
                             with progress_container:
                                 line = f"📊 正在背景估算文件數量... {current_progress}%"
-                                if partial_est:
+                                if partial_est is not None:
                                     line += f" | 暫估≈{partial_est:,}"
                                 else:
                                     line += " | 暫估準備中…"
@@ -802,6 +802,11 @@ def main():
                                     if st.button("🔄 檢查進度", key="manual_refresh", help="手動檢查估算進度"):
                                         st.session_state.last_estimation_check_time = 0
                                         st.rerun()
+                                # 自動輪詢 (每 2 秒) - 直到完成
+                                import time as _poll_time
+                                _poll_time.sleep(2)
+                                st.session_state.last_estimation_check_time = 0
+                                st.rerun()
                     
                     # 顯示估算結果和狀態
                     estimated_count = st.session_state.get('dynamic_estimated_count', 0)
@@ -1015,10 +1020,14 @@ def main():
         if rag_mode_main == "Dynamic RAG":
             should_block = st.session_state.get('dynamic_should_block', False)
             warning_level = st.session_state.get('dynamic_warning_level', 'none')
-            
+            estimation_status = st.session_state.get('dynamic_estimation_status')
             if should_block:
                 input_disabled = True
-                block_reason = "系統已阻擋：檔案數量過多，請縮小搜索範圍"
+                if estimation_status != 'completed':
+                    block_reason = "尚未完成估算，請先執行並等待『📊 估算檔案』完成"
+                else:
+                    # 已完成但仍需阻擋（例如檔案過多）
+                    block_reason = st.session_state.get('dynamic_warning_message') or "檔案數量過多，請縮小搜索範圍"
             elif warning_level == "high":
                 # 高風險但不完全阻擋，顯示警告但允許輸入
                 pass
