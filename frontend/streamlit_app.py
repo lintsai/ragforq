@@ -771,9 +771,14 @@ def main():
                                         if 'last_estimation_check_time' in st.session_state:
                                             del st.session_state.last_estimation_check_time
                                             
-                                    elif task_status == "running":
+                                    if task_status == "running":
                                         # 更新進度與暫估值
                                         st.session_state.dynamic_estimation_progress = progress
+                                        
+                                        # --- DEBUG: 顯示收到的原始資料 ---
+                                        st.json(status_data)
+                                        # --- END DEBUG ---
+
                                         partial_estimate = status_data.get('partial_estimate') or (status_data.get('result', {}) or {}).get('estimated_file_count')
                                         # 即使為 0 也記錄，None 則保留前次（若有）
                                         if partial_estimate is not None:
