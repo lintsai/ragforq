@@ -641,151 +641,142 @@ def main():
                             folder_browser.clear_selection()
                             selected_folder_path = None
                             st.rerun()
-                # 在動態模式下，檢查文件數量並決定是否阻擋
+                # 在動態模式下，即時估算文件數量和狀態
                 dyn_lang_model = st.session_state.get('dynamic_language_model')
                 dyn_embed_model = st.session_state.get('dynamic_embedding_model')
                 dyn_platform = st.session_state.get('dynamic_platform')
                 
-                # 檢查是否應該阻擋用戶輸入
-                if rag_mode_main == "Dynamic RAG":
-                    try:
-                        file_check_response = requests.get(
-                            f"{API_URL}/api/dynamic/file-check",
-                            params={"folder_path": selected_folder_path} if selected_folder_path else {},
-                            timeout=10
-                        )
-                        if file_check_response.status_code == 200:
-                            file_check_data = file_check_response.json()
-                            should_block = file_check_data.get('should_block', False)
-                            warning_level = file_check_data.get('warning_level', 'none')
-                            warning_message = file_check_data.get('warning_message')
-                            estimated_count = file_check_data.get('estimated_file_count', 0)
-                            
-                            # 更新session state
-                            st.session_state.dynamic_should_block = should_block
-                            st.session_state.dynamic_warning_level = warning_level
-                            st.session_state.dynamic_warning_message = warning_message
-                            st.session_state.dynamic_estimated_count = estimated_count
-                            
-                            # 如果需要阻擋，顯示警告
-                            if should_block:
-                                st.error(f"⛔ **系統保護機制已啟動**\n\n{warning_message}")
-                                st.info("**解決方案：**\n1. 選擇「🔒 限制搜索範圍」\n2. 選擇特定的資料夾進行搜索\n3. 使用更具體的關鍵詞")
-                            elif warning_level in ["high", "medium"]:
-                                st.warning(f"⚠️ {warning_message}")
-                                
-                        else:
-                            # API調用失敗，保守起見不阻擋
-                            st.session_state.dynamic_should_block = False
-                    except Exception as e:
-                        # 網絡錯誤等，保守起見不阻擋
-                        st.session_state.dynamic_should_block = False
-                        logger.error(f"動態文件檢查失敗: {e}")
-                
-                # 使用一個觸發條件: 若 session 中尚無 scope info 或者 選擇改變
-                scope_cached = st.session_state.get('dynamic_scope_info')
-                cache_key_components = [dyn_lang_model, dyn_embed_model, dyn_platform, selected_folder_path or '__root__']
-                new_cache_key = '|'.join(str(c) for c in cache_key_components)
-                if 'dynamic_scope_cache_key' not in st.session_state or st.session_state.dynamic_scope_cache_key != new_cache_key:
-                    if dyn_lang_model and dyn_embed_model:
-                        fetch_dynamic_scope_info(selected_language, dyn_lang_model, dyn_embed_model, dyn_platform, selected_folder_path)
-                        st.session_state.dynamic_scope_cache_key = new_cache_key
-                # 顯示 scope info
-                scope_info = st.session_state.get('dynamic_scope_info')
-                if scope_info:
-                    est = scope_info.get('estimated_file_count')
-                    level = scope_info.get('file_count_warning_level')
-                    folder_limited = scope_info.get('folder_limited')
-                    warning_msg = scope_info.get('file_count_warning')
-                    if est is not None:
-                        st.info(f"📦 估算文件數: {est} | 範圍 {'已限制' if folder_limited else '未限制'} | 等級: {level}")
-                    if warning_msg:
-                        if level == 'high':
-                            st.error(f"⚠️ {warning_msg}")
-                        elif level == 'medium':
-                            st.warning(f"💡 {warning_msg}")
-                        else:
-                            st.caption(warning_msg)
-                    # 額外估算統計資訊
-                    conf = scope_info.get('estimation_confidence')
-                    method = scope_info.get('estimation_method')
-                    sampled_dirs = scope_info.get('estimation_sampled_dirs')
-                    total_dirs = scope_info.get('estimation_total_dirs')
-                    mean_per_dir = scope_info.get('estimation_mean_per_dir')
-                    ci_width = scope_info.get('estimation_ci_width')
-                    if conf or method:
-                        # 使用列顯示精簡統計
-                        st.markdown("#### 🔍 估算統計")
-                        meta_cols = st.columns(3)
-                        with meta_cols[0]:
-                            st.metric(label="信心", value=conf or '-')
-                        with meta_cols[1]:
-                            st.metric(label="採樣目錄", value=f"{sampled_dirs or 0}/{total_dirs or 0}")
-                        with meta_cols[2]:
-                            st.metric(label="每目錄文件均值", value=mean_per_dir if mean_per_dir is not None else '-')
-                        # 額外細節
-                        details = []
-                        if method:
-                            details.append(f"方法: {method}")
-                        if ci_width is not None:
-                            details.append(f"CI寬度≈±{ci_width}")
-                        if details:
-                            st.caption(" | ".join(details))
-                        # 信心提示
-                        if conf == 'low' and not folder_limited:
-                            st.info("🔎 估算信心較低，若臨界可考慮限制範圍或重試以獲得更準確估算。")
-                        elif conf == 'medium':
-                            st.caption("📏 中等信心：臨界值附近操作請留意阻擋規則。")
-                        elif conf == 'high':
-                            st.caption("✅ 高信心估算。")
-                    # Debug: 估算精度統計（僅在開發/調試時顯示）
-                    debug_toggle = st.checkbox("顯示估算精度分析 (Debug)", value=False, key="show_estimation_debug")
-                    if debug_toggle:
+                # 即時文件估算和狀態檢查
+                if rag_mode_main == "Dynamic RAG" and dyn_lang_model and dyn_embed_model:
+                    # 緩存key用於避免重複請求
+                    cache_key_components = [dyn_lang_model, dyn_embed_model, dyn_platform, selected_folder_path or '__root__']
+                    new_cache_key = '|'.join(str(c) for c in cache_key_components)
+                    
+                    # 檢查是否需要重新估算
+                    if ('dynamic_cache_key' not in st.session_state or 
+                        st.session_state.dynamic_cache_key != new_cache_key or
+                        'dynamic_estimated_count' not in st.session_state):
+                        
+                        # 顯示估算進度
+                        estimation_placeholder = st.empty()
+                        with estimation_placeholder.container():
+                            st.info("📊 正在估算文件數量...")
+                        
                         try:
-                            stats_resp = requests.get(f"{API_URL}/api/dynamic/estimation-stats", params={"limit": 150, "include_samples": False}, timeout=5)
-                            if stats_resp.status_code == 200:
-                                stats = stats_resp.json()
-                                st.markdown("#### 🧪 估算精度分析")
-                                colA, colB, colC = st.columns(3)
-                                with colA:
-                                    st.metric("樣本數", stats.get('total_samples'))
-                                with colB:
-                                    st.metric("MAE%", stats.get('mae_pct'))
-                                with colC:
-                                    st.metric("MAPE%", stats.get('mape_pct'))
-                                colD, colE, colF = st.columns(3)
-                                with colD:
-                                    st.metric("平均誤差%", stats.get('mean_signed_error_pct'))
-                                with colE:
-                                    st.metric("Over估比率", stats.get('overestimate_rate'))
-                                with colF:
-                                    st.metric("Under估比率", stats.get('underestimate_rate'))
-                                conf_stats = stats.get('confidence_stats', {}) or {}
-                                if conf_stats:
-                                    with st.expander("信心分層統計", expanded=False):
-                                        for c_level, c_data in conf_stats.items():
-                                            st.write(f"- {c_level}: count={c_data.get('count')} MAE%={c_data.get('mae_pct')} bias={c_data.get('bias_direction')}")
-                                st.caption("MAE/MAPE 基於最近 N 行估算審計資料，用於校準阻擋與信心閾值。")
-                                # 顯示安全事件
-                                sec_count = scope_info.get('security_event_count')
-                                if sec_count:
-                                    st.markdown("##### 🔐 路徑安全")
-                                    st.write(f"越界/解析異常事件數: {sec_count}")
-                                    if st.checkbox("顯示最近安全事件詳情", value=False, key="show_sec_events"):
-                                        try:
-                                            sec_resp = requests.get(f"{API_URL}/api/dynamic/security-events", params={"limit": 20}, timeout=5)
-                                            if sec_resp.status_code == 200:
-                                                sec_data = sec_resp.json().get('events', [])
-                                                for ev in sec_data:
-                                                    st.caption(f"{ev.get('ts')} original={ev.get('original')} reason={ev.get('reason')}")
-                                            else:
-                                                st.warning("無法取得安全事件資料")
-                                        except Exception as se:
-                                            st.warning(f"安全事件請求失敗: {se}")
+                            # 使用新的快速估算端點進行即時估算
+                            estimate_payload = {
+                                "folder_path": selected_folder_path,
+                                "quick_mode": True  # 使用快速模式
+                            }
+                            
+                            estimate_resp = requests.post(
+                                f"{API_URL}/api/dynamic/quick-estimate", 
+                                json=estimate_payload, 
+                                timeout=15  # 快速估算應該更快
+                            )
+                            
+                            if estimate_resp.status_code == 200:
+                                estimate_data = estimate_resp.json()
+                                
+                                # 更新session state
+                                st.session_state.dynamic_estimated_count = estimate_data.get('estimated_file_count', 0)
+                                st.session_state.dynamic_warning_level = estimate_data.get('warning_level', 'none')
+                                st.session_state.dynamic_warning_message = estimate_data.get('warning_message')
+                                st.session_state.dynamic_should_block = estimate_data.get('should_block', False)
+                                st.session_state.dynamic_confidence = estimate_data.get('confidence', 'unknown')
+                                st.session_state.dynamic_estimation_method = estimate_data.get('method', 'unknown')
+                                st.session_state.dynamic_estimation_details = estimate_data.get('estimation_details', {})
+                                st.session_state.dynamic_cache_key = new_cache_key
+                                
                             else:
-                                st.warning("無法取得估算統計資料")
+                                # API調用失敗，設置默認值
+                                st.session_state.dynamic_estimated_count = 0
+                                st.session_state.dynamic_should_block = False
+                                st.session_state.dynamic_warning_level = 'error'
+                                st.session_state.dynamic_warning_message = "估算服務暫時不可用"
+                                
                         except Exception as e:
-                            st.warning(f"估算統計請求失敗: {e}")
+                            # 網絡錯誤等，設置默認值
+                            st.session_state.dynamic_estimated_count = 0
+                            st.session_state.dynamic_should_block = False
+                            st.session_state.dynamic_warning_level = 'error'
+                            st.session_state.dynamic_warning_message = f"估算失敗: {str(e)}"
+                            logger.error(f"動態文件估算失敗: {e}")
+                        
+                        # 清除估算進度提示
+                        estimation_placeholder.empty()
+                    
+                    # 顯示估算結果和狀態
+                    estimated_count = st.session_state.get('dynamic_estimated_count', 0)
+                    warning_level = st.session_state.get('dynamic_warning_level', 'none')
+                    warning_message = st.session_state.get('dynamic_warning_message')
+                    should_block = st.session_state.get('dynamic_should_block', False)
+                    
+                    # 文件數量顯示（帶顏色指示）
+                    if estimated_count > 0:
+                        folder_status = "已限制" if selected_folder_path else "全範圍"
+                        confidence = st.session_state.get('dynamic_confidence', 'unknown')
+                        confidence_indicator = {"high": "🟢", "medium": "🟡", "low": "🟠", "unknown": "⚪"}.get(confidence, "⚪")
+                        
+                        if warning_level == 'critical' or should_block:
+                            st.error(f"📦 估算文件數: **{estimated_count:,}** | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
+                        elif warning_level == 'high':
+                            st.warning(f"📦 估算文件數: **{estimated_count:,}** | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
+                        elif warning_level == 'medium':
+                            st.info(f"📦 估算文件數: **{estimated_count:,}** | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
+                        elif warning_level == 'error':
+                            st.error(f"⚠️ 估算失敗 | 範圍: {folder_status}")
+                        else:
+                            st.success(f"📦 估算文件數: **{estimated_count:,}** | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
+                    elif warning_level == 'error':
+                        folder_status = "已限制" if selected_folder_path else "全範圍"
+                        st.error(f"⚠️ 估算失敗 | 範圍: {folder_status}")
+                    
+                    # 顯示警告訊息
+                    if warning_message and warning_level != 'error':
+                        if should_block:
+                            st.error(f"⛔ {warning_message}")
+                            st.info("**解決方案：**\n1. 勾選「限制搜索範圍」\n2. 選擇更具體的資料夾\n3. 使用更精確的搜索關鍵詞")
+                        elif warning_level == 'high':
+                            st.warning(f"⚠️ {warning_message}")
+                        elif warning_level in ['medium', 'low']:
+                            st.info(f"💡 {warning_message}")
+                    elif warning_level == 'error' and warning_message:
+                        st.error(f"⚠️ {warning_message}")
+                        st.info("**建議：**\n1. 檢查網路連線\n2. 重新選擇資料夾\n3. 稍後再試")
+                    
+                    # 詳細估算統計（摺疊顯示）
+                    estimation_details = st.session_state.get('dynamic_estimation_details', {})
+                    if estimation_details and estimated_count > 0:
+                        with st.expander("� 估算詳細資訊", expanded=False):
+                            detail_cols = st.columns(3)
+                            with detail_cols[0]:
+                                st.metric("採樣目錄數", estimation_details.get('sampled_dirs', 0))
+                            with detail_cols[1]:
+                                st.metric("總目錄數", estimation_details.get('total_dirs', 0))
+                            with detail_cols[2]:
+                                st.metric("平均每目錄檔案", f"{estimation_details.get('mean_files_per_dir', 0):.1f}")
+                            
+                            method = st.session_state.get('dynamic_estimation_method', 'unknown')
+                            ci_width = estimation_details.get('confidence_interval_width')
+                            max_depth = estimation_details.get('max_depth_reached', 0)
+                            
+                            detail_info = [f"方法: {method}"]
+                            if ci_width:
+                                detail_info.append(f"置信區間: ±{ci_width}")
+                            if max_depth:
+                                detail_info.append(f"掃描深度: {max_depth}層")
+                            
+                            st.caption(" | ".join(detail_info))
+                            
+                            # 提供建議
+                            confidence = st.session_state.get('dynamic_confidence', 'unknown')
+                            if confidence == 'low':
+                                st.info("💡 估算信心較低，建議限制搜索範圍獲得更準確的估算")
+                            elif confidence == 'high':
+                                st.success("✅ 高信心估算，數據可靠")
+                
+                # 舊的阻擋推薦檢查（兼容性保留）
                 if st.session_state.get('dynamic_block_recommended'):
                     st.error(st.session_state.get('dynamic_block_reason') or "搜索範圍過大，請縮小範圍後再試。")
             

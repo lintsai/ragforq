@@ -2906,12 +2906,103 @@ async def dynamic_file_check(folder_path: Optional[str] = None):
             "estimated_file_count": 0,
             "warning_level": "error",
             "should_block": True,
-            "warning_message": f"檔案檢查失敗: {str(e)}",
+            "warning_message": f"估算過程發生錯誤: {str(e)}",
             "folder_limited": False,
-            "effective_folder": "",
-            "confidence": "error",
-            "method": "error"
+            "effective_folder": folder_path or "/"
         }
+
+
+@app.post('/api/dynamic/quick-estimate')
+async def dynamic_quick_estimate(request_data: dict = Body(...)):
+    """快速文件數量估算端點 - 專門用於前端即時顯示
+    
+    接收參數:
+    - folder_path: 可選的資料夾路徑
+    - quick_mode: 是否使用快速模式 (默認true)
+    """
+    try:
+        folder_path = request_data.get('folder_path')
+        quick_mode = request_data.get('quick_mode', True)
+        
+        from rag_engine.dynamic_rag_base import SmartFileRetriever
+        
+        retriever = SmartFileRetriever(folder_path=folder_path)
+        
+        # 使用快速估算模式
+        if quick_mode:
+            # 使用較少的採樣進行快速估算
+            scope_info = retriever._quick_estimate_file_count(
+                str(retriever.folder_path),
+                max_sample_dirs=50  # 減少採樣數量以提高速度
+            )
+        else:
+            # 完整估算
+            scope_info = retriever._quick_estimate_file_count(str(retriever.folder_path))
+        
+        estimated_count = scope_info.get('estimated_total', 0)
+        confidence = scope_info.get('confidence', 'low')
+        method = scope_info.get('method', 'sampling')
+        
+        # 計算警告等級
+        warning_level = "none"
+        warning_message = None
+        should_block = False
+        
+        # 閾值檢查
+        if estimated_count > 60000:
+            warning_level = "critical"
+            should_block = True
+            warning_message = f"檔案數量過多 (約 {estimated_count:,} 個)，請縮小搜索範圍"
+        elif estimated_count > 40000:
+            warning_level = "high"
+            warning_message = f"檔案數量較多 (約 {estimated_count:,} 個)，建議限制搜索範圍"
+        elif estimated_count > 20000:
+            warning_level = "medium"
+            warning_message = f"檔案數量中等 (約 {estimated_count:,} 個)，可考慮限制範圍"
+        elif estimated_count > 10000:
+            warning_level = "low"
+            warning_message = f"檔案數量較多 (約 {estimated_count:,} 個)"
+        else:
+            warning_level = "safe"
+            warning_message = f"檔案數量適中 (約 {estimated_count:,} 個)"
+        
+        # 建構回應
+        response_data = {
+            "estimated_file_count": estimated_count,
+            "warning_level": warning_level,
+            "warning_message": warning_message,
+            "should_block": should_block,
+            "folder_limited": bool(folder_path),
+            "effective_folder": str(retriever.folder_path),
+            "confidence": confidence,
+            "method": method,
+            "quick_mode": quick_mode,
+            "estimation_details": {
+                "sampled_dirs": scope_info.get('sampled_dirs', 0),
+                "total_dirs": scope_info.get('total_dirs', 0),
+                "mean_files_per_dir": scope_info.get('mean_files_per_dir', 0),
+                "confidence_interval_width": scope_info.get('confidence_interval_width'),
+                "max_depth_reached": scope_info.get('max_depth_reached', 0)
+            }
+        }
+        
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"快速檔案估算失敗: {str(e)}")
+        return {
+            "estimated_file_count": 0,
+            "warning_level": "error",
+            "warning_message": f"估算失敗: {str(e)}",
+            "should_block": True,
+            "folder_limited": False,
+            "effective_folder": folder_path or "/",
+            "confidence": "unknown",
+            "method": "error",
+            "quick_mode": quick_mode,
+            "estimation_details": {}
+        }
+
 
 # 啟動應用
 if __name__ == "__main__":
