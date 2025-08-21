@@ -203,8 +203,13 @@ class SmartFileRetriever:
             deep_dirs_sampled = 0  # 深層目錄採樣計數
             very_deep_dirs_sampled = 0  # 極深層目錄採樣計數
 
+            EARLY_STOP_THRESHOLD = 50000  # 調整早停閾值（原 60000）超過此暫估值即提前停止並強制阻擋聊天
+            early_stop_triggered = False
+
             # 第一階段：廣度優先掃描，提高採樣密度
             for root, dirs, files in os.walk(scan_path):
+                if early_stop_triggered:
+                    break
                 depth = root.replace(scan_path, '').count(os.sep)
                 if depth > max_depth:
                     dirs[:] = []
@@ -275,8 +280,53 @@ class SmartFileRetriever:
                             'samples_collected': len(sample_counts),
                             'estimated_total_partial': estimated_partial
                         })
+                        if estimated_partial and estimated_partial > EARLY_STOP_THRESHOLD:
+                            early_stop_triggered = True
+                            # 臨時信心評估（使用已累積樣本）
+                            try:
+                                import statistics as _st
+                                stdev_tmp = _st.pstdev(sample_counts) if sample_counts else 0.0
+                            except Exception:
+                                stdev_tmp = 0.0
+                            mean_raw_tmp = (sum(sample_counts)/len(sample_counts)) if sample_counts else 0.0
+                            deep_coverage = (deep_dirs_sampled + very_deep_dirs_sampled) / max(sampled, 1)
+                            sampling_coverage = sampled / max(total_dirs, 1)
+                            rel_ci_ratio = (1.28 * stdev_tmp) / (mean_raw_tmp + 1) if mean_raw_tmp else 1.0
+                            if (rel_ci_ratio < 0.3 and sampled >= 30 and deep_coverage >= 0.2 and sampling_coverage >= 0.02):
+                                conf_tmp = 'high'
+                            elif (rel_ci_ratio < 0.6 and sampled >= 15 and sampling_coverage >= 0.01):
+                                conf_tmp = 'medium'
+                            else:
+                                conf_tmp = 'low'
+                            result.update({
+                                'estimated_total': estimated_partial,
+                                'sampled_dirs': sampled,
+                                'total_dirs_seen': total_dirs,
+                                'confidence': conf_tmp,
+                                'method': 'early-stop',
+                                'early_stop': True,
+                                'sampling_coverage': round(sampling_coverage * 100, 2),
+                                'deep_dirs_sampled': deep_dirs_sampled,
+                                'very_deep_dirs_sampled': very_deep_dirs_sampled
+                            })
+                            # 發送完成階段
+                            try:
+                                progress_cb({
+                                    'phase': 'completed',
+                                    'estimated_total': estimated_partial,
+                                    'sampled_dirs': sampled,
+                                    'total_dirs_seen': total_dirs,
+                                    'confidence': conf_tmp,
+                                    'early_stop': True
+                                })
+                            except Exception:
+                                pass
+                            break
                     except Exception:
                         pass
+
+            if early_stop_triggered:
+                return result
 
             if sampled == 0 or total_dirs == 0:
                 return result
@@ -292,6 +342,46 @@ class SmartFileRetriever:
                         'samples_collected': len(sample_counts),
                         'estimated_total_partial': estimated_partial
                     })
+                    if estimated_partial and estimated_partial > EARLY_STOP_THRESHOLD:
+                        # 進入 early-stop（在聚合階段才超過門檻）
+                        try:
+                            import statistics as _st
+                            stdev_tmp = _st.pstdev(sample_counts) if sample_counts else 0.0
+                        except Exception:
+                            stdev_tmp = 0.0
+                        mean_raw_tmp = (sum(sample_counts)/len(sample_counts)) if sample_counts else 0.0
+                        deep_coverage = (deep_dirs_sampled + very_deep_dirs_sampled) / max(sampled, 1)
+                        sampling_coverage = sampled / max(total_dirs, 1)
+                        rel_ci_ratio = (1.28 * stdev_tmp) / (mean_raw_tmp + 1) if mean_raw_tmp else 1.0
+                        if (rel_ci_ratio < 0.3 and sampled >= 30 and deep_coverage >= 0.2 and sampling_coverage >= 0.02):
+                            conf_tmp = 'high'
+                        elif (rel_ci_ratio < 0.6 and sampled >= 15 and sampling_coverage >= 0.01):
+                            conf_tmp = 'medium'
+                        else:
+                            conf_tmp = 'low'
+                        result.update({
+                            'estimated_total': estimated_partial,
+                            'sampled_dirs': sampled,
+                            'total_dirs_seen': total_dirs,
+                            'confidence': conf_tmp,
+                            'method': 'early-stop',
+                            'early_stop': True,
+                            'sampling_coverage': round(sampling_coverage * 100, 2),
+                            'deep_dirs_sampled': deep_dirs_sampled,
+                            'very_deep_dirs_sampled': very_deep_dirs_sampled
+                        })
+                        try:
+                            progress_cb({
+                                'phase': 'completed',
+                                'estimated_total': estimated_partial,
+                                'sampled_dirs': sampled,
+                                'total_dirs_seen': total_dirs,
+                                'confidence': conf_tmp,
+                                'early_stop': True
+                            })
+                        except Exception:
+                            pass
+                        return result
                 except Exception:
                     pass
             mean_adj = sum(depth_adjusted) / sampled

@@ -661,9 +661,8 @@ def main():
                     status = st.session_state.dynamic_estimation_status
                     estimation_id = st.session_state.get('dynamic_estimation_id')
 
-                    trigger_col1, trigger_col2 = st.columns([3,1])
-                    with trigger_col2:
-                        if st.button("📊 估算檔案", key="trigger_estimation"):
+                    # 估算按鈕靠左
+                    if st.button("📊 估算檔案", key="trigger_estimation"):
                             # 取消舊任務（若存在且未完成）
                             old_id = st.session_state.get('dynamic_estimation_id')
                             if old_id and st.session_state.get('dynamic_estimation_status') in ['running','triggered']:
@@ -707,7 +706,7 @@ def main():
                     if st.session_state.dynamic_estimation_status == 'running' and estimation_id:
                         last_check = st.session_state.get('last_estimation_check_time', 0)
                         now_ts = time.time()
-                        # 預設 2 秒節流
+                        # 預設 2 秒節流，自動刷新
                         if now_ts - last_check >= 2:
                             try:
                                 status_resp = requests.get(f"{API_URL}/api/dynamic/background-estimate/{estimation_id}", timeout=6)
@@ -755,22 +754,21 @@ def main():
                         line += f" | 暫估≈{partial:,}" if partial is not None else " | 暫估準備中…"
                         st.info(line)
                         st.progress(min(prog,99)/100)
-                        refresh_cols = st.columns([3,1])
-                        with refresh_cols[1]:
-                            if st.button('🔄 刷新', key='refresh_estimation'):
-                                st.session_state.last_estimation_check_time = 0
-                                st.rerun()
+                        # 自動 rerun 以更新進度
+                        st.experimental_rerun()
                         should_block = True
                     elif status == 'completed':
                         if estimated_count > 0:
                             folder_status = "已限制" if selected_folder_path else "全範圍"
                             confidence_indicator = {"high": "🟢", "medium": "🟡", "low": "🟠", "unknown": "⚪"}.get(confidence, "⚪")
+                            est_method = st.session_state.get('dynamic_estimation_method')
+                            method_tag = " (early-stop)" if est_method == 'early-stop' else ""
                             if warning_level == 'critical' or should_block:
-                                st.error(f"📦 估算文件數: **{estimated_count:,}** | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
+                                st.error(f"📦 估算文件數: **{estimated_count:,}**{method_tag} | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
                             elif warning_level == 'high':
-                                st.warning(f"📦 估算文件數: **{estimated_count:,}** | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
+                                st.warning(f"📦 估算文件數: **{estimated_count:,}**{method_tag} | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
                             else:
-                                st.success(f"📦 估算文件數: **{estimated_count:,}** | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
+                                st.success(f"📦 估算文件數: **{estimated_count:,}**{method_tag} | 範圍: {folder_status} | {confidence_indicator} 信心度: {confidence}")
                         else:
                             st.warning('估算完成，但結果為 0。')
                     elif status == 'error':
@@ -785,9 +783,7 @@ def main():
                     
                     # 取消按鈕（僅 running 狀態）
                     if status == 'running' and estimation_id:
-                        cancel_cols = st.columns([3,1])
-                        with cancel_cols[1]:
-                            if st.button('❌ 取消', key='cancel_estimation'):
+                        if st.button('❌ 取消', key='cancel_estimation'):
                                 try:
                                     requests.delete(f"{API_URL}/api/dynamic/background-estimate/{estimation_id}", timeout=4)
                                 except Exception:

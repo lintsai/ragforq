@@ -2924,33 +2924,35 @@ async def dynamic_quick_estimate(request_data: dict = Body(...)):
     try:
         folder_path = request_data.get('folder_path')
         quick_mode = request_data.get('quick_mode', True)
-        
+
         from rag_engine.dynamic_rag_base import SmartFileRetriever
-        
+
         retriever = SmartFileRetriever(folder_path=folder_path)
-        
+
         # 使用快速估算模式
         if quick_mode:
-            # 使用較少的採樣進行快速估算
             scope_info = retriever._quick_estimate_file_count(
                 str(retriever.folder_path),
-                max_sample_dirs=30  # 進一步減少採樣數量提高速度
+                max_sample_dirs=30
             )
         else:
-            # 完整估算
             scope_info = retriever._quick_estimate_file_count(str(retriever.folder_path))
-        
+
         estimated_count = scope_info.get('estimated_total', 0)
         confidence = scope_info.get('confidence', 'low')
         method = scope_info.get('method', 'sampling')
-        
-        # 計算警告等級
+        early_stop_flag = scope_info.get('early_stop', False)
+
         warning_level = "none"
         warning_message = None
         should_block = False
-        
-        # 閾值檢查
-        if estimated_count > 60000:
+
+        # 閾值 / 早停 判斷
+        if early_stop_flag:
+            warning_level = "critical"
+            should_block = True
+            warning_message = f"(early-stop) 檔案數量過多 (約 {estimated_count:,} 個)，請縮小搜索範圍"
+        elif estimated_count > 60000:
             warning_level = "critical"
             should_block = True
             warning_message = f"檔案數量過多 (約 {estimated_count:,} 個)，請縮小搜索範圍"
@@ -2966,8 +2968,7 @@ async def dynamic_quick_estimate(request_data: dict = Body(...)):
         else:
             warning_level = "safe"
             warning_message = f"檔案數量適中 (約 {estimated_count:,} 個)"
-        
-        # 建構回應
+
         response_data = {
             "estimated_file_count": estimated_count,
             "warning_level": warning_level,
@@ -2977,18 +2978,18 @@ async def dynamic_quick_estimate(request_data: dict = Body(...)):
             "effective_folder": str(retriever.folder_path),
             "confidence": confidence,
             "method": method,
+            "early_stop": early_stop_flag,
             "quick_mode": quick_mode,
             "estimation_details": {
                 "sampled_dirs": scope_info.get('sampled_dirs', 0),
-                "total_dirs": scope_info.get('total_dirs', 0),
-                "mean_files_per_dir": scope_info.get('mean_files_per_dir', 0),
-                "confidence_interval_width": scope_info.get('confidence_interval_width'),
-                "max_depth_reached": scope_info.get('max_depth_reached', 0)
+                "total_dirs": scope_info.get('total_dirs_seen', 0),
+                "mean_files_per_dir": scope_info.get('mean_per_dir', 0),
+                "confidence_interval_width": scope_info.get('ci_width'),
+                "stdev": scope_info.get('stdev', 0),
+                "sampling_coverage": scope_info.get('sampling_coverage')
             }
         }
-        
         return response_data
-        
     except Exception as e:
         logger.error(f"快速檔案估算失敗: {str(e)}")
         return {
@@ -2997,10 +2998,10 @@ async def dynamic_quick_estimate(request_data: dict = Body(...)):
             "warning_message": f"估算失敗: {str(e)}",
             "should_block": True,
             "folder_limited": False,
-            "effective_folder": folder_path or "/",
+            "effective_folder": (request_data.get('folder_path') or "/"),
             "confidence": "unknown",
             "method": "error",
-            "quick_mode": quick_mode,
+            "quick_mode": request_data.get('quick_mode', True),
             "estimation_details": {}
         }
 
@@ -3160,9 +3161,14 @@ def run_background_estimation_sync(estimation_id: str, folder_path: str):
         estimated_count = scope_info.get('estimated_total', 0)
         confidence = scope_info.get('confidence', 'low')
         method = scope_info.get('method', 'sampling')
+        early_stop_flag = scope_info.get('early_stop', False)
 
-        # 警告等級
-        if estimated_count > 60000:
+        # 警告等級 & gating 判斷
+        # should_block=True 代表前端必須阻擋聊天輸入（例如：檔案數過多或策略要求）
+        # 規則：若 early-stop 觸發 (>= 50,000) 直接 critical 並阻擋
+        if early_stop_flag:
+            warning_level, should_block, warning_message = 'critical', True, f"(early-stop) 檔案數量過多 (約 {estimated_count:,} 個)，請縮小搜索範圍"
+        elif estimated_count > 60000:
             warning_level, should_block, warning_message = 'critical', True, f"檔案數量過多 (約 {estimated_count:,} 個)，請縮小搜索範圍"
         elif estimated_count > 40000:
             warning_level, should_block, warning_message = 'high', False, f"檔案數量較多 (約 {estimated_count:,} 個)，建議限制搜索範圍"
@@ -3188,6 +3194,7 @@ def run_background_estimation_sync(estimation_id: str, folder_path: str):
                 'effective_folder': str(retriever.folder_path),
                 'confidence': confidence,
                 'method': method,
+                'early_stop': early_stop_flag,
                 'estimation_details': {
                     'sampled_dirs': scope_info.get('sampled_dirs', 0),
                     'total_dirs': scope_info.get('total_dirs_seen', 0),
