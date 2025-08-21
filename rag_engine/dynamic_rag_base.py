@@ -169,7 +169,7 @@ class SmartFileRetriever:
         logger.info(f"在 {file_count} 個文件中找到 {len(relevant_files)} 個相關文件")
         return relevant_files
     
-    def _quick_estimate_file_count(self, scan_path: str, max_sample_dirs: int = 100) -> Dict[str, Any]:
+    def _quick_estimate_file_count(self, scan_path: str, max_sample_dirs: int = 100, progress_cb=None) -> Dict[str, Any]:
         """增強版雙階段快速估算文件數量，提高深度掃描準確性和覆蓋面。
 
         返回: {
@@ -253,10 +253,35 @@ class SmartFileRetriever:
                     if depth > 8:
                         very_deep_dirs_sampled += 1
 
+                # 增量回報 (每 60 個目錄或每新增 10 個採樣)
+                if progress_cb and (
+                    (total_dirs % 60 == 0) or
+                    (sampled % 10 == 0 and sampled > 0)
+                ):
+                    try:
+                        progress_cb({
+                            'phase': 'scanning',
+                            'total_dirs_seen': total_dirs,
+                            'sampled_dirs': sampled,
+                            'samples_collected': len(sample_counts)
+                        })
+                    except Exception:
+                        pass
+
             if sampled == 0 or total_dirs == 0:
                 return result
 
             mean_raw = sum(sample_counts) / sampled
+            if progress_cb:
+                try:
+                    progress_cb({
+                        'phase': 'aggregating',
+                        'total_dirs_seen': total_dirs,
+                        'sampled_dirs': sampled,
+                        'samples_collected': len(sample_counts)
+                    })
+                except Exception:
+                    pass
             mean_adj = sum(depth_adjusted) / sampled
             try:
                 stdev = statistics.pstdev(sample_counts)
@@ -303,6 +328,17 @@ class SmartFileRetriever:
                         supported_files = sum(1 for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES)
                         additional_samples.append(supported_files)
                         refine_dirs += 1
+                        if progress_cb and refine_dirs % 10 == 0:
+                            try:
+                                progress_cb({
+                                    'phase': 'refine',
+                                    'refine_sampled': refine_dirs,
+                                    'refine_limit': refine_limit,
+                                    'total_dirs_seen': total_dirs,
+                                    'sampled_dirs': sampled
+                                })
+                            except Exception:
+                                pass
 
                 if additional_samples:
                     # 合併樣本重新計算
@@ -315,6 +351,15 @@ class SmartFileRetriever:
                         stdev = 0.0
                     ci_width = 1.28 * stdev
                     estimated_total = int(mean_raw * total_dirs)
+                    if progress_cb:
+                        try:
+                            progress_cb({
+                                'phase': 'refine_aggregate',
+                                'refine_sampled': refine_dirs,
+                                'estimated_total_partial': estimated_total
+                            })
+                        except Exception:
+                            pass
                     result['method'] = 'enhanced-dual-phase-refined'
 
             # 改進信心評估：考慮採樣覆蓋面和深度分佈
@@ -344,6 +389,17 @@ class SmartFileRetriever:
             logger.info(
                 f"文件數估算(增強版): est={estimated_total} dirs={sampled}/{total_dirs} deep={deep_dirs_sampled} very_deep={very_deep_dirs_sampled} coverage={result['sampling_coverage']}% mean={mean_raw:.2f} σ={stdev:.2f} ci≈±{ci_width:.1f} conf={confidence} method={result['method']}"
             )
+            if progress_cb:
+                try:
+                    progress_cb({
+                        'phase': 'completed',
+                        'estimated_total': estimated_total,
+                        'sampled_dirs': sampled,
+                        'total_dirs_seen': total_dirs,
+                        'confidence': confidence
+                    })
+                except Exception:
+                    pass
             return result
         except Exception as e:
             logger.error(f"增強版快速估算文件數量失敗: {str(e)}")

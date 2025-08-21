@@ -764,8 +764,11 @@ def main():
                                             del st.session_state.last_estimation_check_time
                                             
                                     elif task_status == "running":
-                                        # 更新進度但不重新運行
+                                        # 更新進度與暫估值
                                         st.session_state.dynamic_estimation_progress = progress
+                                        partial_estimate = status_data.get('partial_estimate') or (status_data.get('result', {}) or {}).get('estimated_file_count')
+                                        if partial_estimate:
+                                            st.session_state.dynamic_partial_estimate = partial_estimate
                                         
                             except Exception as e:
                                 logger.error(f"檢查背景估算狀態失敗: {e}")
@@ -774,19 +777,18 @@ def main():
                         # 顯示當前估算狀態（無論是否剛檢查過）
                         if estimation_status == "running":
                             current_progress = st.session_state.get('dynamic_estimation_progress', 0)
-                            
-                            # 創建進度顯示區域
+                            partial_est = st.session_state.get('dynamic_partial_estimate')
                             progress_container = st.container()
                             with progress_container:
-                                st.info(f"📊 正在背景估算文件數量... {current_progress}%")
+                                line = f"📊 正在背景估算文件數量... {current_progress}%"
+                                if partial_est:
+                                    line += f" | 暫估≈{partial_est:,}"
+                                st.info(line)
                                 if current_progress > 0:
-                                    st.progress(current_progress / 100)
-                                
-                                # 手動刷新按鈕
+                                    st.progress(min(current_progress,99)/100)
                                 col1, col2 = st.columns([3, 1])
                                 with col2:
-                                    if st.button("� 檢查進度", key="manual_refresh", help="手動檢查估算進度"):
-                                        # 重置檢查時間，強制立即檢查
+                                    if st.button("🔄 檢查進度", key="manual_refresh", help="手動檢查估算進度"):
                                         st.session_state.last_estimation_check_time = 0
                                         st.rerun()
                     
@@ -800,9 +802,9 @@ def main():
                     
                     # 文件數量顯示（帶顏色指示和信心度）
                     if estimation_status == "running":
-                        # 正在估算中，顯示進度但不阻擋
                         st.info("📊 正在背景估算文件數量，請稍候...")
-                        should_block = True  # 估算期間阻擋輸入
+                        # 估算尚未完成，強制阻擋
+                        should_block = True
                     elif estimated_count > 0:
                         folder_status = "已限制" if selected_folder_path else "全範圍"
                         confidence_indicator = {"high": "🟢", "medium": "🟡", "low": "🟠", "unknown": "⚪"}.get(confidence, "⚪")
@@ -823,7 +825,8 @@ def main():
                         should_block = True  # 估算失敗時阻擋輸入
                     
                     # 更新should_block狀態到session state
-                    st.session_state.dynamic_should_block = should_block
+                    # 強制 gating：只有 estimation_status==completed 且 should_block=False 才放行
+                    st.session_state.dynamic_should_block = should_block or estimation_status != 'completed'
                     
                     # 在正在估算時，提供取消按鈕
                     if estimation_status == "running" and estimation_id:

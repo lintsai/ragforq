@@ -3117,8 +3117,35 @@ def run_background_estimation_sync(estimation_id: str, folder_path: str):
             task['progress'] = 25
             task['updated_at'] = datetime.now().isoformat()
 
-        # 執行估算 (可能較慢)
-        scope_info = retriever._quick_estimate_file_count(str(retriever.folder_path))
+        # 執行估算 (可能較慢) 加入增量回報
+        def _progress_cb(p):
+            with _bg_tasks_lock:
+                task = background_tasks.get(estimation_id)
+                if not task or task.get('status') == 'cancelled':
+                    return
+                # 粗略進度推估：掃描階段 5~70 之間線性插值
+                phase = p.get('phase')
+                if phase == 'scanning':
+                    seen = p.get('total_dirs_seen', 1)
+                    # 以對數方式平滑遞增
+                    import math
+                    prog = 5 + min(60, math.log2(seen + 1) * 8)
+                    task['progress'] = max(task['progress'], int(prog))
+                elif phase == 'aggregating':
+                    task['progress'] = max(task['progress'], 75)
+                elif phase == 'refine':
+                    task['progress'] = max(task['progress'], 85)
+                elif phase == 'refine_aggregate':
+                    task['progress'] = max(task['progress'], 90)
+                elif phase == 'completed':
+                    task['progress'] = max(task['progress'], 95)
+                # 暫存估算中間值
+                if 'estimated_total_partial' in p:
+                    task['partial_estimate'] = p['estimated_total_partial']
+                if phase == 'completed' and 'estimated_total' in p:
+                    task['partial_estimate'] = p['estimated_total']
+                task['updated_at'] = datetime.now().isoformat()
+        scope_info = retriever._quick_estimate_file_count(str(retriever.folder_path), progress_cb=_progress_cb)
 
         with _bg_tasks_lock:
             task = background_tasks.get(estimation_id)
@@ -3166,6 +3193,9 @@ def run_background_estimation_sync(estimation_id: str, folder_path: str):
                     'stdev': scope_info.get('stdev', 0)
                 }
             }
+            # 移除暫存的 partial_estimate
+            if 'partial_estimate' in task:
+                task.pop('partial_estimate', None)
             task['updated_at'] = datetime.now().isoformat()
 
         # 延遲清理
