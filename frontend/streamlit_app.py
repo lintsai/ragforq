@@ -641,81 +641,151 @@ def main():
                             folder_browser.clear_selection()
                             selected_folder_path = None
                             st.rerun()
-                # 在動態模式下，即時估算文件數量和狀態
+                # 在動態模式下，進行背景估算文件數量和狀態
                 dyn_lang_model = st.session_state.get('dynamic_language_model')
                 dyn_embed_model = st.session_state.get('dynamic_embedding_model')
                 dyn_platform = st.session_state.get('dynamic_platform')
                 
-                # 即時文件估算和狀態檢查
+                # 背景估算和狀態檢查
                 if rag_mode_main == "Dynamic RAG" and dyn_lang_model and dyn_embed_model:
                     # 緩存key用於避免重複請求
                     cache_key_components = [dyn_lang_model, dyn_embed_model, dyn_platform, selected_folder_path or '__root__']
                     new_cache_key = '|'.join(str(c) for c in cache_key_components)
                     
                     # 檢查是否需要重新估算
-                    if ('dynamic_cache_key' not in st.session_state or 
-                        st.session_state.dynamic_cache_key != new_cache_key or
+                    current_cache_key = st.session_state.get('dynamic_cache_key')
+                    current_estimation_id = st.session_state.get('dynamic_estimation_id')
+                    
+                    if (current_cache_key != new_cache_key or 
                         'dynamic_estimated_count' not in st.session_state):
                         
-                        # 顯示估算進度
-                        estimation_placeholder = st.empty()
-                        with estimation_placeholder.container():
-                            st.info("📊 正在估算文件數量...")
+                        # 取消之前的估算任務（如果存在）
+                        if current_estimation_id:
+                            try:
+                                cancel_resp = requests.delete(
+                                    f"{API_URL}/api/dynamic/background-estimate/{current_estimation_id}",
+                                    timeout=5
+                                )
+                                if cancel_resp.status_code == 200:
+                                    logger.info(f"已取消之前的估算任務: {current_estimation_id}")
+                            except Exception as e:
+                                logger.warning(f"取消之前估算任務失敗: {e}")
                         
+                        # 啟動新的背景估算任務
                         try:
-                            # 使用新的快速估算端點進行即時估算
-                            estimate_payload = {
-                                "folder_path": selected_folder_path,
-                                "quick_mode": True  # 使用快速模式
-                            }
-                            
-                            estimate_resp = requests.post(
-                                f"{API_URL}/api/dynamic/quick-estimate", 
-                                json=estimate_payload, 
-                                timeout=15  # 快速估算應該更快
+                            start_resp = requests.post(
+                                f"{API_URL}/api/dynamic/background-estimate",
+                                json={"folder_path": selected_folder_path},
+                                timeout=10
                             )
                             
-                            if estimate_resp.status_code == 200:
-                                estimate_data = estimate_resp.json()
+                            if start_resp.status_code == 200:
+                                start_data = start_resp.json()
+                                estimation_id = start_data.get('estimation_id')
                                 
-                                # 更新session state
-                                st.session_state.dynamic_estimated_count = estimate_data.get('estimated_file_count', 0)
-                                st.session_state.dynamic_warning_level = estimate_data.get('warning_level', 'none')
-                                st.session_state.dynamic_warning_message = estimate_data.get('warning_message')
-                                st.session_state.dynamic_should_block = estimate_data.get('should_block', False)
-                                st.session_state.dynamic_confidence = estimate_data.get('confidence', 'unknown')
-                                st.session_state.dynamic_estimation_method = estimate_data.get('method', 'unknown')
-                                st.session_state.dynamic_estimation_details = estimate_data.get('estimation_details', {})
+                                # 儲存新的估算ID和緩存key
+                                st.session_state.dynamic_estimation_id = estimation_id
                                 st.session_state.dynamic_cache_key = new_cache_key
+                                st.session_state.dynamic_estimation_status = "running"
                                 
+                                # 重新運行以開始輪詢
+                                st.rerun()
                             else:
-                                # API調用失敗，設置默認值
+                                # 背景估算啟動失敗，設置錯誤狀態
                                 st.session_state.dynamic_estimated_count = 0
-                                st.session_state.dynamic_should_block = False
+                                st.session_state.dynamic_should_block = True
                                 st.session_state.dynamic_warning_level = 'error'
-                                st.session_state.dynamic_warning_message = "估算服務暫時不可用"
+                                st.session_state.dynamic_warning_message = "背景估算服務無法啟動"
                                 
                         except Exception as e:
-                            # 網絡錯誤等，設置默認值
+                            # 網絡錯誤等，設置默認值但不阻擋
                             st.session_state.dynamic_estimated_count = 0
-                            st.session_state.dynamic_should_block = False
+                            st.session_state.dynamic_should_block = True
                             st.session_state.dynamic_warning_level = 'error'
-                            st.session_state.dynamic_warning_message = f"估算失敗: {str(e)}"
-                            logger.error(f"動態文件估算失敗: {e}")
-                        
-                        # 清除估算進度提示
-                        estimation_placeholder.empty()
+                            st.session_state.dynamic_warning_message = f"估算服務連接失敗: {str(e)}"
+                            logger.error(f"啟動背景估算失敗: {e}")
+                    
+                    # 檢查背景估算進度
+                    estimation_id = st.session_state.get('dynamic_estimation_id')
+                    estimation_status = st.session_state.get('dynamic_estimation_status', 'unknown')
+                    
+                    if estimation_id and estimation_status == "running":
+                        try:
+                            status_resp = requests.get(
+                                f"{API_URL}/api/dynamic/background-estimate/{estimation_id}",
+                                timeout=5
+                            )
+                            
+                            if status_resp.status_code == 200:
+                                status_data = status_resp.json()
+                                task_status = status_data.get('status')
+                                progress = status_data.get('progress', 0)
+                                
+                                if task_status == "completed":
+                                    # 估算完成，更新結果
+                                    result = status_data.get('result', {})
+                                    st.session_state.dynamic_estimated_count = result.get('estimated_file_count', 0)
+                                    st.session_state.dynamic_warning_level = result.get('warning_level', 'none')
+                                    st.session_state.dynamic_warning_message = result.get('warning_message')
+                                    st.session_state.dynamic_should_block = result.get('should_block', False)
+                                    st.session_state.dynamic_confidence = result.get('confidence', 'unknown')
+                                    st.session_state.dynamic_estimation_method = result.get('method', 'unknown')
+                                    st.session_state.dynamic_estimation_details = result.get('estimation_details', {})
+                                    st.session_state.dynamic_estimation_status = "completed"
+                                    
+                                    # 清空進度顯示
+                                    if 'estimation_progress_placeholder' in st.session_state:
+                                        del st.session_state.estimation_progress_placeholder
+                                    
+                                    # 重新運行以更新UI
+                                    st.rerun()
+                                    
+                                elif task_status == "error":
+                                    # 估算出錯
+                                    error_msg = status_data.get('error', '未知錯誤')
+                                    st.session_state.dynamic_estimated_count = 0
+                                    st.session_state.dynamic_should_block = True
+                                    st.session_state.dynamic_warning_level = 'error'
+                                    st.session_state.dynamic_warning_message = f"估算失敗: {error_msg}"
+                                    st.session_state.dynamic_estimation_status = "error"
+                                    
+                                    # 清空進度顯示
+                                    if 'estimation_progress_placeholder' in st.session_state:
+                                        del st.session_state.estimation_progress_placeholder
+                                        
+                                elif task_status == "running":
+                                    # 顯示進度
+                                    if 'estimation_progress_placeholder' not in st.session_state:
+                                        st.session_state.estimation_progress_placeholder = st.empty()
+                                    
+                                    with st.session_state.estimation_progress_placeholder.container():
+                                        st.info(f"📊 正在背景估算文件數量... {progress}%")
+                                        if progress > 0:
+                                            st.progress(progress / 100)
+                                    
+                                    # 設置自動重新檢查（每3秒）
+                                    time.sleep(0.1)  # 短暫延遲
+                                    st.rerun()
+                                    
+                        except Exception as e:
+                            logger.error(f"檢查背景估算狀態失敗: {e}")
+                            # 不影響主流程，繼續使用現有數據
                     
                     # 顯示估算結果和狀態
                     estimated_count = st.session_state.get('dynamic_estimated_count', 0)
                     warning_level = st.session_state.get('dynamic_warning_level', 'none')
                     warning_message = st.session_state.get('dynamic_warning_message')
                     should_block = st.session_state.get('dynamic_should_block', False)
+                    confidence = st.session_state.get('dynamic_confidence', 'unknown')
+                    estimation_status = st.session_state.get('dynamic_estimation_status', 'unknown')
                     
-                    # 文件數量顯示（帶顏色指示）
-                    if estimated_count > 0:
+                    # 文件數量顯示（帶顏色指示和信心度）
+                    if estimation_status == "running":
+                        # 正在估算中，顯示進度但不阻擋
+                        st.info("📊 正在背景估算文件數量，請稍候...")
+                        should_block = True  # 估算期間阻擋輸入
+                    elif estimated_count > 0:
                         folder_status = "已限制" if selected_folder_path else "全範圍"
-                        confidence = st.session_state.get('dynamic_confidence', 'unknown')
                         confidence_indicator = {"high": "🟢", "medium": "🟡", "low": "🟠", "unknown": "⚪"}.get(confidence, "⚪")
                         
                         if warning_level == 'critical' or should_block:
@@ -731,6 +801,32 @@ def main():
                     elif warning_level == 'error':
                         folder_status = "已限制" if selected_folder_path else "全範圍"
                         st.error(f"⚠️ 估算失敗 | 範圍: {folder_status}")
+                        should_block = True  # 估算失敗時阻擋輸入
+                    
+                    # 更新should_block狀態到session state
+                    st.session_state.dynamic_should_block = should_block
+                    
+                    # 在正在估算時，提供取消按鈕
+                    if estimation_status == "running" and estimation_id:
+                        cancel_col1, cancel_col2 = st.columns([3, 1])
+                        with cancel_col2:
+                            if st.button("❌ 取消估算", key="cancel_estimation", help="取消背景估算任務"):
+                                try:
+                                    cancel_resp = requests.delete(
+                                        f"{API_URL}/api/dynamic/background-estimate/{estimation_id}",
+                                        timeout=5
+                                    )
+                                    if cancel_resp.status_code == 200:
+                                        st.session_state.dynamic_estimation_status = "cancelled"
+                                        st.session_state.dynamic_estimated_count = 0
+                                        st.session_state.dynamic_should_block = False
+                                        st.session_state.dynamic_warning_level = 'none'
+                                        st.success("已取消估算任務")
+                                        st.rerun()
+                                    else:
+                                        st.error("取消任務失敗")
+                                except Exception as e:
+                                    st.error(f"取消任務時出錯: {e}")
                     
                     # 顯示警告訊息
                     if warning_message and warning_level != 'error':

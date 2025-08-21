@@ -11,10 +11,11 @@ from pydantic import BaseModel
 import uvicorn
 import subprocess
 from fastapi.responses import FileResponse, PlainTextResponse
-from scripts.monitor_indexing import get_status_text, get_progress_text, get_monitor_text, get_indexing_status
 
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from scripts.monitor_indexing import get_status_text, get_progress_text, get_monitor_text, get_indexing_status
 
 from config.config import APP_HOST, APP_PORT, is_q_drive_accessible, ADMIN_TOKEN, SELECTED_PLATFORM, LOGS_DIR, BACKUPS_DIR
 from rag_engine.rag_engine_factory import get_rag_engine_for_language, get_supported_languages, validate_language
@@ -2933,7 +2934,7 @@ async def dynamic_quick_estimate(request_data: dict = Body(...)):
             # 使用較少的採樣進行快速估算
             scope_info = retriever._quick_estimate_file_count(
                 str(retriever.folder_path),
-                max_sample_dirs=50  # 減少採樣數量以提高速度
+                max_sample_dirs=30  # 進一步減少採樣數量提高速度
             )
         else:
             # 完整估算
@@ -3002,6 +3003,308 @@ async def dynamic_quick_estimate(request_data: dict = Body(...)):
             "quick_mode": quick_mode,
             "estimation_details": {}
         }
+
+
+# 背景估算任務管理
+import asyncio
+import uuid
+from typing import Dict
+from datetime import datetime
+
+# 存儲背景任務的字典
+background_tasks: Dict[str, Dict] = {}
+
+@app.post('/api/dynamic/background-estimate')
+async def start_background_estimate(request_data: dict = Body(...)):
+    """啟動背景文件估算任務
+    
+    返回任務ID，前端可以用來查詢進度
+    """
+    try:
+        folder_path = request_data.get('folder_path')
+        estimation_id = str(uuid.uuid4())
+        
+        # 創建任務記錄
+        background_tasks[estimation_id] = {
+            "id": estimation_id,
+            "folder_path": folder_path,
+            "status": "running",
+            "progress": 0,
+            "result": None,
+            "error": None,
+            "started_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        # 啟動背景任務
+        asyncio.create_task(run_background_estimation(estimation_id, folder_path))
+        
+        return {
+            "estimation_id": estimation_id,
+            "status": "started",
+            "message": "背景估算已啟動"
+        }
+        
+    except Exception as e:
+        logger.error(f"啟動背景估算失敗: {str(e)}")
+        return {
+            "error": f"啟動背景估算失敗: {str(e)}",
+            "status": "error"
+        }
+
+@app.get('/api/dynamic/background-estimate/{estimation_id}')
+async def get_background_estimate_status(estimation_id: str):
+    """查詢背景估算任務狀態"""
+    
+    if estimation_id not in background_tasks:
+        raise HTTPException(status_code=404, detail="估算任務不存在")
+    
+    task = background_tasks[estimation_id]
+    task["updated_at"] = datetime.now().isoformat()
+    
+    return task
+
+@app.delete('/api/dynamic/background-estimate/{estimation_id}')
+async def cancel_background_estimate(estimation_id: str):
+    """取消背景估算任務"""
+    
+    if estimation_id not in background_tasks:
+        raise HTTPException(status_code=404, detail="估算任務不存在")
+    
+    task = background_tasks[estimation_id]
+    task["status"] = "cancelled"
+    task["updated_at"] = datetime.now().isoformat()
+    
+    # 清理任務（延遲5分鐘後清理）
+    async def cleanup_task():
+        await asyncio.sleep(300)  # 5分鐘
+        if estimation_id in background_tasks:
+            del background_tasks[estimation_id]
+    
+    asyncio.create_task(cleanup_task())
+    
+    return {"message": "任務已取消", "estimation_id": estimation_id}
+
+async def run_background_estimation(estimation_id: str, folder_path: str):
+    """執行背景估算任務"""
+    try:
+        task = background_tasks[estimation_id]
+        
+        # 檢查任務是否被取消
+        if task["status"] == "cancelled":
+            return
+            
+        task["progress"] = 10
+        
+        from rag_engine.dynamic_rag_base import SmartFileRetriever
+        
+        retriever = SmartFileRetriever(folder_path=folder_path)
+        
+        # 檢查任務是否被取消
+        if task["status"] == "cancelled":
+            return
+            
+        task["progress"] = 30
+        
+        # 執行估算
+        scope_info = retriever._quick_estimate_file_count(str(retriever.folder_path))
+        
+        # 檢查任務是否被取消
+        if task["status"] == "cancelled":
+            return
+            
+        task["progress"] = 70
+        
+        # 計算警告等級
+        estimated_count = scope_info.get('estimated_total', 0)
+        confidence = scope_info.get('confidence', 'low')
+        method = scope_info.get('method', 'sampling')
+        
+        warning_level = "none"
+        warning_message = None
+        should_block = False
+        
+        if estimated_count > 60000:
+            warning_level = "critical"
+            should_block = True
+            warning_message = f"檔案數量過多 (約 {estimated_count:,} 個)，請縮小搜索範圍"
+        elif estimated_count > 40000:
+            warning_level = "high"
+            warning_message = f"檔案數量較多 (約 {estimated_count:,} 個)，建議限制搜索範圍"
+        elif estimated_count > 20000:
+            warning_level = "medium"
+            warning_message = f"檔案數量中等 (約 {estimated_count:,} 個)，可考慮限制範圍"
+        elif estimated_count > 10000:
+            warning_level = "low"
+            warning_message = f"檔案數量較多 (約 {estimated_count:,} 個)"
+        else:
+            warning_level = "safe"
+            warning_message = f"檔案數量適中 (約 {estimated_count:,} 個)"
+        
+        # 檢查任務是否被取消
+        if task["status"] == "cancelled":
+            return
+            
+        task["progress"] = 100
+        task["status"] = "completed"
+        task["result"] = {
+            "estimated_file_count": estimated_count,
+            "warning_level": warning_level,
+            "warning_message": warning_message,
+            "should_block": should_block,
+            "folder_limited": bool(folder_path),
+            "effective_folder": str(retriever.folder_path),
+            "confidence": confidence,
+            "method": method,
+            "estimation_details": {
+                "sampled_dirs": scope_info.get('sampled_dirs', 0),
+                "total_dirs": scope_info.get('total_dirs_seen', 0),
+                "mean_files_per_dir": scope_info.get('mean_per_dir', 0),
+                "confidence_interval_width": scope_info.get('ci_width'),
+                "stdev": scope_info.get('stdev', 0)
+            }
+        }
+        
+        # 自動清理任務（30分鐘後）
+        async def auto_cleanup():
+            await asyncio.sleep(1800)  # 30分鐘
+            if estimation_id in background_tasks:
+                del background_tasks[estimation_id]
+        
+        asyncio.create_task(auto_cleanup())
+        
+    except Exception as e:
+        logger.error(f"背景估算任務失敗: {str(e)}")
+        if estimation_id in background_tasks:
+            background_tasks[estimation_id]["status"] = "error"
+            background_tasks[estimation_id]["error"] = str(e)
+            background_tasks[estimation_id]["progress"] = 0
+
+@app.post('/api/dynamic/folder-stats')
+async def get_folder_detailed_stats(request_data: dict = Body(...)):
+    """獲取資料夾詳細統計信息（文件數量和大小）
+    
+    這是一個較慢的操作，建議在背景執行
+    """
+    try:
+        folder_path = request_data.get('folder_path', '/')
+        max_depth = request_data.get('max_depth', 3)  # 限制深度避免過慢
+        
+        from pathlib import Path
+        import os
+        
+        if folder_path == '/' or not folder_path:
+            from config.config import Q_DRIVE_PATH
+            scan_path = Path(Q_DRIVE_PATH)
+        else:
+            from config.config import Q_DRIVE_PATH
+            scan_path = Path(Q_DRIVE_PATH) / folder_path.lstrip('/')
+        
+        if not scan_path.exists() or not scan_path.is_dir():
+            return {
+                "error": "資料夾不存在或不可訪問",
+                "folder_path": folder_path
+            }
+        
+        # 收集統計信息
+        folder_stats = []
+        total_files = 0
+        total_size = 0
+        
+        try:
+            for item in scan_path.iterdir():
+                if item.is_dir():
+                    # 統計子資料夾
+                    subdir_files = 0
+                    subdir_size = 0
+                    
+                    try:
+                        # 遞迴統計但限制深度
+                        for root, dirs, files in os.walk(item):
+                            # 計算當前深度
+                            depth = len(Path(root).relative_to(item).parts)
+                            if depth >= max_depth:
+                                dirs.clear()  # 不再深入
+                                continue
+                                
+                            for file in files:
+                                try:
+                                    file_path = Path(root) / file
+                                    if file_path.exists():
+                                        subdir_files += 1
+                                        subdir_size += file_path.stat().st_size
+                                except (OSError, PermissionError):
+                                    continue
+                    except (OSError, PermissionError):
+                        pass
+                    
+                    folder_stats.append({
+                        "name": item.name,
+                        "type": "folder",
+                        "file_count": subdir_files,
+                        "size_bytes": subdir_size,
+                        "size_human": format_file_size(subdir_size),
+                        "path": str(item.relative_to(Path(Q_DRIVE_PATH)))
+                    })
+                    
+                    total_files += subdir_files
+                    total_size += subdir_size
+                
+                elif item.is_file():
+                    # 統計檔案
+                    try:
+                        file_size = item.stat().st_size
+                        folder_stats.append({
+                            "name": item.name,
+                            "type": "file", 
+                            "file_count": 1,
+                            "size_bytes": file_size,
+                            "size_human": format_file_size(file_size),
+                            "path": str(item.relative_to(Path(Q_DRIVE_PATH)))
+                        })
+                        
+                        total_files += 1
+                        total_size += file_size
+                    except (OSError, PermissionError):
+                        pass
+                        
+        except (OSError, PermissionError) as e:
+            return {
+                "error": f"無法訪問資料夾: {str(e)}",
+                "folder_path": folder_path
+            }
+        
+        # 按文件數量排序
+        folder_stats.sort(key=lambda x: x["file_count"], reverse=True)
+        
+        return {
+            "folder_path": folder_path,
+            "total_files": total_files,
+            "total_size_bytes": total_size,
+            "total_size_human": format_file_size(total_size),
+            "max_depth_scanned": max_depth,
+            "items": folder_stats[:100],  # 限制返回前100項
+            "total_items": len(folder_stats)
+        }
+        
+    except Exception as e:
+        logger.error(f"獲取資料夾統計失敗: {str(e)}")
+        return {
+            "error": f"獲取資料夾統計失敗: {str(e)}",
+            "folder_path": folder_path
+        }
+
+def format_file_size(size_bytes: int) -> str:
+    """格式化文件大小"""
+    if size_bytes == 0:
+        return "0 B"
+    
+    size_names = ["B", "KB", "MB", "GB", "TB"]
+    import math
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {size_names[i]}"
 
 
 # 啟動應用
