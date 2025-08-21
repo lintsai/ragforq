@@ -754,8 +754,8 @@ def main():
                         line += f" | 暫估≈{partial:,}" if partial is not None else " | 暫估準備中…"
                         st.info(line)
                         st.progress(min(prog,99)/100)
-                        # 自動 rerun 以更新進度
-                        st.experimental_rerun()
+                        # 自動刷新：新版 Streamlit 使用 st.rerun；避免立即無限重跑，可在前面設定 st_autorefresh 或此處條件跳出
+                        st.rerun()
                         should_block = True
                     elif status == 'completed':
                         if estimated_count > 0:
