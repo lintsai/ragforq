@@ -255,15 +255,25 @@ class SmartFileRetriever:
 
                 # 增量回報 (每 60 個目錄或每新增 10 個採樣)
                 if progress_cb and (
-                    (total_dirs % 60 == 0) or
-                    (sampled % 10 == 0 and sampled > 0)
+                    (total_dirs % 40 == 0) or  # 更頻繁回報
+                    (sampled % 8 == 0 and sampled > 0)
                 ):
                     try:
+                        if sample_counts:
+                            # 動態估算暫估值 (使用深度調整平均, 若無則普通平均)
+                            try:
+                                mean_adj_dynamic = (sum(depth_adjusted) / len(depth_adjusted)) if depth_adjusted else (sum(sample_counts)/len(sample_counts))
+                            except Exception:
+                                mean_adj_dynamic = sum(sample_counts)/len(sample_counts)
+                            estimated_partial = int(mean_adj_dynamic * max(total_dirs,1))
+                        else:
+                            estimated_partial = None
                         progress_cb({
                             'phase': 'scanning',
                             'total_dirs_seen': total_dirs,
                             'sampled_dirs': sampled,
-                            'samples_collected': len(sample_counts)
+                            'samples_collected': len(sample_counts),
+                            'estimated_total_partial': estimated_partial
                         })
                     except Exception:
                         pass
@@ -274,11 +284,13 @@ class SmartFileRetriever:
             mean_raw = sum(sample_counts) / sampled
             if progress_cb:
                 try:
+                    estimated_partial = int((sum(depth_adjusted)/len(depth_adjusted)) * max(total_dirs,1)) if depth_adjusted else int((sum(sample_counts)/len(sample_counts)) * max(total_dirs,1))
                     progress_cb({
                         'phase': 'aggregating',
                         'total_dirs_seen': total_dirs,
                         'sampled_dirs': sampled,
-                        'samples_collected': len(sample_counts)
+                        'samples_collected': len(sample_counts),
+                        'estimated_total_partial': estimated_partial
                     })
                 except Exception:
                     pass
@@ -328,14 +340,22 @@ class SmartFileRetriever:
                         supported_files = sum(1 for f in files if os.path.splitext(f)[1].lower() in SUPPORTED_FILE_TYPES)
                         additional_samples.append(supported_files)
                         refine_dirs += 1
-                        if progress_cb and refine_dirs % 10 == 0:
+                        if progress_cb and refine_dirs % 8 == 0:
                             try:
+                                # 以目前累計樣本重新估算部分值
+                                all_samples_tmp = sample_counts + additional_samples
+                                if all_samples_tmp:
+                                    avg_tmp = sum(all_samples_tmp)/len(all_samples_tmp)
+                                    partial_refine = int(avg_tmp * total_dirs)
+                                else:
+                                    partial_refine = None
                                 progress_cb({
                                     'phase': 'refine',
                                     'refine_sampled': refine_dirs,
                                     'refine_limit': refine_limit,
                                     'total_dirs_seen': total_dirs,
-                                    'sampled_dirs': sampled
+                                    'sampled_dirs': sampled,
+                                    'estimated_total_partial': partial_refine
                                 })
                             except Exception:
                                 pass

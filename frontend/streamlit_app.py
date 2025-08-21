@@ -783,6 +783,8 @@ def main():
                                 line = f"📊 正在背景估算文件數量... {current_progress}%"
                                 if partial_est:
                                     line += f" | 暫估≈{partial_est:,}"
+                                else:
+                                    line += " | 暫估準備中…"
                                 st.info(line)
                                 if current_progress > 0:
                                     st.progress(min(current_progress,99)/100)
