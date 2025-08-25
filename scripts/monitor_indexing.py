@@ -181,8 +181,7 @@ def display_status(model_folder_name: Optional[str] = None):
     
     training_model_name = indexing_status.get('training_model_name')
     if training_model_name:
-        # 調整顯示文字：使用者反饋「已選擇（未在訓練）」語意不清，改為更直白
-        status_text = "正在訓練中" if indexing_status.get('is_training') else "已選擇（可用）"
+        status_text = "正在訓練中" if indexing_status.get('is_training') else "已選擇（未在訓練）"
         print(f"🎯 當前監控模型: {training_model_name} ({status_text})")
     else:
         print("💤 未指定監控模型或無模型正在訓練")
