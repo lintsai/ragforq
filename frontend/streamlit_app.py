@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Streamlit前端界面 - 提供用戶友好的界面來查詢Q槽文件
+Streamlit前端界面 - 提供用戶友好的界面來查詢文件
 """
 import os
 import sys
@@ -42,7 +42,7 @@ FILES_ENDPOINT = f"{API_URL}/files"
 
 # 頁面配置
 st.set_page_config(
-    page_title="Q槽文件智能助手",
+    page_title="文件智能助手",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -229,7 +229,7 @@ def main():
     # Web 應用直接可用，無需複雜設置
     
     # 標題
-    st.markdown('<p class="main-header">Q槽文件智能助手</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-header">文件智能助手</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">讓您的文檔知識觸手可及</p>', unsafe_allow_html=True)
     
     # 首先在 sidebar 中設置基本結構
@@ -244,7 +244,7 @@ def main():
         status = st.session_state.api_status
         if status:
             st.success(f"✅ API 服務: {status.get('status', '未知')}")
-            st.info(f"🗄️ Q槽訪問: {'✅ 可訪問' if status.get('q_drive_accessible') else '❌ 不可訪問'}")
+            st.info(f"🗄️ 目錄訪問: {'✅ 可訪問' if status.get('q_drive_accessible') else '❌ 不可訪問'}")
             st.info(f"🔖 API 版本: {status.get('version', '未知')}")
             # 顯示 runtime_state 基本索引資訊
             rt = status.get('runtime_state') or {}
@@ -533,14 +533,10 @@ def main():
         
         # 創建側邊欄
         with st.sidebar:
-            st.markdown("### 💡 關於")
-            st.write("Q槽文件智能助手，輸入問題即可開始對話。")
-            
-            st.markdown("---")
-
             # 根據 RAG 模式顯示相應的設置
             if rag_mode_main == "傳統RAG":
                 # 傳統RAG模型選擇
+                st.markdown("---")
                 st.markdown("### 🤖 向量模型")
                 try:
                     usable_models_response = requests.get(f"{API_URL}/api/usable-models", timeout=5)
@@ -925,7 +921,7 @@ def main():
             else:
                 st.markdown("""
                 <div style="text-align: center; padding: 40px 20px; color: #666;">
-                    <h3>👋 歡迎使用 Q槽文件智能助手</h3>
+                    <h3>👋 歡迎使用 文件智能助手</h3>
                     <p>我可以幫助您快速查找和了解公司內部文檔中的信息</p>
                     <p>請在下方輸入您的問題開始對話</p>
                 </div>
@@ -1011,7 +1007,7 @@ def main():
         
         # 頁腳
         st.markdown(
-            '<div class="footer">© 2025 公司名稱 - Q槽文件智能助手 v1.0.0</div>',
+            '<div class="footer">© 2025 廣明光電股份有限公司 - 文件智能助手 v1.0.0</div>',
             unsafe_allow_html=True
         )
 
@@ -1463,95 +1459,12 @@ def main():
                     if resp.status_code == 200:
                         data = resp.json()
                         status_text = data.get('status', '')
-                        # progress_text = data.get('progress', '')
-                        # realtime_text = data.get('realtime', '')
                         st.markdown("#### 狀態 Console")
                         st.code(status_text, language="bash")
-                        # st.markdown("#### 進度 Console")
-                        # st.code(progress_text, language="bash")
-                        # st.markdown("#### 實時監控 Console")
-                        # st.code(realtime_text, language="bash")
                     else:
                         st.error(f"監控API回應異常: {resp.status_code}")
                 except Exception as e:
                     st.error(f"監控API錯誤: {e}")
-
-                # 依賴狀態
-                st.markdown("---")
-                st.subheader("📦 依賴核心版本健康")
-                if st.button("刷新依賴狀態", key="refresh_dep_status"):
-                    st.session_state['_dep_status_reload'] = True
-                need_dep = st.session_state.get('_dep_status_reload', True)
-                if need_dep:
-                    try:
-                        dep_resp = requests.get(f"{API_URL}/admin/dependencies/status", headers={"admin_token": admin_token}, timeout=8)
-                        if dep_resp.status_code == 200:
-                            dep_data = dep_resp.json()
-                            items = dep_data.get('items', [])
-                            mismatch_cnt = dep_data.get('mismatch_count')
-                            if mismatch_cnt:
-                                st.warning(f"發現 {mismatch_cnt} 個未對齊 (mismatch/missing)")
-                            for it in items:
-                                icon = '✅' if it.get('status')=='aligned' else ('⚠️' if it.get('status')=='mismatch' else '❌')
-                                st.write(f"{icon} {it.get('package')} py:{it.get('pyproject') or '-'} req:{it.get('requirements') or '-'} inst:{it.get('installed') or '-'}")
-                            st.caption("對齊策略：requirements.txt 為真實鎖定來源。")
-                            # 觸發 lock & export
-                            if st.button("執行 lock + export (Poetry)", key="run_lock_export"):
-                                with st.spinner("執行中..."):
-                                    try:
-                                        resp_run = requests.post(f"{API_URL}/admin/dependencies/lock-export", headers={"admin_token": admin_token}, timeout=600)
-                                        if resp_run.status_code == 200:
-                                            run_data = resp_run.json()
-                                            st.success(f"完成: {run_data.get('message')} 用時 {run_data.get('elapsed_seconds')}s")
-                                            diff_lines = run_data.get('changed_requirements') or []
-                                            if diff_lines:
-                                                with st.expander("requirements.txt 變更 (diff)", expanded=False):
-                                                    st.code('\n'.join(diff_lines), language='diff')
-                                            st.session_state['_dep_status_reload'] = True
-                                        else:
-                                            st.error(f"操作失敗: {resp_run.text}")
-                                    except Exception as e:
-                                        st.error(f"操作錯誤: {e}")
-                            # 依賴審計區塊
-                            st.markdown("### 🧾 依賴審計")
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                if st.button("執行審計紀錄", key="run_dep_audit"):
-                                    try:
-                                        audit_run = requests.post(f"{API_URL}/admin/dependencies/audit-run", headers={"admin_token": admin_token}, timeout=20)
-                                        if audit_run.status_code == 200:
-                                            st.success("審計已寫入")
-                                        else:
-                                            st.error("審計執行失敗")
-                                    except Exception as e:
-                                        st.error(f"審計錯誤: {e}")
-                            with col_b:
-                                audit_limit = st.number_input("顯示最近紀錄數", min_value=10, max_value=200, value=60, step=10, key="audit_limit")
-                            try:
-                                audit_log = requests.get(f"{API_URL}/admin/dependencies/audit-log", headers={"admin_token": admin_token}, params={"limit": audit_limit}, timeout=8)
-                                if audit_log.status_code == 200:
-                                    adata = audit_log.json()
-                                    entries = adata.get('entries', [])
-                                    if entries:
-                                        import pandas as pd, datetime as dt
-                                        rows = []
-                                        for e in entries:
-                                            ts = e.get('ts')
-                                            mc = e.get('mismatch_count')
-                                            rows.append({'time': dt.datetime.fromtimestamp(ts), 'mismatch': mc})
-                                        df = pd.DataFrame(rows)
-                                        st.line_chart(df.set_index('time')['mismatch'])
-                                        st.caption(f"最近 {len(entries)} 次審計，最後時間: {entries[-1].get('ts')}")
-                                    else:
-                                        st.caption("無審計紀錄")
-                                else:
-                                    st.caption("無法取得審計紀錄")
-                            except Exception as e:
-                                st.caption(f"讀取審計紀錄失敗: {e}")
-                        else:
-                            st.warning("無法取得依賴狀態 (需要管理員權限)")
-                    except Exception as e:
-                        st.warning(f"依賴狀態讀取失敗: {e}")
             else:
                 st.info("請輸入Token以查看管理功能。")
 

@@ -160,6 +160,55 @@ def _start_dependency_audit_scheduler():
 
 _start_dependency_audit_scheduler()
 
+# ----------------------------------------------------------------------------
+# 子程序啟動輔助：確保訓練進程在關閉啟動終端後仍持續 (Windows 使用 DETACHED_PROCESS)
+# ----------------------------------------------------------------------------
+def _spawn_training_process(cmd: list, folder_name: str) -> subprocess.Popen:
+    """以跨平台『盡量與父進程脫離』方式啟動訓練子進程。
+
+    - Windows: 使用 DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP (+ 可選 CREATE_NO_WINDOW)
+    - POSIX:   使用 start_new_session=True (setsid)
+    - 透過環境變數 TRAINING_DETACH=0 可回退到原本行為 (方便 debug)
+    - 將 stdout/err 重導至 logs/training_<folder_name>.log 以保留細節
+    """
+    detach_enabled = os.getenv('TRAINING_DETACH', '1') != '0'
+    logs_dir_path = Path(LOGS_DIR)
+    logs_dir_path.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir_path / f"training_{folder_name}.log"
+
+    stdout_target = open(log_file, 'a', encoding='utf-8')  # noqa: SIM115 (保留引用供 Popen 使用)
+    popen_kwargs: Dict[str, Any] = {
+        'stdout': stdout_target,
+        'stderr': subprocess.STDOUT,
+        'stdin': subprocess.DEVNULL,
+        'close_fds': True,
+    }
+
+    if detach_enabled:
+        if os.name == 'nt':
+            # Windows flags
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            CREATE_NO_WINDOW = 0x08000000
+            popen_kwargs['creationflags'] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        else:
+            popen_kwargs['start_new_session'] = True
+    else:
+        # Debug 模式保留原 console 行為
+        pass
+
+    try:
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        logger.info(f"[TrainingSpawn] launched detached training pid={process.pid} folder={folder_name} log={log_file}")
+        return process
+    except Exception:
+        # 若失敗，關閉檔案避免資源洩漏
+        try:
+            stdout_target.close()
+        except Exception:
+            pass
+        raise
+
 # 添加CORS中間件
 app.add_middleware(
     CORSMiddleware,
@@ -464,6 +513,60 @@ def get_rag_engine(selected_model: Optional[str] = None, language: str = "繁體
     except Exception as e:
         logger.error(f"初始化{language} RAG 引擎時出錯: {str(e)}")
         raise HTTPException(status_code=500, detail=f"初始化{language} RAG 引擎失敗: {str(e)}")
+
+# ----------------------------------------------------------------------------
+# 啟動時自動檢測並嘗試恢復『中途中斷』的訓練 (未進入最終 stage 且無存活 PID)
+# ----------------------------------------------------------------------------
+@app.on_event("startup")
+async def _auto_resume_interrupted_training():
+    try:
+        models = vector_db_manager.list_available_models()
+        import psutil
+        resumed = []
+        for m in models:
+            path = Path(m['folder_path'])
+            if not vector_db_manager.is_training(path):
+                continue
+            lock = vector_db_manager.get_lock_info(path) or {}
+            stage = lock.get('stage') or ''
+            # 判斷是否終態
+            if any(stage.endswith(suf) for suf in ['success','failed','completed','exception','cancelled']):
+                continue
+            pids = []
+            for k in ('child_pid','pid'):
+                v = lock.get(k)
+                try:
+                    if v and int(v) not in pids:
+                        pids.append(int(v))
+                except Exception:
+                    pass
+            alive = any(psutil.pid_exists(pid) for pid in pids)
+            if alive:
+                continue  # 還在跑
+            # 嘗試恢復：根據 lock 中記錄的 training_type/type 決定 action
+            t_type = lock.get('training_type') or lock.get('type') or 'reindex'
+            model_info = m.get('model_info') or {}
+            if not model_info:
+                continue
+            req = TrainingRequest(
+                ollama_model=model_info.get('OLLAMA_MODEL'),
+                ollama_embedding_model=model_info.get('OLLAMA_EMBEDDING_MODEL'),
+                version=model_info.get('version')
+            )
+            # 直接呼叫對應內部函式 (避免循環事件 loop 複雜度)；不 await 外部 HTTP
+            if t_type.startswith('initial'):
+                await start_initial_training(type('obj',(),{'headers':{'admin_token':ADMIN_TOKEN}})(), req)
+                resumed.append((m['folder_name'],'initial'))
+            elif t_type.startswith('incremental'):
+                await start_incremental_training(type('obj',(),{'headers':{'admin_token':ADMIN_TOKEN}})(), req)
+                resumed.append((m['folder_name'],'incremental'))
+            else:
+                await start_reindex_training(type('obj',(),{'headers':{'admin_token':ADMIN_TOKEN}})(), req)
+                resumed.append((m['folder_name'],'reindex'))
+        if resumed:
+            logger.warning(f"[AutoResume] 已自動重新啟動中斷訓練: {resumed}")
+    except Exception as e:
+        logger.warning(f"[AutoResume] 檢測/恢復失敗: {e}")
 
 # 管理API - 權限驗證
 
@@ -1271,18 +1374,12 @@ async def start_initial_training(request: Request, training_request: TrainingReq
             json.dump(training_info, f)
         
         cmd = [sys.executable, "scripts/model_training_manager.py", "initial"]
-        # 在 Windows 上使用 CREATE_NEW_PROCESS_GROUP 確保子程序獨立；在 *nix 使用 start_new_session 以避免前端 session 中斷影響訓練
-        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        if hasattr(os, 'setsid'):
-            popen_kwargs['start_new_session'] = True
-        if os.name == 'nt':
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP
-        process = subprocess.Popen(cmd, **popen_kwargs)
+        process = _spawn_training_process(cmd, folder_name)
         # 更新鎖檔加入子進程 PID，方便監控
         try:
             lock_info = vector_db_manager.get_lock_info(model_path) or {}
             lock_info['child_pid'] = process.pid
+            lock_info['spawn_detached'] = True
             with open(model_path / '.lock', 'w', encoding='utf-8') as f:
                 json.dump(lock_info, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -1325,16 +1422,11 @@ async def start_incremental_training(request: Request, training_request: Trainin
             json.dump(training_info, f)
         
         cmd = [sys.executable, "scripts/model_training_manager.py", "incremental"]
-        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        if hasattr(os, 'setsid'):
-            popen_kwargs['start_new_session'] = True
-        if os.name == 'nt':
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP
-        process = subprocess.Popen(cmd, **popen_kwargs)
+        process = _spawn_training_process(cmd, folder_name)
         try:
             lock_info = vector_db_manager.get_lock_info(model_path) or {}
             lock_info['child_pid'] = process.pid
+            lock_info['spawn_detached'] = True
             with open(model_path / '.lock', 'w', encoding='utf-8') as f:
                 json.dump(lock_info, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -1377,16 +1469,11 @@ async def start_reindex_training(request: Request, training_request: TrainingReq
             json.dump(training_info, f)
         
         cmd = [sys.executable, "scripts/model_training_manager.py", "reindex"]
-        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        if hasattr(os, 'setsid'):
-            popen_kwargs['start_new_session'] = True
-        if os.name == 'nt':
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP
-        process = subprocess.Popen(cmd, **popen_kwargs)
+        process = _spawn_training_process(cmd, folder_name)
         try:
             lock_info = vector_db_manager.get_lock_info(model_path) or {}
             lock_info['child_pid'] = process.pid
+            lock_info['spawn_detached'] = True
             with open(model_path / '.lock', 'w', encoding='utf-8') as f:
                 json.dump(lock_info, f, ensure_ascii=False, indent=2)
         except Exception:
