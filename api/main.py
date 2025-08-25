@@ -174,7 +174,8 @@ def _spawn_training_process(cmd: list, folder_name: str) -> subprocess.Popen:
     detach_enabled = os.getenv('TRAINING_DETACH', '1') != '0'
     logs_dir_path = Path(LOGS_DIR)
     logs_dir_path.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir_path / f"training_{folder_name}.log"
+    # 與 model_training_manager 中 setup_model_logger 使用的 {folder_name}.log 對齊，避免雙檔案混淆
+    log_file = logs_dir_path / f"{folder_name}.log"
 
     stdout_target = open(log_file, 'a', encoding='utf-8')  # noqa: SIM115 (保留引用供 Popen 使用)
     popen_kwargs: Dict[str, Any] = {
@@ -199,8 +200,6 @@ def _spawn_training_process(cmd: list, folder_name: str) -> subprocess.Popen:
 
     try:
         process = subprocess.Popen(cmd, **popen_kwargs)
-        logger.info(f"[TrainingSpawn] launched detached training pid={process.pid} folder={folder_name} log={log_file}")
-        return process
     except Exception:
         # 若失敗，關閉檔案避免資源洩漏
         try:
@@ -208,6 +207,9 @@ def _spawn_training_process(cmd: list, folder_name: str) -> subprocess.Popen:
         except Exception:
             pass
         raise
+
+    logger.info(f"[TrainingSpawn] launched detached training pid={process.pid} folder={folder_name} log={log_file.name}")
+    return process
 
 # 添加CORS中間件
 app.add_middleware(
