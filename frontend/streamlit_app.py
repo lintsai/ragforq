@@ -1482,8 +1482,14 @@ def main():
                             )
                             st.session_state.monitor_auto_refresh_interval_ms = interval_opt * 1000
                         with col_ar3:
-                            lr = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.session_state.monitor_last_refresh_ts))
-                            st.caption(f"上次刷新: {lr} | 計數: {st.session_state.monitor_auto_refresh_count}")
+                            try:
+                                tz = pytz.timezone('Asia/Taipei')
+                                lr_dt = datetime.fromtimestamp(st.session_state.monitor_last_refresh_ts, tz)
+                                lr = lr_dt.strftime('%Y-%m-%d %H:%M:%S')
+                            except Exception:
+                                # 回退：使用原本 localtime
+                                lr = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.session_state.monitor_last_refresh_ts))
+                            st.caption(f"上次刷新 (UTC+8): {lr} | 計數: {st.session_state.monitor_auto_refresh_count}")
 
                         # 自動刷新邏輯
                         if auto_flag:
