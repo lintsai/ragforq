@@ -106,6 +106,52 @@ class SmartFileRetriever:
         self._file_count_warning_level = None  # high / medium / low
         self._estimated_file_count = None
         self._estimation_meta = {}
+
+    # --- 新增：動態更新檢索範圍 ---
+    def set_scope(self, folder_path: Optional[str]):
+        """動態設定/更新搜尋範圍。
+
+        Args:
+            folder_path: 相對於 base_path 的子目錄，或為 None 代表恢復至根目錄。
+        Returns:
+            dict: 變更結果與當前有效路徑。
+        """
+        original = str(self.folder_path)
+        if not folder_path:
+            self.folder_path = self.base_path
+        else:
+            try:
+                candidate = Path(self.base_path, folder_path).resolve()
+                if not str(candidate).startswith(str(self.base_path)):
+                    logger.warning(f"[FolderScopeSecurity] set_scope 越界: {folder_path} -> {candidate}; 回退根目錄")
+                    record_security_event(str(folder_path), str(candidate), 'out_of_base_root_set_scope')
+                    self.folder_path = self.base_path
+                else:
+                    if not candidate.exists():
+                        logger.warning(f"[FolderScope] 指定路徑不存在: {candidate}，回退根目錄")
+                        record_security_event(str(folder_path), str(candidate), 'path_not_exists')
+                        self.folder_path = self.base_path
+                    else:
+                        self.folder_path = candidate
+            except Exception as e:
+                logger.warning(f"[FolderScopeSecurity] set_scope 解析失敗 '{folder_path}': {e}; 回退根目錄")
+                record_security_event(str(folder_path), 'N/A', f'set_scope_parse_error:{e}')
+                self.folder_path = self.base_path
+
+        # 重置快取，強制重新估算與掃描
+        self.file_cache = {}
+        self.last_scan_time = 0
+        self._file_count_warning = None
+        self._file_count_warning_level = None
+        self._estimated_file_count = None
+        self._estimation_meta = {}
+        changed = original != str(self.folder_path)
+        logger.info(f"[FolderScope] 更新搜尋範圍: {original} -> {self.folder_path} (changed={changed})")
+        return {
+            'changed': changed,
+            'effective_folder': str(self.folder_path),
+            'base_path': str(self.base_path)
+        }
     
     def retrieve_relevant_files(self, query: str, max_files: int = 10) -> List[str]:
         """
@@ -1156,6 +1202,26 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             lang_info = "未知"
         logger.info(f"Dynamic RAG Engine 初始化完成 - 模型: {ollama_model}，語言: {lang_info}，引擎: {self.__class__.__name__}")
 
+    # --- 新增：對外統一的搜尋範圍設定方法 ---
+    def set_search_scope(self, folder_path: Optional[str]):
+        """設定/變更 RAG 檢索範圍（限制搜尋路徑）。
+
+        Args:
+            folder_path: 相對於 base_path 的子目錄；None 或空字串代表取消限制恢復至根路徑。
+        Returns:
+            dict: 當前範圍資訊 (含是否變更)。
+        """
+        result = self.file_retriever.set_scope(folder_path)
+        # 同步自身屬性，避免引用舊值
+        self.folder_path = self.file_retriever.folder_path
+        # 立刻執行一次輕量估算（延遲實際掃描，避免阻塞）
+        try:
+            scope_info = self.get_scope_info()
+            result.update({'scope_info': scope_info})
+        except Exception:
+            pass
+        return result
+
     def rewrite_query(self, original_query: str) -> str:
         """查詢重寫 - 參照傳統RAG的重試機制和策略"""
         try:
@@ -1338,8 +1404,8 @@ class DynamicRAGEngineBase(RAGEngineInterface):
             relevant_files = self.file_retriever.retrieve_relevant_files(optimized_query, max_files=15)
             
             # 強化文件夾限制驗證
-            if self.folder_path:
-                folder_path_str = str(Path(self.folder_path).resolve())
+            if self.file_retriever and self.file_retriever.folder_path:
+                folder_path_str = str(Path(self.file_retriever.folder_path).resolve())
                 filtered_files = []
                 for file_path in relevant_files:
                     if str(Path(file_path).resolve()).startswith(folder_path_str):
@@ -1347,7 +1413,7 @@ class DynamicRAGEngineBase(RAGEngineInterface):
                     else:
                         logger.debug(f"🔒 排除範圍外文件: {file_path}")
                 relevant_files = filtered_files
-                logger.info(f"🔒 文件夾限制 '{self.folder_path}' 驗證完成，找到 {len(relevant_files)} 個範圍內文件")
+                logger.info(f"🔒 文件夾限制 '{folder_path_str}' 驗證完成，找到 {len(relevant_files)} 個範圍內文件")
             
             if not relevant_files:
                 # 檢查是否因為沒有限制範圍而無結果
