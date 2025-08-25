@@ -10,6 +10,10 @@ import time
 import concurrent.futures
 from functools import partial
 import threading
+try:
+    import psutil  # 記憶體監控
+except ImportError:  # 容錯
+    psutil = None
 
 # 線程本地存儲，跟踪每個線程的COM初始化狀態
 thread_local = threading.local()
@@ -100,6 +104,46 @@ class DocumentIndexer:
         self.vector_store = self._load_vector_store()
         
         logger.info(f"DocumentIndexer 初始化完成，向量存儲位置: {self.vector_db_path}")
+        # 向量存儲寫入鎖 (FAISS / LangChain FAISS store 非執行緒安全，避免同時 add_texts 造成記憶體破壞)
+        self._vs_lock = threading.Lock()
+        # 記憶體診斷用：每批文件後記錄一次，避免大量 IO
+        self._last_mem_log_ts = 0
+        self._mem_log_interval = 15  # 秒
+
+    # ------------------ 診斷/輔助 ------------------
+    def _log_memory_usage(self, force: bool = False):
+        """記錄目前行程記憶體使用狀態，用於診斷 double free 前的行為模式。"""
+        if not psutil:
+            return
+        now = time.time()
+        if (not force) and (now - self._last_mem_log_ts < self._mem_log_interval):
+            return
+        try:
+            p = psutil.Process()
+            mem_info = p.memory_info()
+            rss_mb = mem_info.rss / 1024 / 1024
+            vms_mb = mem_info.vms / 1024 / 1024
+            logger.info(f"[MEM] RSS={rss_mb:.1f}MB VMS={vms_mb:.1f}MB Threads={p.num_threads()} FDs~? (platform dependent)")
+            self._last_mem_log_ts = now
+        except Exception:
+            pass
+
+    def _adaptive_embedding_batch(self, planned: int) -> int:
+        """根據即時記憶體壓力調整 embedding 批次大小，降低碎片與壓力。"""
+        if not psutil:
+            return planned
+        try:
+            vm = psutil.virtual_memory()
+            # 使用率分級調整
+            if vm.percent >= 90:
+                return max(2, planned // 4)
+            if vm.percent >= 80:
+                return max(4, planned // 2)
+            if vm.percent >= 70:
+                return max(8, int(planned * 0.6))
+            return planned
+        except Exception:
+            return planned
     
     def _load_indexed_files(self) -> Dict[str, float]:
         """
@@ -356,23 +400,25 @@ class DocumentIndexer:
             # 添加到向量存儲
             try:
                 if all_chunks:  # 確保有內容才添加
-                    # 批量處理嵌入生成
-                    batch_size = EMBEDDING_BATCH_SIZE
                     total_chunks = len(all_chunks)
-                    
+                    base_batch_size = EMBEDDING_BATCH_SIZE
                     if total_chunks > 5:
-                        logger.info(f"批量處理 {total_chunks} 個文本塊，批次大小: {batch_size}")
-                    
-                    for i in range(0, total_chunks, batch_size):
+                        logger.info(f"批量處理 {total_chunks} 個文本塊，初始批次大小: {base_batch_size}")
+                    i = 0
+                    while i < total_chunks:
+                        # 動態調整批次大小 (避免高記憶體壓力導致崩潰)
+                        batch_size = self._adaptive_embedding_batch(base_batch_size)
                         batch_end = min(i + batch_size, total_chunks)
                         batch_chunks = all_chunks[i:batch_end]
                         batch_metadatas = all_metadatas[i:batch_end]
-                        
-                        # 添加文本批次到向量存儲
-                        self.vector_store.add_texts(batch_chunks, batch_metadatas)
-                        
-                        if total_chunks > 10 and (i + batch_size) % (batch_size * 5) == 0:
-                            logger.info(f"已處理 {batch_end}/{total_chunks} 個文本塊")
+                        # 寫入向量存儲需加鎖，避免多線程同時 add_texts 造成底層記憶體破壞
+                        with self._vs_lock:
+                            self.vector_store.add_texts(batch_chunks, batch_metadatas)
+                        i = batch_end
+                        # 偶爾記錄記憶體
+                        self._log_memory_usage()
+                    if total_chunks > 10:
+                        logger.info(f"完成 {total_chunks} 個文本塊嵌入寫入 (可能多次動態調整批次)")
                 else:
                     logger.warning(f"文件無有效內容，跳過向量存儲 ({file_path})")
                     # 標記文件為已處理
@@ -536,6 +582,19 @@ class DocumentIndexer:
                 self._save_vector_store()
                 
                 logger.info(f"已完成批次 {current_batch_idx + 1}/{total_batches}，處理了 {batch_end}/{total_files} 個文件")
+                # 每批次後記錄記憶體，並在高壓時嘗試釋放
+                self._log_memory_usage()
+                if psutil:
+                    try:
+                        vm = psutil.virtual_memory()
+                        if vm.percent > 88:
+                            logger.warning(f"記憶體使用率 {vm.percent}% 過高，執行強制 GC 並暫停 3 秒降壓")
+                            import gc, time as _t
+                            gc.collect()
+                            _t.sleep(3)
+                            self._log_memory_usage(force=True)
+                    except Exception:
+                        pass
                 _hb()
             
             # 所有批次處理完成，標記索引任務結束

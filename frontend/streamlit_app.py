@@ -1483,11 +1483,13 @@ def main():
                             st.session_state.monitor_auto_refresh_interval_ms = interval_opt * 1000
                         with col_ar3:
                             try:
-                                tz = pytz.timezone('Asia/Taipei')
-                                lr_dt = datetime.fromtimestamp(st.session_state.monitor_last_refresh_ts, tz)
+                                # 以 UTC 起點再轉 Asia/Taipei，避免系統本地時區影響
+                                tz_taipei = pytz.timezone('Asia/Taipei')
+                                utc_dt = datetime.utcfromtimestamp(st.session_state.monitor_last_refresh_ts).replace(tzinfo=pytz.utc)
+                                lr_dt = utc_dt.astimezone(tz_taipei)
                                 lr = lr_dt.strftime('%Y-%m-%d %H:%M:%S')
                             except Exception:
-                                # 回退：使用原本 localtime
+                                # 回退：使用 time.localtime (可能已是本地 +8，但不保證)
                                 lr = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.session_state.monitor_last_refresh_ts))
                             st.caption(f"上次刷新 (UTC+8): {lr} | 計數: {st.session_state.monitor_auto_refresh_count}")
 
