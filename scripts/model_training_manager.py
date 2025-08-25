@@ -9,6 +9,7 @@ import logging
 import json
 import argparse
 from pathlib import Path
+import time
 
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -142,17 +143,57 @@ class ModelTrainingManager:
         self._update_lock_stage(model_path, stage="reindex:clearing_old")
 
         if model_path.exists():
-            import shutil, json
+            # 為了避免刪除資料夾時把 .lock 一併移除，導致前端顯示狀態瞬間變成「未鎖定 / 可用」，
+            # 我們先保存現有的 .model 與 .lock 資料，再清空資料夾後重建並恢復 lock。
+            import shutil, json, tempfile
             model_file = model_path / ".model"
+            lock_file = model_path / ".lock"
             model_info = None
-            if model_file.exists():
-                with open(model_file, 'r', encoding='utf-8') as f:
-                    model_info = json.load(f)
-            shutil.rmtree(model_path)
+            lock_info = None
+            try:
+                if model_file.exists():
+                    with open(model_file, 'r', encoding='utf-8') as f:
+                        model_info = json.load(f)
+            except Exception as e:
+                logger.warning(f"讀取 .model 失敗，將嘗試繼續: {e}")
+            try:
+                if lock_file.exists():
+                    with open(lock_file, 'r', encoding='utf-8') as f:
+                        lock_info = json.load(f)
+            except Exception as e:
+                logger.warning(f"讀取 .lock 失敗，將重新建立: {e}")
+
+            # 直接刪除整個資料夾
+            try:
+                shutil.rmtree(model_path)
+            except Exception as e:
+                logger.error(f"刪除舊索引資料夾失敗: {e}")
+                return False
             model_path.mkdir(parents=True, exist_ok=True)
+
+            # 還原 .model
             if model_info:
-                with open(model_file, 'w', encoding='utf-8') as f:
-                    json.dump(model_info, f, ensure_ascii=False, indent=2)
+                try:
+                    with open(model_file, 'w', encoding='utf-8') as f:
+                        json.dump(model_info, f, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    logger.warning(f"寫回 .model 失敗（忽略）: {e}")
+
+            # 還原 (或重建) .lock 以維持前端訓練中狀態
+            try:
+                if lock_info:
+                    # 更新階段與時間戳
+                    import time
+                    lock_info['stage'] = 'reindex:clearing_old'
+                    lock_info['stage_ts'] = int(time.time())
+                    with open(lock_file, 'w', encoding='utf-8') as f:
+                        json.dump(lock_info, f, ensure_ascii=False, indent=2)
+                else:
+                    # 若原本沒有 lock（理論上不應發生），重建一份簡化的鎖定資訊
+                    from utils.training_lock_manager import training_lock_manager
+                    training_lock_manager.create_lock(model_path, {"type": "reindex", "status": "restarting"})
+            except Exception as e:
+                logger.warning(f"恢復 .lock 失敗（忽略）: {e}")
 
         document_indexer = DocumentIndexer(
             vector_db_path=str(model_path),
@@ -191,6 +232,24 @@ class ModelTrainingManager:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.debug(f"更新鎖定階段失敗（忽略）: {e}")
+
+    def _heartbeat(self, model_path: Path):
+        """更新鎖檔心跳。"""
+        try:
+            lock_file = model_path / '.lock'
+            if not lock_file.exists():
+                return
+            import json
+            with open(lock_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            data['heartbeat_ts'] = int(time.time())
+            with open(lock_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _check_cancel_flag(self, model_path: Path) -> bool:
+        return (model_path / 'cancel.flag').exists()
 
 def main():
     """主函數"""
@@ -257,6 +316,7 @@ def main():
     logger.info(f"已為模型 {folder_name} 創建鎖定文件")
     manager._update_lock_stage(model_path, stage=f"{action}:init")
 
+    cancelled_gracefully = False
     try:
         if action == 'initial':
             success = manager.start_initial_training(ollama_model, ollama_embedding_model, version, model_path)
@@ -268,14 +328,24 @@ def main():
             logger.error(f"未知的 action: {action}")
             sys.exit(1)
         
+        # 檢查是否有取消旗標
+        if manager._check_cancel_flag(model_path):
+            cancelled_gracefully = True
+            success = False
+            manager._update_lock_stage(model_path, stage=f"{action}:cancelled", meta={"graceful": True})
+            logger.info("訓練被優雅取消。")
+
         if success:
             manager._update_lock_stage(model_path, stage=f"{action}:success")
             logger.info(f"動作 {action} 執行成功")
             sys.exit(0)
         else:
-            manager._update_lock_stage(model_path, stage=f"{action}:failed")
-            logger.error(f"動作 {action} 執行失敗")
-            sys.exit(1)
+            if not cancelled_gracefully:
+                manager._update_lock_stage(model_path, stage=f"{action}:failed")
+                logger.error(f"動作 {action} 執行失敗")
+                sys.exit(1)
+            else:
+                sys.exit(0)
             
     except Exception as e:
         logger.error(f"執行動作 {action} 時發生未預期的錯誤: {str(e)}")
@@ -289,8 +359,18 @@ def main():
     finally:
         # 確保鎖定文件和臨時文件被清理
         if model_path:
+            if cancelled_gracefully:
+                # 優雅取消：仍移除鎖，前端顯示狀態可透過 .stage_meta 判斷
+                pass
             manager.vector_db_manager.remove_lock_file(model_path)
-            logger.info(f"已為模型 {folder_name} 移除鎖定文件")
+            logger.info(f"已為模型 {folder_name} 移除鎖定文件 (cancelled={cancelled_gracefully})")
+            # 清理 cancel.flag
+            try:
+                cf = model_path / 'cancel.flag'
+                if cf.exists():
+                    cf.unlink()
+            except Exception:
+                pass
         try:
             if os.path.exists("temp_training_info.json"):
                 os.remove("temp_training_info.json")

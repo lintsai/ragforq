@@ -1222,12 +1222,20 @@ def main():
                 
                 try:
                     lock_status_resp = requests.get(f"{API_URL}/admin/lock-status", headers={"admin_token": admin_token}, timeout=10)
+                    # 取得詳細訓練進度
+                    status_rows = []
+                    try:
+                        status_rows = requests.get(f"{API_URL}/admin/training/status", headers={"admin_token": admin_token}, timeout=8).json()
+                    except Exception:
+                        status_rows = []
                     if lock_status_resp.status_code == 200:
                         lock_status_list = lock_status_resp.json()
                         
                         if lock_status_list:
                             for status in lock_status_list:
                                 with st.expander(f"🔐 {status['model_name']}", expanded=False):
+                                    # 匹配進度
+                                    row = next((r for r in status_rows if r['folder_name']==status['folder_name']), None)
                                     col1, col2, col3 = st.columns(3)
                                     
                                     with col1:
@@ -1260,6 +1268,16 @@ def main():
                                             st.write(f"- 鎖定時間: {lock_info['created_at']}")
                                         if 'pid' in lock_info:
                                             st.write(f"- 進程ID: {lock_info['pid']}")
+                                        if 'child_pid' in lock_info:
+                                            st.write(f"- 子進程PID: {lock_info['child_pid']}")
+                                        if row and row.get('progress') and row['progress'].get('percent') is not None:
+                                            pct = row['progress']['percent']
+                                            st.progress(min(100, pct)/100.0, text=f"進度 {pct:.2f}%")
+                                        if row and row.get('heartbeat_age_seconds') is not None:
+                                            age = row['heartbeat_age_seconds']
+                                            st.caption(f"⏱️ Heartbeat: {age:.1f}s 前")
+                                        if row and row.get('interrupted'):
+                                            st.error('⚠️ 偵測到中斷 (進程不在但未標記完成)')
                                         if 'process_name' in lock_info:
                                             st.write(f"- 進程名稱: {lock_info['process_name']}")
                                     
@@ -1289,6 +1307,57 @@ def main():
                                                     st.error(f"❌ 解鎖失敗: {unlock_resp.text}")
                                             except Exception as e:
                                                 st.error(f"❌ 解鎖操作失敗: {e}")
+                                        # 取消訓練按鈕
+                                        if st.button("🛑 強制取消", key=f"cancel_training_{status['folder_name']}"):
+                                            try:
+                                                cancel_resp = requests.post(
+                                                    f"{API_URL}/admin/training/cancel",
+                                                    headers={"admin_token": admin_token},
+                                                    json={"folder_name": status['folder_name'], "mode": "force"}
+                                                )
+                                                if cancel_resp.status_code == 200:
+                                                    cres = cancel_resp.json()
+                                                    if cres.get('status') == 'cancelled':
+                                                        st.success("訓練取消請求已處理，鎖定已移除。")
+                                                    else:
+                                                        st.info(cres.get('message','已完成'))
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"取消失敗: {cancel_resp.text}")
+                                            except Exception as e:
+                                                st.error(f"API 調用失敗: {e}")
+                                        # 優雅取消
+                                        if st.button("🕊️ 優雅取消", key=f"graceful_cancel_{status['folder_name']}"):
+                                            try:
+                                                g_resp = requests.post(
+                                                    f"{API_URL}/admin/training/cancel",
+                                                    headers={"admin_token": admin_token},
+                                                    json={"folder_name": status['folder_name'], "mode": "graceful"}
+                                                )
+                                                if g_resp.status_code == 200:
+                                                    st.success("已送出優雅取消請求")
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"優雅取消失敗: {g_resp.text}")
+                                            except Exception as e:
+                                                st.error(f"API 調用失敗: {e}")
+                                    else:
+                                        # 若偵測到 interrupted 可提供恢復
+                                        if row and row.get('interrupted'):
+                                            if st.button('♻️ 嘗試恢復', key=f"resume_{status['folder_name']}"):
+                                                try:
+                                                    r = requests.post(
+                                                        f"{API_URL}/admin/training/resume",
+                                                        headers={"admin_token": admin_token},
+                                                        json={"folder_name": status['folder_name']}
+                                                    )
+                                                    if r.status_code == 200:
+                                                        st.success('已觸發恢復')
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(f"恢復失敗: {r.text}")
+                                                except Exception as e:
+                                                    st.error(f"API 調用失敗: {e}")
                             
                             # 批量清理無效鎖定
                             st.markdown("### 批量操作")
@@ -1394,14 +1463,14 @@ def main():
                     if resp.status_code == 200:
                         data = resp.json()
                         status_text = data.get('status', '')
-                        progress_text = data.get('progress', '')
-                        realtime_text = data.get('realtime', '')
+                        # progress_text = data.get('progress', '')
+                        # realtime_text = data.get('realtime', '')
                         st.markdown("#### 狀態 Console")
                         st.code(status_text, language="bash")
-                        st.markdown("#### 進度 Console")
-                        st.code(progress_text, language="bash")
-                        st.markdown("#### 實時監控 Console")
-                        st.code(realtime_text, language="bash")
+                        # st.markdown("#### 進度 Console")
+                        # st.code(progress_text, language="bash")
+                        # st.markdown("#### 實時監控 Console")
+                        # st.code(realtime_text, language="bash")
                     else:
                         st.error(f"監控API回應異常: {resp.status_code}")
                 except Exception as e:

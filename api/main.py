@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import json
+import time
 from typing import List, Dict, Any, Optional
 from collections import deque
 from pathlib import Path
@@ -10,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import subprocess
+import signal
 from fastapi.responses import FileResponse, PlainTextResponse
 
 # 添加項目根目錄到路徑
@@ -69,6 +71,24 @@ def _configure_file_logging():
         logger.warning(f"設定檔案日誌處理器失敗: {e}")
 
 _configure_file_logging()
+
+# === 訓練審計日誌 ===
+from pathlib import Path as _Path
+_AUDIT_LOG_PATH = _Path('logs') / 'training_audit.log'
+_AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def _write_audit(event: str, data: Dict[str, Any]):
+    """寫入訓練/索引操作審計紀錄。"""
+    try:
+        record = {
+            'ts': int(time.time()),
+            'event': event,
+            **data
+        }
+        with open(_AUDIT_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    except Exception as e:
+        logger.debug(f"寫入審計失敗: {e}")
 
 # 創建FastAPI應用
 app = FastAPI(
@@ -1251,7 +1271,29 @@ async def start_initial_training(request: Request, training_request: TrainingReq
             json.dump(training_info, f)
         
         cmd = [sys.executable, "scripts/model_training_manager.py", "initial"]
-        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 在 Windows 上使用 CREATE_NEW_PROCESS_GROUP 確保子程序獨立；在 *nix 使用 start_new_session 以避免前端 session 中斷影響訓練
+        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if hasattr(os, 'setsid'):
+            popen_kwargs['start_new_session'] = True
+        if os.name == 'nt':
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        # 更新鎖檔加入子進程 PID，方便監控
+        try:
+            lock_info = vector_db_manager.get_lock_info(model_path) or {}
+            lock_info['child_pid'] = process.pid
+            with open(model_path / '.lock', 'w', encoding='utf-8') as f:
+                json.dump(lock_info, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        _write_audit('start_initial', {
+            'folder_name': folder_name,
+            'ollama_model': training_request.ollama_model,
+            'embedding_model': training_request.ollama_embedding_model,
+            'version': training_request.version,
+            'pid': process.pid
+        })
         
         return {"status": "初始訓練已開始", "message": f"訓練進程已啟動 (PID: {process.pid})"}
         
@@ -1283,7 +1325,27 @@ async def start_incremental_training(request: Request, training_request: Trainin
             json.dump(training_info, f)
         
         cmd = [sys.executable, "scripts/model_training_manager.py", "incremental"]
-        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if hasattr(os, 'setsid'):
+            popen_kwargs['start_new_session'] = True
+        if os.name == 'nt':
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        try:
+            lock_info = vector_db_manager.get_lock_info(model_path) or {}
+            lock_info['child_pid'] = process.pid
+            with open(model_path / '.lock', 'w', encoding='utf-8') as f:
+                json.dump(lock_info, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        _write_audit('start_incremental', {
+            'folder_name': folder_name,
+            'ollama_model': training_request.ollama_model,
+            'embedding_model': training_request.ollama_embedding_model,
+            'version': training_request.version,
+            'pid': process.pid
+        })
         
         return {"status": "增量訓練已開始", "message": f"訓練進程已啟動 (PID: {process.pid})"}
         
@@ -1315,7 +1377,27 @@ async def start_reindex_training(request: Request, training_request: TrainingReq
             json.dump(training_info, f)
         
         cmd = [sys.executable, "scripts/model_training_manager.py", "reindex"]
-        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if hasattr(os, 'setsid'):
+            popen_kwargs['start_new_session'] = True
+        if os.name == 'nt':
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            popen_kwargs['creationflags'] = CREATE_NEW_PROCESS_GROUP
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        try:
+            lock_info = vector_db_manager.get_lock_info(model_path) or {}
+            lock_info['child_pid'] = process.pid
+            with open(model_path / '.lock', 'w', encoding='utf-8') as f:
+                json.dump(lock_info, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        _write_audit('start_reindex', {
+            'folder_name': folder_name,
+            'ollama_model': training_request.ollama_model,
+            'embedding_model': training_request.ollama_embedding_model,
+            'version': training_request.version,
+            'pid': process.pid
+        })
         
         return {"status": "重新索引已開始", "message": f"訓練進程已啟動 (PID: {process.pid})"}
         
@@ -1384,6 +1466,7 @@ async def force_unlock_model(request: Request, folder_name: str = Body(...), rea
         success = vector_db_manager.force_unlock_model(model_path, reason)
         
         if success:
+            _write_audit('force_unlock', {'folder_name': folder_name, 'reason': reason})
             # 清理對應的RAG引擎緩存
             if folder_name in rag_engines:
                 del rag_engines[folder_name]
@@ -1414,6 +1497,224 @@ async def cleanup_invalid_locks(request: Request):
     except Exception as e:
         logger.error(f"清理無效鎖定失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"清理失敗: {str(e)}")
+
+# === 新增：取消正在進行的訓練 / 重新索引 ===
+@app.post("/admin/training/cancel")
+async def cancel_training(request: Request, folder_name: str = Body(...), mode: str = Body('force')):
+    """取消指定模型的訓練 / 索引進程。
+
+    傳入 folder_name (即向量模型資料夾名稱)。若 .lock 中含 child_pid 則優先終止子進程；
+    否則使用 pid 欄位。終止後移除鎖定檔，方便重新啟動。
+    """
+    await check_admin(request)
+    try:
+        # 尋找目標模型資料夾
+        models = vector_db_manager.list_available_models()
+        target = next((m for m in models if m['folder_name'] == folder_name), None)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"找不到模型: {folder_name}")
+        model_path = Path(target['folder_path'])
+        if not vector_db_manager.is_training(model_path):
+            return {"status": "not_running", "message": "該模型目前沒有進行中的訓練", "folder_name": folder_name}
+
+        # Graceful 模式：建立 cancel.flag 並更新 lock 階段
+        if mode == 'graceful':
+            try:
+                (model_path / 'cancel.flag').write_text('cancel requested', encoding='utf-8')
+                lock_info = vector_db_manager.get_lock_info(model_path) or {}
+                lock_info['stage'] = 'canceling'
+                lock_info['stage_ts'] = int(time.time())
+                lock_info['cancel_mode'] = 'graceful'
+                with open(model_path / '.lock', 'w', encoding='utf-8') as f:
+                    json.dump(lock_info, f, ensure_ascii=False, indent=2)
+                _write_audit('request_graceful_cancel', {'folder_name': folder_name})
+                return {"status": "graceful_requested", "folder_name": folder_name, "message": "已請求優雅取消"}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"寫入取消旗標失敗: {e}")
+
+        lock_info = vector_db_manager.get_lock_info(model_path) or {}
+        pid_candidates = []
+        # child_pid 優先，其次 pid
+        for key in ['child_pid', 'pid']:
+            p = lock_info.get(key)
+            if isinstance(p, int):
+                pid_candidates.append(p)
+            else:
+                # 若為字串且是數字
+                try:
+                    if isinstance(p, str) and p.isdigit():
+                        pid_candidates.append(int(p))
+                except Exception:
+                    pass
+        if not pid_candidates:
+            # 無 PID，直接移除鎖檔
+            vector_db_manager.remove_lock_file(model_path)
+            return {"status": "no_pid", "message": "沒有在鎖檔中找到 PID，已直接解除鎖定", "folder_name": folder_name}
+
+        terminated = []
+        failed = []
+        # 使用 psutil 嘗試結束進程樹
+        try:
+            import psutil  # 已用於 training_lock_manager
+            for pid in pid_candidates:
+                try:
+                    if not psutil.pid_exists(pid):
+                        terminated.append({"pid": pid, "status": "not_exists"})
+                        continue
+                    proc = psutil.Process(pid)
+                    # 先嘗試優雅終止
+                    for child in proc.children(recursive=True):
+                        try:
+                            child.terminate()
+                        except Exception:
+                            pass
+                    proc.terminate()
+                except Exception as e:
+                    failed.append({"pid": pid, "error": str(e)})
+            # 等待一小段時間
+            import time as _t
+            _t.sleep(1.0)
+            # 強硬 kill 尚未關閉的
+            for pid in pid_candidates:
+                try:
+                    if psutil.pid_exists(pid):
+                        psutil.Process(pid).kill()
+                        terminated.append({"pid": pid, "status": "killed"})
+                    else:
+                        terminated.append({"pid": pid, "status": "terminated"})
+                except Exception as e:
+                    failed.append({"pid": pid, "error": str(e)})
+        except Exception as e:
+            # 回退：使用 os.kill (可能在 Windows 上受限)
+            for pid in pid_candidates:
+                try:
+                    if os.name == 'nt':
+                        # Windows: 使用 signal.CTRL_BREAK_EVENT 觸發，若支持
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except Exception:
+                            os.kill(pid, signal.SIGABRT)
+                    else:
+                        os.kill(pid, signal.SIGTERM)
+                    terminated.append({"pid": pid, "status": "signaled"})
+                except Exception as ee:
+                    failed.append({"pid": pid, "error": f"fallback_kill_failed: {ee}"})
+        # 移除鎖檔
+        try:
+            vector_db_manager.remove_lock_file(model_path)
+        except Exception:
+            pass
+        # 清理 RAG 引擎緩存，避免使用半完成索引
+        global rag_engines
+        rag_engines = {k: v for k, v in rag_engines.items() if folder_name not in k}
+        _write_audit('force_cancel', {
+            'folder_name': folder_name,
+            'terminated': terminated,
+            'failed': failed
+        })
+        return {
+            "status": "cancelled",
+            "folder_name": folder_name,
+            "terminated": terminated,
+            "failed": failed
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"取消訓練失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"取消訓練失敗: {e}")
+
+# === 訓練狀態查詢 ===
+@app.get('/admin/training/status')
+async def get_training_status(request: Request, folder_name: Optional[str] = Query(None)):
+    await check_admin(request)
+    models = vector_db_manager.list_available_models()
+    rows = []
+    now = time.time()
+    for m in models:
+        if folder_name and m['folder_name'] != folder_name:
+            continue
+        model_path = Path(m['folder_path'])
+        lock_info = vector_db_manager.get_lock_info(model_path) if vector_db_manager.is_training(model_path) else None
+        stage = lock_info.get('stage') if lock_info else None
+        stage_ts = lock_info.get('stage_ts') if lock_info else None
+        pid = lock_info.get('pid') if lock_info else None
+        child_pid = lock_info.get('child_pid') if lock_info else None
+        import psutil
+        def _alive(p):
+            try:
+                return psutil.pid_exists(int(p)) if p else False
+            except Exception:
+                return False
+        pid_alive = _alive(pid)
+        child_alive = _alive(child_pid)
+        # 讀取進度
+        progress = None
+        try:
+            prog_path = model_path / 'indexing_progress.json'
+            if prog_path.exists():
+                progress = json.loads(prog_path.read_text(encoding='utf-8'))
+                total_batches = progress.get('total_batches') or 0
+                completed = progress.get('completed_batches') or 0
+                pct = (completed / total_batches * 100.0) if total_batches else None
+                progress['percent'] = pct
+        except Exception:
+            pass
+        # 心跳檢查
+        heartbeat_ts = lock_info.get('heartbeat_ts') if lock_info else None
+        heartbeat_age = (now - heartbeat_ts) if heartbeat_ts else None
+        interrupted = False
+        if lock_info and not (pid_alive or child_alive):
+            # 尚未標記成功/失敗且進程掛掉
+            if stage and all(not stage.endswith(suf) for suf in ['success', 'failed', 'completed', 'exception']):
+                interrupted = True
+        rows.append({
+            'folder_name': m['folder_name'],
+            'display_name': m['display_name'],
+            'stage': stage,
+            'stage_ts': stage_ts,
+            'pid': pid,
+            'child_pid': child_pid,
+            'pid_alive': pid_alive,
+            'child_pid_alive': child_alive,
+            'heartbeat_age_seconds': round(heartbeat_age,2) if heartbeat_age is not None else None,
+            'progress': progress,
+            'interrupted': interrupted,
+            'is_training': m['is_training']
+        })
+    return rows
+
+# === 訓練恢復 (簡單重啟) ===
+@app.post('/admin/training/resume')
+async def resume_training(request: Request, folder_name: str = Body(...)):
+    await check_admin(request)
+    # 查找模型資訊
+    models = vector_db_manager.list_available_models()
+    model = next((mm for mm in models if mm['folder_name'] == folder_name), None)
+    if not model:
+        raise HTTPException(status_code=404, detail='模型不存在')
+    model_path = Path(model['folder_path'])
+    lock_info = vector_db_manager.get_lock_info(model_path)
+    if lock_info and vector_db_manager.is_training(model_path):
+        return {"status": "already_running"}
+    # 擷取原訓練類型，若缺省使用 reindex 作為安全預設
+    training_type = (lock_info or {}).get('training_type') or (lock_info or {}).get('type') or 'reindex'
+    model_info = model['model_info'] or {}
+    if not model_info:
+        raise HTTPException(status_code=400, detail='缺少 model_info 不能恢復')
+    # 構建請求轉呼叫既有端點
+    req_body = TrainingRequest(
+        ollama_model=model_info.get('OLLAMA_MODEL'),
+        ollama_embedding_model=model_info.get('OLLAMA_EMBEDDING_MODEL'),
+        version=model_info.get('version')
+    )
+    _write_audit('resume_request', {'folder_name': folder_name, 'training_type': training_type})
+    if training_type.startswith('initial'):
+        return await start_initial_training(request, req_body)
+    elif training_type.startswith('incremental'):
+        return await start_incremental_training(request, req_body)
+    else:
+        return await start_reindex_training(request, req_body)
 
 # === 新的設置流程 API ===
 

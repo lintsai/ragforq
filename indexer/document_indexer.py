@@ -467,6 +467,32 @@ class DocumentIndexer:
             logger.error(f"詳細錯誤: {traceback.format_exc()}")
             return 0, len(file_paths)
         
+        # 用於心跳與取消檢查
+        last_hb = 0
+        cancel_flag_path = Path(self.vector_db_path) / 'cancel.flag'
+        lock_path = Path(self.vector_db_path) / '.lock'
+
+        def _hb():
+            nonlocal last_hb
+            now = time.time()
+            if now - last_hb >= 5:  # 5秒節流
+                last_hb = now
+                try:
+                    if lock_path.exists():
+                        info = json.loads(lock_path.read_text(encoding='utf-8'))
+                        info['heartbeat_ts'] = int(now)
+                        # 動態進度百分比
+                        try:
+                            total_batches = self.indexing_progress.get('total_batches') or 0
+                            completed = self.indexing_progress.get('completed_batches') or 0
+                            if total_batches:
+                                info['progress_percent'] = round(completed / total_batches * 100, 2)
+                        except Exception:
+                            pass
+                        lock_path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding='utf-8')
+                except Exception:
+                    pass
+
         try:
             for i in range(completed_batches * batch_size, total_files, batch_size):
                 batch_end = min(i + batch_size, total_files)
@@ -479,6 +505,12 @@ class DocumentIndexer:
                                             current_batch=batch, 
                                             completed_batches=current_batch_idx)
                 
+                # 心跳檢查並處理取消
+                _hb()
+                if cancel_flag_path.exists():
+                    logger.warning("檢測到取消旗標，將優雅停止索引循環。")
+                    break
+
                 # 處理一批文件
                 self.parallel_index_files(batch)
                 
@@ -504,6 +536,7 @@ class DocumentIndexer:
                 self._save_vector_store()
                 
                 logger.info(f"已完成批次 {current_batch_idx + 1}/{total_batches}，處理了 {batch_end}/{total_files} 個文件")
+                _hb()
             
             # 所有批次處理完成，標記索引任務結束
             self._save_indexing_progress(pending_files=[], 
@@ -521,6 +554,9 @@ class DocumentIndexer:
             if pbar:
                 pbar.close()
                 
+        # 如果有取消旗標，標記狀態
+        if cancel_flag_path.exists():
+            logger.info("索引過程被優雅取消，保存目前進度。")
         logger.info(f"索引完成：{success_count} 個成功，{fail_count} 個失敗")
         return success_count, fail_count
     
