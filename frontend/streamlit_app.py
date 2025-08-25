@@ -608,11 +608,21 @@ def main():
                     # 使用文件夾瀏覽器組件
                     folder_browser = FolderBrowser(API_URL)
                     selected_folder_path = folder_browser.render()
-                    
+                    # 若本次沒有新輸出（返回 None）則沿用既有 session 選擇
+                    if selected_folder_path is None:
+                        selected_folder_path = st.session_state.get('selected_folder_path')
+                    else:
+                        # 寫回 session 以便後續估算與問答使用
+                        st.session_state.selected_folder_path = selected_folder_path
+
                     # 顯示當前選擇和驗證結果
                     if selected_folder_path is not None:
                         display_path = selected_folder_path if selected_folder_path else "根目錄"
                         st.success(f"🎯 當前選擇的搜索範圍：{display_path}")
+                    elif st.session_state.get('selected_folder_path'):
+                        # 防禦式：render 未回傳但 session 中已有
+                        sp = st.session_state.get('selected_folder_path') or ''
+                        st.success(f"🎯 當前選擇的搜索範圍：{sp if sp else '根目錄'} (已保持)")
 
                         # 調用API進行文件夾驗證
                         try:
@@ -646,7 +656,12 @@ def main():
                         if st.button("🗑️ 清除選擇", key="clear_folder_selection"):
                             folder_browser.clear_selection()
                             selected_folder_path = None
+                            st.session_state.selected_folder_path = None
                             st.rerun()
+                else:
+                    # 取消勾選時清空已設定範圍
+                    if st.session_state.get('selected_folder_path') is not None:
+                        st.session_state.selected_folder_path = None
                 # 在動態模式下，進行背景估算文件數量和狀態
                 dyn_lang_model = st.session_state.get('dynamic_language_model')
                 dyn_embed_model = st.session_state.get('dynamic_embedding_model')
@@ -654,7 +669,7 @@ def main():
                 
                 # 背景估算（重構：明確狀態機）
                 if rag_mode_main == "Dynamic RAG" and dyn_lang_model and dyn_embed_model:
-                    cache_key_components = [dyn_lang_model, dyn_embed_model, dyn_platform, selected_folder_path or '__root__']
+                    cache_key_components = [dyn_lang_model, dyn_embed_model, dyn_platform, (selected_folder_path if folder_enabled else None) or '__root__']
                     new_cache_key = '|'.join(str(c) for c in cache_key_components)
                     if 'dynamic_estimation_status' not in st.session_state:
                         st.session_state.dynamic_estimation_status = 'uninitialized'
