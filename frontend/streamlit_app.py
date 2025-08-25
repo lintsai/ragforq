@@ -1430,7 +1430,47 @@ def main():
                 # --- 監控當前狀態 ---
                 st.markdown("---")
                 st.subheader("📈 監控當前狀態")
-                st_autorefresh(interval=60000, key="monitor_all_autorefresh")
+                # --- 可控自動刷新設定 ---
+                if 'monitor_auto_refresh_enabled' not in st.session_state:
+                    st.session_state.monitor_auto_refresh_enabled = True
+                if 'monitor_auto_refresh_interval_ms' not in st.session_state:
+                    st.session_state.monitor_auto_refresh_interval_ms = 60000  # 60s 預設
+                if 'monitor_auto_refresh_count' not in st.session_state:
+                    st.session_state.monitor_auto_refresh_count = 0
+                if 'monitor_last_refresh_ts' not in st.session_state:
+                    st.session_state.monitor_last_refresh_ts = time.time()
+
+                col_ar1, col_ar2, col_ar3 = st.columns([1,1,2])
+                with col_ar1:
+                    auto_flag = st.checkbox("🔄 自動刷新", value=st.session_state.monitor_auto_refresh_enabled, key="monitor_auto_refresh_enabled")
+                with col_ar2:
+                    interval_opt = st.selectbox(
+                        "間隔",
+                        options=[5,10,15,30,60,120,300],
+                        index=[5,10,15,30,60,120,300].index(int(st.session_state.monitor_auto_refresh_interval_ms/1000)) if int(st.session_state.monitor_auto_refresh_interval_ms/1000) in [5,10,15,30,60,120,300] else 4,
+                        help="自動刷新間隔（秒）"
+                    )
+                    st.session_state.monitor_auto_refresh_interval_ms = interval_opt * 1000
+                with col_ar3:
+                    lr = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.session_state.monitor_last_refresh_ts))
+                    st.caption(f"上次刷新: {lr} | 計數: {st.session_state.monitor_auto_refresh_count}")
+
+                # 僅在該分頁打開且啟用時執行自動刷新
+                if auto_flag:
+                    refresh_count = st_autorefresh(
+                        interval=st.session_state.monitor_auto_refresh_interval_ms,
+                        key="monitor_all_autorefresh"
+                    )
+                    # 當計數變化代表一次 rerun 完成
+                    if refresh_count != st.session_state.monitor_auto_refresh_count:
+                        st.session_state.monitor_auto_refresh_count = refresh_count
+                        st.session_state.monitor_last_refresh_ts = time.time()
+                else:
+                    st.info("自動刷新已停用，可手動按下方『⟳ 手動刷新』。")
+                manual_refresh_col = st.columns([1,4])[0]
+                if manual_refresh_col.button("⟳ 手動刷新", key="manual_refresh_monitor"):
+                    st.session_state.monitor_last_refresh_ts = time.time()
+                    st.experimental_rerun()
                 
                 # 獲取當前選擇模型的 folder_name
                 model_folder_name = None
