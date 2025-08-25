@@ -839,41 +839,6 @@ def main():
                     elif warning_level == 'error' and warning_message:
                         st.error(f"⚠️ {warning_message}")
                         st.info("**建議：**\n1. 檢查網路連線\n2. 重新選擇資料夾\n3. 稍後再試")
-                    
-                    # 詳細估算統計（摺疊顯示）
-                    estimation_details = st.session_state.get('dynamic_estimation_details', {})
-                    if estimation_details and estimated_count > 0:
-                        with st.expander("� 估算詳細資訊", expanded=False):
-                            detail_cols = st.columns(3)
-                            with detail_cols[0]:
-                                st.metric("採樣目錄數", estimation_details.get('sampled_dirs', 0))
-                            with detail_cols[1]:
-                                st.metric("總目錄數", estimation_details.get('total_dirs', 0))
-                            with detail_cols[2]:
-                                st.metric("平均每目錄檔案", f"{estimation_details.get('mean_files_per_dir', 0):.1f}")
-                            
-                            method = st.session_state.get('dynamic_estimation_method', 'unknown')
-                            ci_width = estimation_details.get('confidence_interval_width')
-                            max_depth = estimation_details.get('max_depth_reached', 0)
-                            
-                            detail_info = [f"方法: {method}"]
-                            if ci_width:
-                                detail_info.append(f"置信區間: ±{ci_width}")
-                            if max_depth:
-                                detail_info.append(f"掃描深度: {max_depth}層")
-                            
-                            st.caption(" | ".join(detail_info))
-                            
-                            # 提供建議
-                            confidence = st.session_state.get('dynamic_confidence', 'unknown')
-                            if confidence == 'low':
-                                st.info("💡 估算信心較低，建議限制搜索範圍獲得更準確的估算")
-                            elif confidence == 'high':
-                                st.success("✅ 高信心估算，數據可靠")
-                
-                # 舊的阻擋推薦檢查（兼容性保留）
-                if st.session_state.get('dynamic_block_recommended'):
-                    st.error(st.session_state.get('dynamic_block_reason') or "搜索範圍過大，請縮小範圍後再試。")
             
             # 固定設置，不再提供用戶選項
             include_sources = True  # 總是包含相關文件
