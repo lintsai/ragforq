@@ -114,23 +114,13 @@ def _postprocess_answer_text(raw: str) -> dict:
     text = _loose_pipe_table_normalize(text)
 
     html_out = None
-    _used_md_lib = False
     if _md_convert:
         try:
             html_out = _md_convert(text, extensions=["tables", "fenced_code"])
-            _used_md_lib = True
         except Exception as e:
             logging.getLogger(__name__).warning(f"Markdown 轉換失敗 fallback: {e}")
     if not html_out:
-        # 簡易 fallback：保留粗體 / 斜體 標記（非完整 Markdown，避免外部依賴失敗時呈現過於單調）
-        import re as _re_fallback
-        def _inline_basic(md: str) -> str:
-            esc = html.escape(md)
-            esc = _re_fallback.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', esc)
-            esc = _re_fallback.sub(r'(?<!\*)\*(?!\*)([^<>]{1,200}?)(?<!\*)\*(?!\*)', r'<em>\1</em>', esc)
-            return esc
-        # 逐行處理避免表格後續替換時錯亂
-        html_out = '<br>'.join(_inline_basic(ln) for ln in text.split('\n'))
+        html_out = html.escape(text).replace('\n', '<br>')
 
     # --- 自訂管線：如果 markdown 沒有產生 <table> 但原文有疑似表格語法，手動轉成 HTML 表格 ---
     if '<table' not in html_out and '|' in text:
@@ -178,17 +168,8 @@ def _postprocess_answer_text(raw: str) -> dict:
             header = header + [''] * (col_count - len(header))
             norm_body = [(r + [''] * (col_count - len(r))) for r in body_rows]
             # 建構 HTML
-            # 允許在儲存格內保留 **粗體** / *斜體* 等簡單 Markdown 標記
-            import re as _re
-            def _render_inline_md(cell: str) -> str:
-                safe = html.escape(cell)
-                # 粗體 (**text**)
-                safe = _re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', safe)
-                # 斜體 (*text*) - 避免與粗體衝突，已處理過粗體後再處理單星號；排除已是 <strong> 內部的單星號
-                safe = _re.sub(r'(?<!\*)\*(?!\*)([^<>]{1,200}?)(?<!\*)\*(?!\*)', r'<em>\1</em>', safe)
-                return safe
-            thead = '<thead><tr>' + ''.join(f'<th>{_render_inline_md(c)}</th>' for c in header) + '</tr></thead>'
-            tbody = '<tbody>' + ''.join('<tr>' + ''.join(f'<td>{_render_inline_md(c)}</td>' for c in r) + '</tr>' for r in norm_body) + '</tbody>'
+            thead = '<thead><tr>' + ''.join(f'<th>{html.escape(c)}</th>' for c in header) + '</tr></thead>'
+            tbody = '<tbody>' + ''.join('<tr>' + ''.join(f'<td>{html.escape(c)}</td>' for c in r) + '</tr>' for r in norm_body) + '</tbody>'
             cap_html = f'<caption>{html.escape(caption)}</caption>' if caption else ''
             return f'<div class="md-table-wrapper"><table>{cap_html}{thead}{tbody}</table></div>'
 
