@@ -28,49 +28,8 @@ from utils.vector_db_manager import vector_db_manager
 from utils.platform_manager import get_platform_manager
 from utils.setup_flow_manager import get_setup_flow_manager
 
-# 設置日誌
-logging.basicConfig(level=logging.INFO)
+# 日誌: 使用 config.config 中的 init_logging 統一初始化，僅取得模組 logger
 logger = logging.getLogger(__name__)
-
-# 讓 Docker 情境下（直接以 uvicorn 啟動）也會輸出到 logs/app.log
-def _configure_file_logging():
-    try:
-        # 確保日誌目錄存在
-        from config.config import LOGS_DIR  # 已在上方導入，但保留以利靜態掃描
-        logs_dir_path = Path(LOGS_DIR)
-        logs_dir_path.mkdir(parents=True, exist_ok=True)
-
-        log_file = logs_dir_path / "app.log"
-
-        # 檢查是否已經有指向 app.log 的處理器，避免重複寫入
-        root_logger = logging.getLogger()
-        for h in root_logger.handlers:
-            if isinstance(h, logging.FileHandler):
-                try:
-                    if hasattr(h, 'baseFilename') and str(h.baseFilename).endswith(str(log_file)):
-                        return
-                except Exception:
-                    pass
-
-        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-
-        # 掛到 root，讓所有子 logger（含 uvicorn）也能寫入
-        root_logger.addHandler(file_handler)
-
-        # 明確掛到 uvicorn 相關 logger，以防其自有設定不經過 root
-        for name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
-            uv_logger = logging.getLogger(name)
-            uv_logger.propagate = True
-            uv_logger.addHandler(file_handler)
-
-        root_logger.setLevel(logging.INFO)
-    except Exception as e:
-        # 僅記錄，不阻斷服務啟動
-        logger.warning(f"設定檔案日誌處理器失敗: {e}")
-
-_configure_file_logging()
 
 # === 訓練審計日誌 ===
 from pathlib import Path as _Path

@@ -19,16 +19,6 @@ from indexer.document_indexer import DocumentIndexer
 from config.config import Q_DRIVE_PATH, VECTOR_DB_PATH, FILE_BATCH_SIZE, MAX_WORKERS
 from utils.state_manager import record_full_index, save_state, load_state
 
-# 設置日誌
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('logs/indexing.log', mode='w', encoding='utf-8')
-    ]
-)
-
 logger = logging.getLogger(__name__)
 
 PROGRESS_FILE = "logs/indexing_progress.json"

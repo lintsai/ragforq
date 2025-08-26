@@ -17,8 +17,7 @@ from rag_engine.dynamic_simplified_chinese_engine import DynamicSimplifiedChines
 from rag_engine.dynamic_english_engine import DynamicEnglishRAGEngine
 from rag_engine.dynamic_thai_engine import DynamicThaiRAGEngine
 
-# 設置日誌
-logging.basicConfig(level=logging.INFO)
+# 日誌: 依賴全局初始化 (config.config -> utils.log_manager.init_logging)
 logger = logging.getLogger(__name__)
 
 class RAGEngineFactory:

@@ -17,9 +17,6 @@ from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from utils.hf_langchain_wrapper import HuggingFaceLLM, ChatHuggingFace
 from utils.ollama_utils import ollama_utils
-# 設置日誌
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 class SimplifiedChineseRAGEngine(RAGEngineInterface):
     """简体中文RAG引擎实现"""

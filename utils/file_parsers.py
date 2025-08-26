@@ -3,8 +3,7 @@ import logging
 from typing import List, Optional, Dict, Any, Tuple
 from abc import ABC, abstractmethod
 
-# 設置日誌
-logging.basicConfig(level=logging.INFO)
+# 取得模組 logger（由上層初始化），避免重複 basicConfig
 logger = logging.getLogger(__name__)
 
 # 自定義過濾器，過濾不重要的警告消息

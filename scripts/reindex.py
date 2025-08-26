@@ -21,15 +21,6 @@ from indexer.document_indexer import DocumentIndexer
 from config.config import Q_DRIVE_PATH, VECTOR_DB_PATH, is_q_drive_accessible
 from utils.state_manager import record_full_index
 
-# 設置日誌
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(project_root, 'logs', 'reindex.log'), mode='a'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
 
 def clear_vector_db():

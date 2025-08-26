@@ -1,5 +1,4 @@
 import os
-import os
 import re
 import json
 import queue
@@ -11,7 +10,6 @@ import concurrent.futures
 # 添加項目根目錄到路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 設置日誌
 logger = logging.getLogger(__name__)
 
 from rag_engine.interfaces import RAGEngineInterface
@@ -24,9 +22,6 @@ from config.config import (
     OLLAMA_ANSWER_GENERATION_TIMEOUT, 
     OLLAMA_RELEVANCE_TIMEOUT
 )
-# 設置日誌
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 class TraditionalChineseRAGEngine(RAGEngineInterface):
     """繁體中文RAG引擎實現"""

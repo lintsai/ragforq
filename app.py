@@ -25,19 +25,6 @@ from indexer.file_crawler import FileCrawler
 from indexer.document_indexer import DocumentIndexer
 from utils.ml_optimization import initialize_ml_frameworks
 
-# 設置日誌
-logs_dir = LOGS_DIR
-os.makedirs(logs_dir, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(logs_dir, 'app.log'), mode='a', encoding='utf-8'),
-        logging.StreamHandler()
-    ],
-    force=True  # 強制重新配置日誌
-)
 logger = logging.getLogger(__name__)
 
 def check_environment():

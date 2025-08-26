@@ -19,15 +19,6 @@ from indexer.file_crawler import FileCrawler
 from indexer.document_indexer import DocumentIndexer
 from config.config import Q_DRIVE_PATH, is_q_drive_accessible
 
-# 設置日誌
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(project_root, 'logs', 'monitor.log'), mode='a'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
 
 def file_changes_callback(new_files, updated_files, deleted_files):

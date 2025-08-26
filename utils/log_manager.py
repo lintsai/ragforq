@@ -29,6 +29,66 @@ class TimezoneFormatter(logging.Formatter):
                 s = dt.isoformat()
         return s
 
+_INIT_FLAG_ATTR = "_rag_logging_initialized"
+
+def init_logging(level: int = logging.INFO, log_file: str | None = None, console: bool = True, force: bool = False, tz: str = 'Asia/Taipei'):
+    """Idempotent root logger initializer to avoid duplicate logs.
+
+    Args:
+        level: logging level for root logger
+        log_file: optional path to log file; if relative, placed under LOGS_DIR
+        console: whether to add a console stream handler
+        force: if True, remove existing handlers even if already initialized
+        tz: timezone for timestamps
+    """
+    root = logging.getLogger()
+    if getattr(root, _INIT_FLAG_ATTR, False) and not force:
+        # Already initialized; still allow elevating level if caller requests higher verbosity
+        if level < root.level:
+            root.setLevel(level)
+        return
+
+    # Remove handlers when forcing or when we detect multiple stream handlers (cleanup scenario)
+    if force or len(root.handlers) > 1:
+        for h in root.handlers[:]:
+            root.removeHandler(h)
+
+    root.setLevel(level)
+    formatter = TimezoneFormatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s', tz=tz)
+
+    # File handler
+    if log_file:
+        try:
+            # If not absolute, resolve under LOGS_DIR
+            if not os.path.isabs(log_file):
+                from config.config import LOGS_DIR  # lazy import to avoid circular at module load
+                os.makedirs(LOGS_DIR, exist_ok=True)
+                log_file = os.path.join(LOGS_DIR, log_file)
+            else:
+                os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            # Avoid adding duplicate file handler pointing to same file
+            already = False
+            for h in root.handlers:
+                if isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(log_file):
+                    already = True
+                    break
+            if not already:
+                fh = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+                fh.setFormatter(formatter)
+                root.addHandler(fh)
+        except Exception as e:
+            # Fallback to console only if file handler fails
+            logging.getLogger(__name__).warning(f"初始化文件日誌失敗: {e}")
+
+    if console:
+        # Avoid duplicate consoles (keep only one StreamHandler)
+        if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+            sh = logging.StreamHandler()
+            sh.setFormatter(formatter)
+            root.addHandler(sh)
+
+    setattr(root, _INIT_FLAG_ATTR, True)
+
 def setup_model_logger(model_folder_name: str):
     """
     為指定的模型設置一個專用的日誌記錄器。
