@@ -149,7 +149,7 @@ class ThaiRAGEngine(RAGEngineInterface):
 
 **ข้อกำหนดงาน:**
 1.  **ตอบโดยตรง:** ให้คำตอบหลักโดยตรงสำหรับ "คำถามของผู้ใช้" โดยละเว้นการแนะนำหรือข้อมูลพื้นฐานที่ไม่จำเป็น
-2.  **กระชับ:** คำตอบควรกระชับและแม่นยำที่สุดเท่าที่จะทำได้ หลีกเลี่ยงคำอธิบายที่ยาวและเนื้อหาที่ซ้ำซาก
+2.  **กระชับ:** ใช้ถ้อยคำสั้น ชัด แม่นยำ; หากต้องลงรายละเอียดเพิ่มเติมให้ใช้ตาราง แทนการอธิบายยาว
 3.  **อิงตามบริบท:** คำตอบต้องอิงตาม "ข้อมูลบริบท" ทั้งหมด
 4.  **ภาษาที่สอดคล้องกัน:** ตอบด้วยภาษาเดียวกับคำถาม (ภาษาไทย)
 5.  **การจัดการที่ไม่รู้จัก:** หาก "ข้อมูลบริบท" ไม่เพียงพอที่จะตอบ ให้ตอบเพียง "จากเอกสารที่ให้มา ฉันไม่พบข้อมูลที่เกี่ยวข้อง"
@@ -314,20 +314,32 @@ class ThaiRAGEngine(RAGEngineInterface):
             logger.error(f"เกิดข้อผิดพลาดในการสร้างคำตอบจากความรู้ทั่วไป: {str(e)}")
             return self._get_no_docs_message()
     
-    def generate_batch_relevance_reasons(self, question: str, doc_contents: list) -> list:
-        """สร้างเหตุผลความเกี่ยวข้องสำหรับเอกสารหลายฉบับแบบกลุ่ม เพื่อเพิ่มประสิทธิภาพ"""
-        if not question or not question.strip() or not doc_contents:
-            return ["ไม่สามารถสร้างเหตุผลความเกี่ยวข้องได้"] * len(doc_contents)
-        
+    def generate_batch_relevance_reasons(self, question: str, documents: list) -> list:
+        """สร้างเหตุผลความเกี่ยวข้องสำหรับเอกสารหลายฉบับแบบกลุ่ม รองรับ List[Document] หรือ List[str]"""
+        if not question or not question.strip() or not documents:
+            return ["ไม่สามารถสร้างเหตุผลความเกี่ยวข้องได้"] * (len(documents) if documents else 0)
+
+        doc_contents: list[str] = []
+        for d in documents:
+            try:
+                if hasattr(d, 'page_content'):
+                    doc_contents.append(getattr(d, 'page_content') or "")
+                elif isinstance(d, str):
+                    doc_contents.append(d)
+                else:
+                    doc_contents.append(str(d) if d is not None else "")
+            except Exception:
+                doc_contents.append("")
+
         try:
-            # สร้าง prompt สำหรับการประมวลผลแบบกลุ่ม
             docs_text = ""
             for i, content in enumerate(doc_contents, 1):
-                if content and content.strip():
-                    docs_text += f"เอกสาร{i}: {content[:300]}...\n\n"
+                snippet = (content or "").strip()
+                if snippet:
+                    docs_text += f"เอกสาร{i}: {snippet[:300]}...\n\n"
                 else:
                     docs_text += f"เอกสาร{i}: (เนื้อหาว่าง)\n\n"
-            
+
             batch_prompt = PromptTemplate(
                 template="""กรุณาสร้างเหตุผลความเกี่ยวข้องสำหรับเอกสารต่อไปนี้เทียบกับคำถามของผู้ใช้ แต่ละเหตุผลควรเป็นประโยคสั้นๆ กระชับ
 
@@ -345,40 +357,41 @@ class ThaiRAGEngine(RAGEngineInterface):
 เหตุผลความเกี่ยวข้อง:""",
                 input_variables=["question", "docs_text"]
             )
-            
+
             batch_chain = batch_prompt | self.llm | StrOutputParser()
-            
+
             def _invoke_batch():
                 return batch_chain.invoke({
                     "question": question,
                     "docs_text": docs_text
                 })
-            
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_invoke_batch)
                 try:
                     batch_result = future.result(timeout=25)
-                    
-                    # แยกวิเคราะห์ผลลัพธ์แบบกลุ่ม
-                    reasons = []
-                    lines = batch_result.strip().split('\n')
+
+                    reasons: list[str] = []
+                    lines = (batch_result or "").strip().split('\n')
                     for line in lines:
                         line = line.strip()
-                        if line and (line.startswith(('1.', '2.', '3.', '4.', '5.')) or '.' in line[:3]):
-                            # ลบหมายเลข เก็บเหตุผล
-                            reason = line.split('.', 1)[1].strip() if '.' in line else line
-                            reasons.append(reason)
-                    
-                    # ให้แน่ใจว่าส่งคืนจำนวนเหตุผลที่ถูกต้อง
-                    while len(reasons) < len(doc_contents):
-                        reasons.append("เอกสารที่เกี่ยวข้อง")
-                    
+                        if not line:
+                            continue
+                        if line.startswith(('1.', '2.', '3.', '4.', '5.')) or '.' in line[:3]:
+                            if '.' in line:
+                                reason = line.split('.', 1)[1].strip()
+                            else:
+                                reason = line
+                            reasons.append(reason or "เอกสารที่เกี่ยวข้อง")
+
+                    if len(reasons) < len(doc_contents):
+                        reasons.extend(["เอกสารที่เกี่ยวข้อง"] * (len(doc_contents) - len(reasons)))
                     return reasons[:len(doc_contents)]
-                    
+
                 except concurrent.futures.TimeoutError:
                     logger.error("การสร้างเหตุผลความเกี่ยวข้องแบบกลุ่มหมดเวลา")
                     return [f"เอกสารที่เกี่ยวข้อง {i+1}" for i in range(len(doc_contents))]
-        
+
         except Exception as e:
             logger.error(f"เกิดข้อผิดพลาดในการสร้างเหตุผลความเกี่ยวข้องแบบกลุ่ม: {str(e)}")
             return [f"เอกสารที่เกี่ยวข้อง {i+1}" for i in range(len(doc_contents))]

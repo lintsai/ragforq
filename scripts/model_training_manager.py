@@ -307,6 +307,55 @@ def main():
     model_path = vector_db_manager.base_path / folder_name
     model_path.mkdir(parents=True, exist_ok=True)
 
+    # 確保存在 .model 檔（部分舊流程僅建立資料夾，未寫入 .model，導致前端無法辨識/選取）
+    try:
+        model_file = model_path / '.model'
+        if not model_file.exists():
+            import datetime
+            model_info = {
+                "OLLAMA_MODEL": ollama_model,
+                "OLLAMA_EMBEDDING_MODEL": ollama_embedding_model,
+                "created_at": datetime.datetime.now().isoformat()
+            }
+            if version:
+                model_info["version"] = version
+            with open(model_file, 'w', encoding='utf-8') as f:
+                json.dump(model_info, f, ensure_ascii=False, indent=2)
+            logger.info(f"已自動建立缺失的 .model 檔: {model_file}")
+        else:
+            # 可選：驗證必要欄位
+            try:
+                with open(model_file, 'r', encoding='utf-8') as f:
+                    info = json.load(f)
+                changed = False
+                if 'OLLAMA_MODEL' not in info:
+                    info['OLLAMA_MODEL'] = ollama_model; changed = True
+                if 'OLLAMA_EMBEDDING_MODEL' not in info:
+                    info['OLLAMA_EMBEDDING_MODEL'] = ollama_embedding_model; changed = True
+                if version and info.get('version') != version:
+                    info['version'] = version; changed = True
+                if 'created_at' not in info:
+                    import datetime as _dt
+                    info['created_at'] = _dt.datetime.now().isoformat(); changed = True
+                if changed:
+                    with open(model_file, 'w', encoding='utf-8') as f:
+                        json.dump(info, f, ensure_ascii=False, indent=2)
+                    logger.info(f"已修正不完整的 .model 檔: {model_file}")
+            except Exception as _e:
+                logger.warning(f"讀取/驗證現有 .model 檔失敗，將覆寫: {_e}")
+                try:
+                    with open(model_file, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            "OLLAMA_MODEL": ollama_model,
+                            "OLLAMA_EMBEDDING_MODEL": ollama_embedding_model,
+                            **({"version": version} if version else {}),
+                            "created_at": __import__('datetime').datetime.now().isoformat()
+                        }, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"建立或驗證 .model 檔時發生例外（忽略不致命）: {e}")
+
     process_info = {
         "training_type": action,
         "model_combination": f"{ollama_model}+{ollama_embedding_model}",

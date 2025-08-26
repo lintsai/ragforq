@@ -150,7 +150,7 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
 
 **任務要求:**
 1.  **直接回答:** 直接針對「用戶問題」提供核心答案，省略不必要的引言或背景資訊。
-2.  **保持簡潔:** 回答應盡可能簡潔、精確，避免冗長的解釋和重複的內容。
+2.  **保持簡潔:** 文字簡潔、精確；如需細節請用表格呈現，不寫冗長敘述。
 3.  **基於上下文:** 答案必須完全基於「上下文信息」。
 4.  **語言一致:** 使用與問題相同的語言（繁體中文）回答。
 5.  **未知處理:** 如果「上下文信息」不足以回答，僅回答「根據提供的文件，我找不到相關資訊」。
@@ -285,20 +285,36 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
     
 
     
-    def generate_batch_relevance_reasons(self, question: str, doc_contents: list) -> list:
-        """批量生成多個文檔的相關性理由，提高效能"""
-        if not question or not question.strip() or not doc_contents:
-            return ["無法生成相關性理由"] * len(doc_contents)
-        
+    def generate_batch_relevance_reasons(self, question: str, documents: list) -> list:
+        """批量生成多個文檔的相關性理由，提高效能。
+
+        支援輸入為 List[Document] 或 List[str]。避免對 Document 物件直接呼叫 strip 導致錯誤。
+        """
+        if not question or not question.strip() or not documents:
+            return ["無法生成相關性理由"] * (len(documents) if documents else 0)
+
+        # 標準化為字串內容列表
+        doc_contents: list[str] = []
+        for d in documents:
+            try:
+                if hasattr(d, 'page_content'):
+                    doc_contents.append(getattr(d, 'page_content') or "")
+                elif isinstance(d, str):
+                    doc_contents.append(d)
+                else:
+                    doc_contents.append(str(d) if d is not None else "")
+            except Exception:
+                doc_contents.append("")
+
         try:
-            # 構建批量處理的prompt
             docs_text = ""
             for i, content in enumerate(doc_contents, 1):
-                if content and content.strip():
-                    docs_text += f"文檔{i}: {content[:300]}...\n\n"
+                snippet = (content or "").strip()
+                if snippet:
+                    docs_text += f"文檔{i}: {snippet[:300]}...\n\n"
                 else:
                     docs_text += f"文檔{i}: (空內容)\n\n"
-            
+
             batch_prompt = PromptTemplate(
                 template="""請為以下文檔分別生成與用戶查詢的相關性理由。每個理由用一句話簡潔說明。
 
@@ -316,40 +332,41 @@ class TraditionalChineseRAGEngine(RAGEngineInterface):
 相關性理由:""",
                 input_variables=["question", "docs_text"]
             )
-            
+
             batch_chain = batch_prompt | self.llm | StrOutputParser()
-            
+
             def _invoke_batch():
                 return batch_chain.invoke({
                     "question": question,
                     "docs_text": docs_text
                 })
-            
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_invoke_batch)
                 try:
                     batch_result = future.result(timeout=OLLAMA_RELEVANCE_TIMEOUT)
-                    
-                    # 解析批量結果
-                    reasons = []
-                    lines = batch_result.strip().split('\n')
+
+                    reasons: list[str] = []
+                    lines = (batch_result or "").strip().split('\n')
                     for line in lines:
                         line = line.strip()
-                        if line and (line.startswith(('1.', '2.', '3.', '4.', '5.')) or '.' in line[:3]):
-                            # 移除序號，保留理由
-                            reason = line.split('.', 1)[1].strip() if '.' in line else line
-                            reasons.append(reason)
-                    
-                    # 確保返回正確數量的理由
-                    while len(reasons) < len(doc_contents):
-                        reasons.append("相關文檔")
-                    
+                        if not line:
+                            continue
+                        if line.startswith(('1.', '2.', '3.', '4.', '5.')) or '.' in line[:3]:
+                            if '.' in line:
+                                reason = line.split('.', 1)[1].strip()
+                            else:
+                                reason = line
+                            reasons.append(reason or "相關文檔")
+
+                    if len(reasons) < len(doc_contents):
+                        reasons.extend(["相關文檔"] * (len(doc_contents) - len(reasons)))
                     return reasons[:len(doc_contents)]
-                    
+
                 except concurrent.futures.TimeoutError:
                     logger.error("批量生成相關性理由超時")
                     return [f"相關文檔 {i+1}" for i in range(len(doc_contents))]
-        
+
         except Exception as e:
             logger.error(f"批量生成相關性理由時出錯: {str(e)}")
             return [f"相關文檔 {i+1}" for i in range(len(doc_contents))]

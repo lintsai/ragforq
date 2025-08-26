@@ -149,7 +149,7 @@ Optimized search query:""",
 
 **Task Requirements:**
 1.  **Direct Answer:** Provide the core answer directly to the "User Question", omitting unnecessary introductions or background information.
-2.  **Be Concise:** The answer should be as concise and precise as possible, avoiding lengthy explanations and repetitive content.
+2.  **Be Concise:** Use concise, precise wording; if detailed structure is needed, present it as a table instead of long prose.
 3.  **Context-Based:** The answer must be entirely based on the "Context Information".
 4.  **Consistent Language:** Answer in the same language as the question (English).
 5.  **Unknown Handling:** If the "Context Information" is insufficient to answer, only reply "Based on the provided documents, I could not find the relevant information."
@@ -284,20 +284,35 @@ English answer:""",
             logger.error(f"Error generating general knowledge answer: {str(e)}")
             return self._get_no_docs_message()
     
-    def generate_batch_relevance_reasons(self, question: str, doc_contents: list) -> list:
-        """Generate relevance reasons for multiple documents in batch to improve performance"""
-        if not question or not question.strip() or not doc_contents:
-            return ["Unable to generate relevance reason"] * len(doc_contents)
-        
+    def generate_batch_relevance_reasons(self, question: str, documents: list) -> list:
+        """Generate relevance reasons for multiple documents in batch.
+
+        Supports List[Document] or List[str]; normalizes inputs to strings to avoid attribute errors.
+        """
+        if not question or not question.strip() or not documents:
+            return ["Unable to generate relevance reason"] * (len(documents) if documents else 0)
+
+        doc_contents: list[str] = []
+        for d in documents:
+            try:
+                if hasattr(d, 'page_content'):
+                    doc_contents.append(getattr(d, 'page_content') or "")
+                elif isinstance(d, str):
+                    doc_contents.append(d)
+                else:
+                    doc_contents.append(str(d) if d is not None else "")
+            except Exception:
+                doc_contents.append("")
+
         try:
-            # Build batch processing prompt
             docs_text = ""
             for i, content in enumerate(doc_contents, 1):
-                if content and content.strip():
-                    docs_text += f"Document {i}: {content[:300]}...\n\n"
+                snippet = (content or "").strip()
+                if snippet:
+                    docs_text += f"Document {i}: {snippet[:300]}...\n\n"
                 else:
                     docs_text += f"Document {i}: (empty content)\n\n"
-            
+
             batch_prompt = PromptTemplate(
                 template="""Please generate relevance reasons for the following documents with respect to the user query. Each reason should be one concise sentence.
 
@@ -315,40 +330,41 @@ Please generate relevance reasons for each document in order, using this format:
 Relevance reasons:""",
                 input_variables=["question", "docs_text"]
             )
-            
+
             batch_chain = batch_prompt | self.llm | StrOutputParser()
-            
+
             def _invoke_batch():
                 return batch_chain.invoke({
                     "question": question,
                     "docs_text": docs_text
                 })
-            
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_invoke_batch)
                 try:
                     batch_result = future.result(timeout=25)
-                    
-                    # Parse batch results
-                    reasons = []
-                    lines = batch_result.strip().split('\n')
+
+                    reasons: list[str] = []
+                    lines = (batch_result or "").strip().split('\n')
                     for line in lines:
                         line = line.strip()
-                        if line and (line.startswith(('1.', '2.', '3.', '4.', '5.')) or '.' in line[:3]):
-                            # Remove numbering, keep reason
-                            reason = line.split('.', 1)[1].strip() if '.' in line else line
-                            reasons.append(reason)
-                    
-                    # Ensure correct number of reasons
-                    while len(reasons) < len(doc_contents):
-                        reasons.append("Relevant document")
-                    
+                        if not line:
+                            continue
+                        if line.startswith(('1.', '2.', '3.', '4.', '5.')) or '.' in line[:3]:
+                            if '.' in line:
+                                reason = line.split('.', 1)[1].strip()
+                            else:
+                                reason = line
+                            reasons.append(reason or "Relevant document")
+
+                    if len(reasons) < len(doc_contents):
+                        reasons.extend(["Relevant document"] * (len(doc_contents) - len(reasons)))
                     return reasons[:len(doc_contents)]
-                    
+
                 except concurrent.futures.TimeoutError:
                     logger.error("Batch relevance reason generation timeout")
                     return [f"Relevant document {i+1}" for i in range(len(doc_contents))]
-        
+
         except Exception as e:
             logger.error(f"Error in batch relevance reason generation: {str(e)}")
             return [f"Relevant document {i+1}" for i in range(len(doc_contents))]

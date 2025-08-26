@@ -25,7 +25,7 @@ Optimized search query:"""
 
 **Task Requirements:**
 1.  **Direct Answer:** Provide the core answer directly to the "User Question", omitting unnecessary introductions or background information.
-2.  **Be Concise:** The answer should be as concise and precise as possible, avoiding lengthy explanations and repetitive content.
+2.  **Be Concise:** Keep wording concise & precise; provide extended details via a table rather than verbose paragraphs.
 3.  **Context-Based:** The answer must be entirely based on the "Context Information".
 4.  **Consistent Language:** Answer in the same language as the question (English).
 5.  **Unknown Handling:** If the "Context Information" is insufficient to answer, only reply "Based on the provided documents, I could not find the relevant information."

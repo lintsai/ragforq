@@ -13,6 +13,188 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
 import pytz
+# 新增：用於將回答中的 Markdown（特別是表格）轉換為 HTML，避免被包裹的 <div> 阻斷渲染
+try:
+    from markdown import markdown as _md_convert  # Markdown 套件已在 requirements 中
+except Exception:  # 失敗時使用簡單回退（不做轉換）
+    _md_convert = None
+
+# --- 回答後處理工具 ---
+def _postprocess_answer_text(raw: str) -> dict:
+    """標準化並將回答轉為最終 HTML 片段（單一氣泡內渲染）。"""
+    import re, html
+    text = raw or ""
+    text = text.replace('\r\n', '\n').replace('\r', '\n').replace('<BR>', '\n').replace('<br>', '\n')
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    def _convert_ordered_blocks(t: str) -> str:
+        lines = t.split('\n')
+        out, i = [], 0
+        while i < len(lines):
+            if re.match(r'^\s*\d+\.\s+\S', lines[i]):
+                block, start_num = [], int(re.findall(r'^(\d+)\.', lines[i].strip())[0])
+                while i < len(lines) and re.match(r'^\s*\d+\.\s+\S', lines[i]):
+                    block.append(lines[i].strip()); i += 1
+                if len(block) >= 2:
+                    items = []
+                    for ln in block:
+                        _, rest = ln.split('.', 1)
+                        items.append(f"<li>{html.escape(rest.strip())}</li>")
+                    out.append(f"<ol start={start_num}>" + ''.join(items) + "</ol>")
+                    continue
+                out.extend(block); continue
+            out.append(lines[i]); i += 1
+        return '\n'.join(out)
+
+    text = _convert_ordered_blocks(text)
+
+    def _maybe_convert_tab_table(t: str) -> str:
+        if '\t' not in t: return t
+        segs, new, i = t.split('\n'), [], 0
+        while i < len(segs):
+            if '\t' in segs[i]:
+                grp = []
+                while i < len(segs) and '\t' in segs[i]: grp.append(segs[i]); i += 1
+                rows = [g.split('\t') for g in grp]; counts = {len(r) for r in rows}
+                if len(grp) >= 3 and len(counts) == 1 and 2 <= list(counts)[0] <= 6:
+                    cols = rows[0]; from_header = not any(len(c.strip()) > 28 for c in cols)
+                    if from_header: header, body = [c.strip() or f"Col{j+1}" for j,c in enumerate(cols)], rows[1:]
+                    else: header, body = [f"Col{j+1}" for j in range(len(cols))], rows
+                    md = ['|' + ' | '.join(header) + '|', '|' + ' | '.join(['---']*len(header)) + '|']
+                    for r in body: md.append('|' + ' | '.join(c.strip() or '-' for c in r) + '|')
+                    new.append('\n'.join(md))
+                else: new.extend(grp)
+            else: new.append(segs[i]); i += 1
+        return '\n'.join(new)
+
+    text = _maybe_convert_tab_table(text)
+
+    # --- 修正：有些行前面多了空白，導致表格語法被當成一般文字 ---
+    def _normalize_md_table_indentation(t: str) -> str:
+        lines = t.split('\n')
+        for i, ln in enumerate(lines):
+            if re.match(r'^\s+\|.+\|\s*$', ln):  # 只針對表格行
+                lines[i] = ln.lstrip()
+        t2 = '\n'.join(lines)
+        # 確保表格前有一個空行，提升解析穩定度
+        t2 = re.sub(r'(\S)\n(\|[-:])', r'\1\n\n\2', t2)
+        return t2
+    text = _normalize_md_table_indentation(text)
+
+    # --- 寬鬆管線表格標準化：補齊分隔線、移除孤立空白行 ---
+    def _loose_pipe_table_normalize(t: str) -> str:
+        lines = t.split('\n')
+        out = []
+        i = 0
+        while i < len(lines):
+            if re.match(r'^\s*\|.*\|\s*$', lines[i]) and lines[i].count('|') >= 2:
+                block = [lines[i]]
+                j = i + 1
+                blank_used = False
+                while j < len(lines):
+                    if lines[j].strip() == '' and not blank_used:
+                        blank_used = True; j += 1; continue
+                    if re.match(r'^\s*\|.*\|\s*$', lines[j]):
+                        block.append(lines[j]); j += 1; continue
+                    break
+                if len(block) >= 3:
+                    header_cells = [c.strip() for c in block[0].strip().strip('|').split('|')]
+                    # 第二行不是分隔線就插入
+                    def _is_sep(row: str) -> bool:
+                        cells = [c.strip() for c in row.strip().strip('|').split('|')]
+                        return all(re.match(r'^:?-{2,}:?$', c) for c in cells)
+                    if not _is_sep(block[1]):
+                        sep = '|' + '|'.join(['---'] * len(header_cells)) + '|'
+                        block.insert(1, sep)
+                    block = [b for b in block if b.strip()]
+                    out.extend(block)
+                    i = j; continue
+            out.append(lines[i]); i += 1
+        return '\n'.join(out)
+    text = _loose_pipe_table_normalize(text)
+
+    html_out = None
+    if _md_convert:
+        try:
+            html_out = _md_convert(text, extensions=["tables", "fenced_code"])
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Markdown 轉換失敗 fallback: {e}")
+    if not html_out:
+        html_out = html.escape(text).replace('\n', '<br>')
+
+    # --- 自訂管線：如果 markdown 沒有產生 <table> 但原文有疑似表格語法，手動轉成 HTML 表格 ---
+    if '<table' not in html_out and '|' in text:
+        import itertools
+        lines = text.split('\n')
+        blocks = []
+        current = []
+        for ln in lines:
+            candidate = ln.strip()
+            if candidate.startswith('|') and candidate.endswith('|') and candidate.count('|') >= 2:
+                current.append(ln)
+            else:
+                if len(current) >= 3:
+                    blocks.append(current)
+                current = []
+        if len(current) >= 3:
+            blocks.append(current)
+
+        def build_table(block):
+            # 移除前置 caption 單欄位行
+            caption = None
+            if len(block[0].strip('|').split('|')) == 1 and len(block) >= 4:
+                caption = block[0].strip().strip('|').strip()
+                block = block[1:]
+            rows = []
+            for raw_row in block:
+                cells = [c.strip() for c in raw_row.strip().strip('|').split('|')]
+                rows.append(cells)
+            # 嘗試辨識第二行是否為分隔線 (---)
+            header = []
+            body_rows = []
+            if len(rows) >= 2 and all(re.match(r'^:?-{2,}:?$', c) for c in rows[1]):
+                header = rows[0]
+                body_rows = rows[2:]
+            else:
+                # 若第一行含有 '#', '序號' 或英數混合, 視為 header
+                if any(h in rows[0][0] for h in ['#', '序', '序號']):
+                    header = rows[0]
+                    body_rows = rows[1:]
+                else:
+                    header = [f'欄位{i+1}' for i in range(len(rows[0]))]
+                    body_rows = rows
+            # 對齊欄數
+            col_count = max(len(r) for r in [header] + body_rows)
+            header = header + [''] * (col_count - len(header))
+            norm_body = [(r + [''] * (col_count - len(r))) for r in body_rows]
+            # 建構 HTML
+            thead = '<thead><tr>' + ''.join(f'<th>{html.escape(c)}</th>' for c in header) + '</tr></thead>'
+            tbody = '<tbody>' + ''.join('<tr>' + ''.join(f'<td>{html.escape(c)}</td>' for c in r) + '</tr>' for r in norm_body) + '</tbody>'
+            cap_html = f'<caption>{html.escape(caption)}</caption>' if caption else ''
+            return f'<div class="md-table-wrapper"><table>{cap_html}{thead}{tbody}</table></div>'
+
+        # 將原文中的 block 以 placeholder 替換, 然後在 html_out 中同步替換
+        # 因為 html_out 目前沒有表格, 直接用原始文字替換即可
+        for block in blocks:
+            block_text = '\n'.join(block)
+            table_html = build_table(block)
+            # 轉義後版本可能在 html_out 中, 嘗試多種形式替換
+            escaped_block = html.escape(block_text).replace('\n', '<br>')
+            if block_text in html_out:
+                html_out = html_out.replace(block_text, table_html)
+            elif escaped_block in html_out:
+                html_out = html_out.replace(escaped_block, table_html)
+            else:
+                # fallback: 行別替換
+                for raw_line in block:
+                    esc_line = html.escape(raw_line)
+                    if esc_line in html_out:
+                        html_out = html_out.replace(esc_line, '')
+                html_out = html_out.replace('\n\n', '\n') + table_html
+
+    html_out = re.sub(r'<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>', '', html_out, flags=re.IGNORECASE | re.DOTALL)
+    plain = re.sub(r'<[^>]+>', '', html_out)
+    return {"html": html_out, "plain": plain}
 
 # 添加項目根目錄到路徑
 frontend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +239,19 @@ st.markdown("""
     .source-item { background-color: #f0f2f6; border-radius: 5px; padding: 10px; margin-bottom: 5px; }
     .footer { text-align: center; color: #9e9e9e; font-size: 0.8rem; margin-top: 3rem; }
     .stTextInput>div>div>input { font-size: 1.1rem; }
+    /* AI / User 氣泡樣式調整，讓 Markdown 表格可呈現 */
+    .chat-bubble-user { background-color: #007bff; color: #fff; padding: 10px 15px; border-radius: 18px; max-width: 70%; word-wrap: break-word; }
+    .chat-bubble-ai { background-color: #f1f3f4; color: #333; padding: 12px 16px; border-radius: 18px; max-width: 95%; word-wrap: break-word; overflow-x:auto; }
+    .chat-bubble-ai table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+    .chat-bubble-ai table th, .chat-bubble-ai table td { border: 1px solid #ccc; padding: 4px 6px; font-size: 0.85rem; }
+    .chat-bubble-ai table th { background: #e3e7ea; }
+    .chat-bubble-ai code { background:#eee; padding:2px 4px; border-radius:4px; font-size:0.8rem; }
+    .chat-bubble-ai ol { margin:4px 0 4px 22px; padding-left:18px; }
+    .chat-bubble-ai ol li { margin:2px 0; }
+    .chat-meta { font-size: 0.75rem; color: #666; text-align:right; margin-top:4px; }
+    .chat-wrapper { margin: 10px 0; display:flex; }
+    .chat-wrapper.user { justify-content: flex-end; }
+    .chat-wrapper.ai { justify-content: flex-start; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -858,63 +1053,65 @@ def main():
             # 如果有聊天歷史，顯示所有對話
             if st.session_state.chat_history:
                 for i, chat in enumerate(st.session_state.chat_history):
-                    # 用戶問題氣泡
-                    st.markdown(f"""
-                    <div style="display: flex; justify-content: flex-end; margin: 10px 0;">
-                        <div style="background-color: #007bff; color: white; padding: 10px 15px; border-radius: 18px; max-width: 70%; word-wrap: break-word;">
-                            <strong>您:</strong> {chat['question']}
+                    # 用戶問題
+                    st.markdown(
+                        f"""
+                        <div class='chat-wrapper user'>
+                          <div class='chat-bubble-user'><strong>您:</strong> {chat['question']}</div>
                         </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # AI 回答氣泡
-                    if chat.get("rewritten_question"):
-                        st.markdown(f"""
-                        <div style="display: flex; justify-content: center; margin: 10px 0;">
-                            <div style="background-color: #e0e0e0; color: #555; padding: 5px 10px; border-radius: 10px; max-width: 70%; font-size: 0.9em;">
-                                🔍 <strong>優化後查詢:</strong> {chat['rewritten_question']}
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
-                    st.markdown(f"""
-                    <div style="display: flex; justify-content: flex-start; margin: 10px 0;">
-                        <div style="background-color: #f1f3f4; color: #333; padding: 10px 15px; border-radius: 18px; max-width: 70%; word-wrap: break-word;">
-                            <strong>🤖 AI助手:</strong><br>{chat['answer']}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # 顯示文件數量警告（如果有）
+                    # 優化後查詢提示
+                    if chat.get("rewritten_question"):
+                        st.markdown(
+                            f"""
+                            <div style='display:flex; justify-content:center; margin:6px 0;'>
+                              <div style='background:#e0e0e0; color:#555; padding:5px 10px; border-radius:10px; max-width:70%; font-size:0.85rem;'>
+                                🔍 <strong>優化後查詢:</strong> {chat['rewritten_question']}
+                              </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                    # 文件數量警告
                     if chat.get("file_count_warning"):
                         st.warning(f"⚠️ {chat['file_count_warning']}")
-                    
-                    # 顯示相關文件（如果有）
-                    if "sources" in chat and chat["sources"]:
-                        # 去重處理
+
+                    # AI 回答
+                    answer_raw = chat.get("answer") or "(無回應內容)"
+                    processed = _postprocess_answer_text(answer_raw)
+                    answer_html = processed["html"]
+                    st.markdown(
+                        f"""
+                        <div class='chat-wrapper ai'>
+                          <div class='chat-bubble-ai'>{answer_html}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    # 相關文件詳情
+                    if chat.get("sources"):
                         unique_files = {}
                         for source in chat["sources"]:
-                            file_path = source["file_path"]
-                            if file_path not in unique_files:
-                                unique_files[file_path] = source
-                        
-                        # 詳細信息展開器
+                            fp = source["file_path"]
+                            if fp not in unique_files:
+                                unique_files[fp] = source
                         with st.expander(f"查看第 {i+1} 次對話的詳細文件信息", expanded=False):
                             for idx, (_, source) in enumerate(unique_files.items(), 1):
                                 st.markdown(f"**文件 {idx}: {source['file_name']}**")
                                 display_path = source["file_path"].replace(Q_DRIVE_PATH, DISPLAY_DRIVE_NAME)
                                 st.write(f"📁 路徑: {display_path}")
-                                
                                 if source.get("location_info"):
                                     st.write(f"📍 位置: {source['location_info']}")
-                                
                                 if source.get("score") is not None:
                                     st.write(f"📊 相關度: {source['score']:.4f}")
-                                
                                 if show_relevance and source.get("relevance_reason"):
                                     st.markdown("**🔍 相關性理由:**")
                                     st.info(source["relevance_reason"])
-                                
                                 st.markdown("---")
             
             # 如果沒有聊天歷史，顯示歡迎信息
