@@ -3,6 +3,7 @@
 日誌管理工具
 """
 import os
+import sys
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -52,21 +53,19 @@ def setup_model_logger(model_folder_name: str):
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # 創建一個文件處理程序，將日誌寫入模型特定的文件
+    # 單一 FileHandler 避免重複（最簡化方案）
+    formatter = TimezoneFormatter('%(asctime)s - %(levelname)s - %(module)s - %(message)s')
     file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
-    
-    # 創建一個時區感知的日誌格式器
-    formatter = TimezoneFormatter(
-        '%(asctime)s - %(levelname)s - %(module)s - %(message)s'
-    )
     file_handler.setFormatter(formatter)
-
-    # 將文件處理程序添加到根日誌記錄器
     root_logger.addHandler(file_handler)
 
-    # 同時，為了方便在 supervisorctl logs 中查看，也添加一個控制台輸出
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    # 只有在互動式終端才加控制台輸出，避免被父進程 stdout 重導造成重複
+    try:
+        if sys.stderr.isatty():
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(formatter)
+            root_logger.addHandler(console_handler)
+    except Exception:
+        pass
 
-    logging.info(f"日誌記錄器已設置，將輸出到 {log_file_path}")
+    logging.info(f"日誌記錄器已設置（單一 FileHandler），輸出: {log_file_path}")
