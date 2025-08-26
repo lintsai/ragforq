@@ -7,18 +7,20 @@ from typing import List, Optional
 # 加載環境變量
 load_dotenv()
 
-from utils.log_manager import init_logging
-init_logging(level=logging.INFO, log_file='app.log')
-logger = logging.getLogger(__name__)
+"""全域設定載入。確保路徑常數在初始化日誌之前定義以避免循環。"""
 
 # Q槽路徑設置
 Q_DRIVE_PATH = os.getenv("Q_DRIVE_PATH", "Q:")
 Q_DRIVE_NETWORK_PATH = os.getenv("Q_DRIVE_NETWORK_PATH", "\\\\server\\Q")
 
-# 向量數據庫與路徑設置
+# 向量數據庫與路徑設置 (需在日誌初始化前定義以供 log_manager 參考環境變數)
 VECTOR_DB_PATH = os.path.abspath(os.getenv("VECTOR_DB_PATH", "./vector_db").split("#")[0].strip().strip('"'))
 LOGS_DIR = os.path.abspath(os.getenv("LOGS_DIR", "./logs").split("#")[0].strip().strip('"'))
 BACKUPS_DIR = os.path.abspath(os.getenv("BACKUPS_DIR", "./backups").split("#")[0].strip().strip('"'))
+
+from utils.log_manager import init_logging  # 放在路徑常數之後避免循環
+init_logging(level=logging.INFO, log_file='app.log')
+logger = logging.getLogger(__name__)
 
 # 文件類型設置
 SUPPORTED_FILE_TYPES = os.getenv("SUPPORTED_FILE_TYPES", ".pdf,.docx,.xlsx,.txt,.md,.pptx,.csv").split(",")

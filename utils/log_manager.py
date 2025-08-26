@@ -7,7 +7,6 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import pytz
-from config.config import LOGS_DIR
 
 class TimezoneFormatter(logging.Formatter):
     """自定義格式化工具，以在特定時區中顯示日誌時間。"""
@@ -59,25 +58,22 @@ def init_logging(level: int = logging.INFO, log_file: str | None = None, console
     # File handler
     if log_file:
         try:
-            # If not absolute, resolve under LOGS_DIR
             if not os.path.isabs(log_file):
-                from config.config import LOGS_DIR  # lazy import to avoid circular at module load
-                os.makedirs(LOGS_DIR, exist_ok=True)
-                log_file = os.path.join(LOGS_DIR, log_file)
+                # Resolve relative to environment LOGS_DIR (or default ./logs) without importing config to avoid circular
+                logs_dir = os.getenv('LOGS_DIR', './logs')
+                os.makedirs(logs_dir, exist_ok=True)
+                log_file = os.path.join(logs_dir, log_file)
             else:
                 os.makedirs(os.path.dirname(log_file), exist_ok=True)
-            # Avoid adding duplicate file handler pointing to same file
-            already = False
-            for h in root.handlers:
-                if isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(log_file):
-                    already = True
-                    break
+            already = any(
+                isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath(log_file)
+                for h in root.handlers
+            )
             if not already:
                 fh = logging.FileHandler(log_file, mode='a', encoding='utf-8')
                 fh.setFormatter(formatter)
                 root.addHandler(fh)
         except Exception as e:
-            # Fallback to console only if file handler fails
             logging.getLogger(__name__).warning(f"初始化文件日誌失敗: {e}")
 
     if console:
@@ -99,8 +95,10 @@ def setup_model_logger(model_folder_name: str):
     Args:
         model_folder_name (str): 模型的資料夾名稱，用於命名日誌文件。
     """
-    log_directory = Path(LOGS_DIR)
-    log_directory.mkdir(exist_ok=True)
+    # Resolve logs directory without importing config at import time
+    logs_dir = os.getenv('LOGS_DIR', './logs')
+    log_directory = Path(logs_dir)
+    log_directory.mkdir(parents=True, exist_ok=True)
 
     log_file_path = log_directory / f"{model_folder_name}.log"
 
