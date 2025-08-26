@@ -19,6 +19,8 @@ from config.config import Q_DRIVE_PATH, VECTOR_DB_PATH, SUPPORTED_FILE_TYPES
 from indexer.document_indexer import DocumentIndexer
 from utils.file_parsers import FileParser
 
+# 設置日誌
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class RAGDiagnosticTool:

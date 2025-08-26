@@ -272,9 +272,7 @@ def main():
         try:
             usable_models = vector_db_manager.get_usable_models()
             if not usable_models:
-                if not logging.getLogger().handlers:
-                    from utils.log_manager import init_logging
-                    init_logging(log_file='app.log')
+                logging.basicConfig(level=logging.INFO) # Fallback logger
                 logger.error("沒有可用的模型進行增量訓練，請先進行初始訓練")
                 sys.exit(1)
             
@@ -289,16 +287,12 @@ def main():
             logger.info(f"自動選擇模型: {ollama_model} + {ollama_embedding_model}, 版本: {version}")
 
         except Exception as e:
-            if not logging.getLogger().handlers:
-                from utils.log_manager import init_logging
-                init_logging(log_file='app.log')
+            logging.basicConfig(level=logging.INFO)
             logger.error(f"獲取可用模型失敗: {str(e)}")
             sys.exit(1)
 
     except Exception as e:
-        if not logging.getLogger().handlers:
-            from utils.log_manager import init_logging
-            init_logging(log_file='app.log')
+        logging.basicConfig(level=logging.INFO)
         logger.error(f"讀取訓練資訊或設置日誌時出錯: {e}")
         sys.exit(1)
 

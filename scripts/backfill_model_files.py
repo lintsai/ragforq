@@ -30,6 +30,7 @@ sys.path.append(str(ROOT))
 
 from utils.vector_db_manager import vector_db_manager  # noqa
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backfill_model_files")
 
 base_path = vector_db_manager.base_path

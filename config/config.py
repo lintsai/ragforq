@@ -7,8 +7,8 @@ from typing import List, Optional
 # 加載環境變量
 load_dotenv()
 
-from utils.log_manager import init_logging
-init_logging(level=logging.INFO, log_file='app.log')
+# 設置日誌
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Q槽路徑設置

@@ -16,6 +16,9 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from utils.hf_langchain_wrapper import HuggingFaceLLM, ChatHuggingFace
+# 設置日誌
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class EnglishRAGEngine(RAGEngineInterface):
     """English RAG Engine Implementation"""
